@@ -245,10 +245,11 @@ A reader that follows a tenant's events (spec 0040), such as a watcher holding `
   `covered_at`, beside `next`, is the time `next` stands for (its event's, or the covered time); a
   cursor past the covered time (another replica's clock ahead) comes back unchanged, so `next` never
   moves back. `order=desc` gives `next` on a full page only, and no `covered_at`.
-- **`oldest_at`** in the answer is the time of the tenant's oldest retained event (left out when it
-  holds none). A reader whose `covered_at` is older has missed events, and reads the tenant's structure
-  afresh ([Access](access.md#who-sees-what)). `audit.dropped` counts the events the writer or
-  retention dropped undelivered.
+- **`pruned_through`** in the answer is the newest event time retention (`events.retention` or
+  `events.max_rows_per_tenant`) has removed of the tenant's events, left out until it removed one. A
+  reader whose `covered_at` is before it has missed events, and reads the tenant's structure afresh
+  ([Access](access.md#who-sees-what)); a quiet or young tenant shows no false gap.
+  `audit.dropped` counts the events the writer dropped.
 - `request` ties the events one request wrote, such as a key's removal with `purge_held` and the
   `catalogue.purge` it causes.
 

@@ -129,20 +129,24 @@ causes). It gains, for any caller that reads it:
 - **Paging with `order=asc`** (documented in `api.md`): `next` is always present. A full page's
   `next` is its last event's cursor; a shorter page is the tail, and its `next` is the time the read
   covered (now minus `events.settle`, or `until` when sooner), whatever the `kind` filter matched,
-  so a filtered reader advances too and `oldest_at` never shows it a false gap. With no cursor the
+  so a filtered reader advances too and `pruned_through` never shows it a false gap. With no cursor the
   read starts at the oldest retained event, with `since` at `since`; with `until` it covers up to
   `until`. A reader keeps `next` and asks again later. The cursor stays opaque (never built by hand);
   beside it, `covered_at` is the time `next` stands for (its event's, or the covered time), which a
-  reader compares with `oldest_at`. A cursor past the covered time (another replica's clock ahead)
+  reader compares with `pruned_through`. A cursor past the covered time (another replica's clock ahead)
   comes back unchanged, so `next` never moves back. A cursor bounds the read by its time before the
   keyset's `OR` (`at >= ?`; `at <= ?` descending), so a generic plan starts there.
   An event that commits later than the settle window is missed by a tail reader (the writer stalled
   longer than `events.settle`); an operator raises the window if that happens. `order=desc` is
   unchanged (`next` on a full page only).
-- **What retention removed**: the answer gains `oldest_at`, the time of the tenant's oldest retained
-  event (omitted when it holds none). A reader whose cursor is older than `oldest_at` has missed
-  events and reads the structure afresh. Events the writer or retention dropped are still counted by
-  `audit.dropped` (spec 0010).
+- **What retention removed**: the answer gains `pruned_through`, the newest event time retention
+  (the age limit or a tenant's row limit) has removed of the tenant's events (omitted until it
+  removed one). A reader whose `covered_at` is before it has missed events, and reads the structure
+  afresh; one at or after it has missed none. The oldest retained event's time would not do: a
+  tenant quiet for longer than retention, or a young one, holds no event before a reader's cursor
+  and would look like a loss. The pruner records it per tenant (`event_pruned`, migration 0050, in
+  the same transaction as each deletion; it never moves back). Events the writer dropped are still
+  counted by `audit.dropped` (spec 0010).
 
 ### For consumers
 
@@ -155,7 +159,9 @@ token; `429` (`rate-limited`) past the API rate.
 An upstream's entries are its answer's `extensions` field (the `…/extensions` sub-route stays
 closed). A grant's scope is its `channel`, `extension`, `extension_group` and `package_type`
 (omitted when the default for its shape). An events read with `order=asc` answers `next` and
-`covered_at`, and `oldest_at` when the tenant holds events.
+`covered_at`, and `pruned_through` once retention has removed one of the tenant's events: a reader
+whose `covered_at` is before `pruned_through` missed events. An issuer's read is never a `304`: its
+ETag is the record's id (what `If-Match` takes), which a console client's change keeps.
 
 `created_by` and an event's `actor` take these forms for a tenant's readers:
 `principal:<tenant>/<issuer id>|<sub>` (the token's bare `sub`; `client:<id>` for a token with no
@@ -176,7 +182,7 @@ with no code.
 `access.md` (what `audit` reads; `holds_audit` in the verbs table; the `created_by` forms),
 `api.md` (the rows above, the events parameters; remove the stale `…/publishers/{name}/github` rows),
 `observability.md` (the actor forms corrected to the bare `sub`; the events parameters, `request`,
-`next` and `oldest_at`), `console.md` (the issuer answer's `console`), `publishing.md` and `tenants-and-channels.md` (who reads).
+`next`, `covered_at` and `pruned_through`), `console.md` (the issuer answer's `console`), `publishing.md` and `tenants-and-channels.md` (who reads).
 
 ## Security
 
@@ -223,9 +229,12 @@ with no code.
   `events.settle`), with and without a `kind` filter; an event stored late (committed with an `at`
   10s in the past, after a read at the tail) is answered by the next read with that read's `next`,
   never skipped; events newer than the window are not answered yet; `until` bounds the covered time; with no
-  cursor the read starts at the oldest retained event. `oldest_at` follows retention.
+  cursor the read starts at the oldest retained event. `pruned_through` is absent until retention
+  removes an event, then the newest time it removed (by age or by a tenant's row limit), never
+  moving back.
 - The issuer answer carries `id`, equal to the id in a principal's `created_by`, and `console` once a
-  console client is set (absent before, and after its removal).
+  console client is set (absent before, and after its removal), also to a reader revalidating with
+  `If-None-Match`.
 
 ## Alternatives considered
 
@@ -243,9 +252,10 @@ with no code.
 
 One PR, `0040-audit-reads`: the API rules and access kind, `readTenant` / `readPublishers` and their
 callers, the group list's full view, the issuer's `id` and `console`, the events' `kind` list and
-exclusions, the settled tail and `next`, `oldest_at`, the `events.settle` setting
+exclusions, the settled tail and `next`, `pruned_through`, the `events.settle` setting
 (`configuration.md`), the tests and the docs.
-No migration.
+One migration, 0050 (`event_pruned`, `min_reader` 50: an older replica's pruner would delete without
+recording it).
 
 ## Follow-ups
 

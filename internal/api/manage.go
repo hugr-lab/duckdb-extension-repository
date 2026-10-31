@@ -816,6 +816,9 @@ func (h *Handler) getIssuer(w http.ResponseWriter, r *http.Request, c caller, p 
 	if !ok {
 		return
 	}
+	// the ETag is the record's id, which If-Match takes; a console client's change keeps it, so the
+	// answer (spec 0040: with its console) is never a 304
+	r.Header.Del("If-None-Match")
 	for _, is := range iss {
 		if is.Name == p["name"] {
 			reply(w, r, http.StatusOK, issuerOf(is, consoleOf(ccs, is), c), issuerTag(is), noStore)

@@ -13,7 +13,8 @@ import (
 )
 
 // Spec 0040: following the events: a kind list or the kinds left out; with order=asc a settled
-// tail, next always (the covered time on a short page, whatever the filter matched), and oldest_at.
+// tail, next always (the covered time on a short page, whatever the filter matched), and
+// pruned_through.
 func TestEventsFollow(t *testing.T) {
 	base := time.Now().Add(time.Minute).Truncate(time.Second) // after the fixture's events
 	now := base.Add(100 * time.Second)
@@ -119,16 +120,21 @@ func TestEventsFollow(t *testing.T) {
 		t.Fatalf("after the window: %v", got)
 	}
 
-	// with no cursor the read starts at the oldest retained event; oldest_at follows retention
+	// with no cursor the read starts at the oldest retained event; pruned_through, the newest time
+	// retention removed, is absent until it removes one, and a quiet tenant shows no gap
 	all := read("order=asc&limit=1")
-	oldest, _ := all["oldest_at"].(string)
-	if oldest == "" || all["events"].([]any)[0].(map[string]any)["at"] != oldest {
-		t.Errorf("the first event is the oldest: %v", all)
+	if all["pruned_through"] != nil || all["events"].([]any)[0].(map[string]any)["id"] == e1.ID {
+		t.Errorf("before pruning: %v", all)
 	}
 	if _, _, err := m.st.PruneEvents(ctx, base.Add(15*time.Second), base.Add(15*time.Second), 100000); err != nil {
 		t.Fatal(err)
 	}
-	if got := read("order=asc")["oldest_at"]; got != e2.At.UTC().Format(time.RFC3339Nano) {
-		t.Errorf("oldest_at after pruning: %v, want %v", got, e2.At)
+	after := read("order=asc&limit=1")
+	if after["pruned_through"] != e1.At.UTC().Format(time.RFC3339Nano) || ids(after)[0] != e2.ID {
+		t.Errorf("after pruning: %v, want pruned_through %v", after, e1.At)
+	}
+	// a reader covered to after it missed nothing: e2 is still there
+	if covered, _ := time.Parse(time.RFC3339Nano, tail["covered_at"].(string)); !covered.After(e1.At) {
+		t.Errorf("the tail's covered_at %v is not after what retention removed", covered)
 	}
 }

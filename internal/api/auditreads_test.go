@@ -55,7 +55,8 @@ func TestAuditReads(t *testing.T) {
 		t.Fatalf("the grant's created_by names the issuer's id %s: %v", id, g)
 	}
 	call(200, "POST", T+"/issuers/corp/console", ta, `{"client_id":"kista-console","scopes":["openid"]}`, "If-Match", is.header.Get("ETag"))
-	con, _ := call(200, "GET", T+"/issuers/corp", aud, "").json(t)["console"].(map[string]any)
+	// a revalidating reader sees the console change: the record's id, the ETag, did not move
+	con, _ := call(200, "GET", T+"/issuers/corp", aud, "", "If-None-Match", is.header.Get("ETag")).json(t)["console"].(map[string]any)
 	if con["client_id"] != "kista-console" || con["created_by"] != "principal:acme/"+id+"|tom" || con["created_at"] == "" ||
 		con["audience_parameter"] != "" || con["audience"] != "" {
 		t.Fatalf("the console client: %v", con)
@@ -189,7 +190,7 @@ func TestAuditReads(t *testing.T) {
 	// the console client removed: absent again
 	call(200, "POST", T+"/resume", sa, "", "If-Match", call(200, "GET", T, sa, "").header.Get("ETag"))
 	call(204, "DELETE", T+"/issuers/corp/console", ta, "", "If-Match", `"`+id+`"`)
-	if c := call(200, "GET", T+"/issuers/corp", aud, "").json(t)["console"]; c != nil {
+	if c := call(200, "GET", T+"/issuers/corp", aud, "", "If-None-Match", is.header.Get("ETag")).json(t)["console"]; c != nil {
 		t.Errorf("a removed console client: %v", c)
 	}
 }

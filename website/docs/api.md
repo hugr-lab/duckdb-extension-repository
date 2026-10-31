@@ -512,7 +512,7 @@ promotion and a source's switch to an administrator of the path; a relay run (th
 
 | Route | Who |
 | --- | --- |
-| `GET, POST tenants/{t}/issuers`; `GET, DELETE …/issuers/{name}` | tenant admin, an auditor (`GET`, spec 0040). An issuer answers its `id` (the one a principal's `created_by` names) and, once set, its console client as `console` (`client_id`, `scopes`, `audience_parameter`, `audience`, `created_at`, `created_by`) |
+| `GET, POST tenants/{t}/issuers`; `GET, DELETE …/issuers/{name}` | tenant admin, an auditor (`GET`, spec 0040). An issuer answers its `id` (the one a principal's `created_by` names) and, once set, its console client as `console` (`client_id`, `scopes`, `audience_parameter`, `audience`, `created_at`, `created_by`); its ETag is its id, so `GET …/issuers/{name}` never answers `304` |
 | `POST, DELETE …/issuers/{name}/console` | tenant admin: the console's client at that issuer |
 | `GET tenants/{t}/grants[?principal=&extension_group=&extension=]`, `POST tenants/{t}/grants` | tenant admin, an auditor (`GET`, spec 0040) (spec 0037: not a distribution admin) |
 | `GET tenants/{t}/grants/principals[?prefix=]` | tenant admin |
@@ -558,7 +558,7 @@ last, `404`; a chunk without `Content-Length`, `411`; too many chunks at once, `
 | Route | Who |
 | --- | --- |
 | `GET event-kinds` | public: the event catalogue |
-| `GET tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&order=&cursor=&limit=]`, `GET …/events/{id}` | auditor; a deleting or deleted tenant: server. `kind` is a comma-separated list of kinds and families (`grant.*`), or of the kinds left out, each after a `!` (`!install,!usage.*`); the answer carries `oldest_at`, and `covered_at` with `order=asc` ([Following the events](observability.md#following-the-events), spec 0040) |
+| `GET tenants/{t}/events[?since=&until=&kind=&actor=&subject=&outcome=&order=&cursor=&limit=]`, `GET …/events/{id}` | auditor; a deleting or deleted tenant: server. `kind` is a comma-separated list of kinds and families (`grant.*`), or of the kinds left out, each after a `!` (`!install,!usage.*`); the answer carries `pruned_through` (the newest time retention removed), and `covered_at` with `order=asc` ([Following the events](observability.md#following-the-events), spec 0040) |
 | `GET events[...]`, `GET events/{id}` | server: the server's own events |
 | `GET tenants/{t}/stats/downloads?from=&to=&channel=&extension=&group=` | principal: everything with `audit`, otherwise what its `admin`, `publish` or `promote` grants cover; `group` takes `source` too, a label (`unknown` for counts before spec 0036) |
 | `GET tenants/{t}/stats/releases?channel=&extension=` | the same |

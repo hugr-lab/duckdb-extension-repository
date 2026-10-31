@@ -70,11 +70,11 @@ func TestEvents(t *testing.T) {
 				t.Errorf("%s: %+v %v", name, r, err)
 			}
 		}
-		if at, ok, err := s.OldestEvent(ctx, tn.ID); err != nil || !ok || !at.Equal(got[2].At) {
-			t.Fatalf("the oldest event: %v %v %v", at, ok, err)
+		if n, err := store.CountRaw(ctx, s, "schema_migrations", "version = 50 AND min_reader = 50"); err != nil || n != 1 {
+			t.Fatalf("migration 50 raises min_reader: %d %v", n, err) // an older pruner would not record pruned_through
 		}
-		if _, ok, err := s.OldestEvent(ctx, "nobody"); err != nil || ok {
-			t.Fatalf("a tenant without events: %v %v", ok, err)
+		if _, ok, err := s.PrunedThrough(ctx, tn.ID); err != nil || ok {
+			t.Fatalf("nothing pruned yet: %v %v", ok, err)
 		}
 		for name, f := range map[string]store.EventFilter{
 			"kind":    {Kind: "grant.remove"},
@@ -148,6 +148,25 @@ func TestEvents(t *testing.T) {
 		}
 		if r, _ := s.ListEvents(ctx, tn.ID, store.EventFilter{}); len(r) != 1 || r[0].Kind != "channel.create" {
 			t.Fatalf("after pruning: %+v", r)
+		}
+		// spec 0040: each pass records the newest time it removed of each tenant's, never moving back
+		// (the overdue event, then grant.add by retention, then grant.remove by the overflow)
+		if at, ok, err := s.PrunedThrough(ctx, tn.ID); err != nil || !ok || !at.Equal(got[1].At) {
+			t.Fatalf("pruned through: %v %v %v, want %v", at, ok, err, got[1].At)
+		}
+		old := ref
+		old.ID, old.At = store.NewID(), got[2].At.Add(-time.Hour)
+		if err := s.InsertEvents(ctx, []store.Event{old}); err != nil {
+			t.Fatal(err)
+		}
+		if n, _, err := s.PruneEvents(ctx, got[1].At, now.Add(-time.Hour), 100); err != nil || n != 1 {
+			t.Fatalf("prune an older one: %d %v", n, err)
+		}
+		if at, _, _ := s.PrunedThrough(ctx, tn.ID); !at.Equal(got[1].At) {
+			t.Fatalf("pruned through moved back: %v", at)
+		}
+		if _, ok, err := s.PrunedThrough(ctx, "nobody"); err != nil || ok {
+			t.Fatalf("a tenant without pruned events: %v %v", ok, err)
 		}
 	})
 }

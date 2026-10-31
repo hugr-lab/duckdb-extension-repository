@@ -166,7 +166,7 @@ func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller,
 		return
 	}
 	// with order=asc, covered_at is the time next stands for (spec 0040), which a reader compares
-	// with oldest_at without reading the cursor
+	// with pruned_through without reading the cursor
 	next, coveredAt := "", time.Time{}
 	switch {
 	case len(evs) > limit: // a full page
@@ -178,7 +178,7 @@ func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller,
 	case f.Ascending: // the tail: whatever the filter matched, the time covered
 		next, coveredAt = eventCursor(covered, ""), covered
 	}
-	oldest, held, err := h.o.Store.OldestEvent(r.Context(), tenantID)
+	pruned, held, err := h.o.Store.PrunedThrough(r.Context(), tenantID)
 	if err != nil {
 		h.fail(w, err)
 		return
@@ -191,8 +191,8 @@ func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller,
 	if f.Ascending {
 		ans["covered_at"] = coveredAt.UTC().Format(time.RFC3339Nano)
 	}
-	if held {
-		ans["oldest_at"] = oldest.UTC().Format(time.RFC3339Nano)
+	if held { // spec 0040: events at or before it are gone; a reader covered only to before it missed some
+		ans["pruned_through"] = pruned.UTC().Format(time.RFC3339Nano)
 	}
 	reply(w, r, http.StatusOK, ans, "", noStore)
 }

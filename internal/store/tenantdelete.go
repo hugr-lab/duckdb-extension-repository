@@ -296,8 +296,9 @@ var reapSteps = []reapStep{
 }
 
 // KeptTables hold a deleted tenant's rows for good (spec 0019): its tombstone, its deletion record,
-// its audiences and key fingerprints (never reused), and its events (until retention).
-var KeptTables = []string{"tenants", "tenant_deletions", "tenant_audiences", "key_fingerprints", "events"}
+// its audiences and key fingerprints (never reused), and its events (until retention) with the
+// newest time retention removed of them (spec 0040).
+var KeptTables = []string{"tenants", "tenant_deletions", "tenant_audiences", "key_fingerprints", "events", "event_pruned"}
 
 // GlobalTables are the server's, of no tenant.
 var GlobalTables = []string{"blobs", "blob_claims", "blob_tombstones", "icon_claims", "icon_tombstones", "storage_domains", "duckdb_versions", "duckdb_version_c_apis",
