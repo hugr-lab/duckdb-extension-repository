@@ -3,10 +3,9 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Pager, Table, when } from '../components/ui'
 import { useLoad, usePaged, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
-import { useAction } from '../lib/action'
 import { GrantForm, GrantsList, useGrants } from './Access'
 import { HoldForm } from './Holds'
-import { holdInput, holdWords } from './Sources'
+import { holdWords } from './Sources'
 
 // Publishers (spec 0008, 0023; console phase 2a): identities that only publish and promote, from CI
 // of any forge, signing their requests with an SSH key registered here. They never sign in here.
@@ -108,34 +107,19 @@ export function DistributorHold({ onChanged }: { onChanged?: () => void }) {
   const { client, api } = useTenant()
   const path = `${api}/distributor-hold`
   const hold = useLoad(() => client.get<{ hold: string }>(path), [path])
-  const [value, setValue] = useState('')
-  const { busy, failure, act } = useAction('The minimum hold', hold.reload)
   if (hold.error instanceof ApiError && hold.error.status === 404) return null
   return (
     <Card title="Minimum hold for distributors' publishers">
-      <div className="flex flex-col gap-2">
-        <form role="group" aria-label="minimum hold for distributors' publishers" className="flex flex-wrap items-center gap-2 text-[13px]"
-          onSubmit={(e) => {
-            e.preventDefault()
-            act(() => client.put(path, { body: { hold: holdInput(value) } })).then((ok) => {
-              if (ok) {
-                setValue('')
-                hold.reload()
-                onChanged?.()
-              }
-            })
-          }}>
-          <span className="text-ink-muted">Minimum hold</span>
-          <b>{hold.data ? holdWords(hold.data.data.hold) : '…'}</b>
-          <input aria-label="new minimum hold" className="field w-32 py-1 font-mono text-[13px]" placeholder="24h, 2d, 0" required value={value}
-            onChange={(e) => setValue(e.target.value)} />
-          <Button type="submit" disabled={busy}>Set minimum</Button>
-        </form>
-        {(failure != null || hold.error != null) && <ErrorBox error={failure ?? hold.error} />}
-        <Note>What a distributor's publisher publishes is held at least this long, whatever hold its distributor sets: within it, removing
+      {hold.error != null && <ErrorBox error={hold.error} />}
+      <HoldForm path={path} label="minimum hold for distributors' publishers" caption="Minimum hold" input="new minimum hold" button="Set minimum"
+        current={hold.data ? hold.data.data.hold : null}
+        onChanged={() => {
+          hold.reload()
+          onChanged?.()
+        }}
+        note={<>What a distributor's publisher publishes is held at least this long, whatever hold its distributor sets: within it, removing
           a stolen key with its held entries purged keeps them from every channel. Raising it holds what is held now longer; lowering it
-          applies to what arrives from then on.</Note>
-      </div>
+          applies to what arrives from then on.</>} />
     </Card>
   )
 }
@@ -187,7 +171,7 @@ function PublisherView({ name }: { name: string }) {
       )}
       <Keys publisher={p} onChanged={pub.reload} />
       {(!p.distributor || perms.server) && (
-        <HoldForm path={`${path}/hold`} label="publisher hold" current={p.hold} onChanged={pub.reload}
+        <HoldForm card="Hold" path={`${path}/hold`} label="publisher hold" current={p.hold} onChanged={pub.reload}
           note={<>What it publishes waits this long in the <Link to={`${base}/catalogue`}>catalogue</Link> before a channel's automatic
             placement takes it; a channel administrator may place it earlier by hand. Within it, removing a stolen key with its held
             entries purged keeps them from every channel. 0 clears it.</>} />

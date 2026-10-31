@@ -361,12 +361,7 @@ function UpstreamView({ name }: { name: string }) {
         </dl>
       </Card>
       <LastRun u={u} onRefresh={up.reload} />
-      {u.mode === 'mirror' && !lazy && ( // a hold is an eager mirror's: a lazy one takes none
-        <HoldForm path={`${path}/hold`} label="upstream hold" current={u.hold} onChanged={up.reload}
-          note={<>New versions it brings wait this long in the <Link to={`${base}/catalogue`}>catalogue</Link> before a channel's automatic
-            placement takes them, so a bad upstream release can be blocked first; a channel administrator may place one earlier by hand.
-            0 clears it.</>} />
-      )}
+      {u.mode === 'mirror' && !lazy && <MirrorHold u={u} path={path} etag={etag} onChanged={up.reload} />}
       {u.kind === 'repository' && u.mode !== 'bundle' && <Usage u={u} path={path} etag={etag} onChanged={up.reload} />}
       {takesRevocations(u) && <Revocations u={u} path={path} etag={etag} onChanged={up.reload} />}
       <Allowlist path={path} mirror={u.mode === 'mirror'} lazy={lazy} onChanged={up.reload} />
@@ -387,6 +382,21 @@ function FetchModeButton({ channel, lazy, disabled, onClick }: { channel: string
   const ch = useLoad(() => client.get<{ kind: string }>(`${api}/channels/${seg(channel)}`), [api, channel])
   if (!lazy && ch.data?.data.kind !== 'signed') return null
   return <Button tone="outline" disabled={disabled} onClick={onClick}>Make {lazy ? 'eager' : 'lazy'}</Button>
+}
+
+/** An eager mirror's hold (spec 0033), set with the upstream's ETag: a hold is an eager mirror's of a
+ * signed channel (kista refuses a lazy mirror's and a passthrough channel's), so it is offered there
+ * only, the channel's kind read as the fetch mode's button does. */
+export function MirrorHold({ u, path, etag, onChanged }: { u: Upstream; path: string; etag: string; onChanged: () => void }) {
+  const { client, api, base } = useTenant()
+  const ch = useLoad(() => client.get<{ kind: string }>(`${api}/channels/${seg(u.channel)}`), [api, u.channel])
+  if (ch.data?.data.kind !== 'signed') return null
+  return (
+    <HoldForm card="Hold" path={`${path}/hold`} label="upstream hold" current={u.hold} ifMatch={etag} onChanged={onChanged}
+      note={<>New versions it brings wait this long in the <Link to={`${base}/catalogue`}>catalogue</Link> before a channel's automatic
+        placement takes them, so a bad upstream release can be blocked first; a channel administrator may place one earlier by hand.
+        0 clears it.</>} />
+  )
 }
 
 function LastRun({ u, onRefresh }: { u: Upstream; onRefresh: () => void }) {
