@@ -25,6 +25,8 @@ export interface HoldFormProps {
   button?: string
   /** the owner's ETag, sent as If-Match (a 412 reads it again) */
   ifMatch?: string
+  /** what a 412 says changed ("The upstream"); default "The hold" */
+  owner?: string
   /** a card around it with this title; none: the form alone */
   card?: string
   note?: ReactNode
@@ -34,7 +36,7 @@ export interface HoldFormProps {
 export function HoldForm(p: HoldFormProps) {
   const { client } = useTenant()
   const [value, setValue] = useState('')
-  const { busy, failure, act } = useAction('The hold', p.onChanged)
+  const { busy, failure, act } = useAction(p.owner ?? 'The hold', p.onChanged)
   const form = (
     <div className="flex flex-col gap-2">
       <form role="group" aria-label={p.label} className="flex flex-wrap items-center gap-2 text-[13px]"

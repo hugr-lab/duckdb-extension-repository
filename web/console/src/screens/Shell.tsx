@@ -184,7 +184,7 @@ function UserMenu({ user, role, onSignOut }: { user: string; role?: string; onSi
 function EmbeddedFrame({ children }: { children: ReactNode }) {
   const { groups } = useFrame()
   const ids = useId()
-  const tab =({ isActive }: { isActive: boolean }) =>
+  const tab = ({ isActive }: { isActive: boolean }) =>
     `rounded-full px-4 py-1.5 no-underline ${isActive ? 'bg-brand-strong font-semibold text-brand-on' : 'border border-line text-ink'}`
   return (
     <div className="flex flex-col gap-4">

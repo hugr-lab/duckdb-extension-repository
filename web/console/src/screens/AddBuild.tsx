@@ -63,7 +63,12 @@ export function AddBuildButton({ onAdded }: { onAdded: () => void }) {
     setRead(undefined)
     setA((was) => ({ ...empty, visibility: was.visibility }))
     if (!f) return
-    const r: Read = (await gzipped(f)) ? { gzip: true } : { gzip: false, footer: await readFooter(f) }
+    let r: Read
+    try {
+      r = (await gzipped(f)) ? { gzip: true } : { gzip: false, footer: await readFooter(f) }
+    } catch {
+      r = { gzip: false, footer: null } // an unreadable file: no footer, as one that is not an extension's
+    }
     if (n !== latest.current) return
     setRead(r)
     setA((was) => fromFile(f.name, r.gzip ? null : r.footer, was))

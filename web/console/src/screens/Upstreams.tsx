@@ -392,7 +392,7 @@ export function MirrorHold({ u, path, etag, onChanged }: { u: Upstream; path: st
   const ch = useLoad(() => client.get<{ kind: string }>(`${api}/channels/${seg(u.channel)}`), [api, u.channel])
   if (ch.data?.data.kind !== 'signed') return null
   return (
-    <HoldForm card="Hold" path={`${path}/hold`} label="upstream hold" current={u.hold} ifMatch={etag} onChanged={onChanged}
+    <HoldForm card="Hold" path={`${path}/hold`} label="upstream hold" current={u.hold} ifMatch={etag} owner="The upstream" onChanged={onChanged}
       note={<>New versions it brings wait this long in the <Link to={`${base}/catalogue`}>catalogue</Link> before a channel's automatic
         placement takes them, so a bad upstream release can be blocked first; a channel administrator may place one earlier by hand.
         0 clears it.</>} />
