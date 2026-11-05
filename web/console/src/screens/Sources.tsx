@@ -28,6 +28,8 @@ export interface SourceRow {
   waiting?: string
   /** spec 0041: when a rule placing automatically places next, while it waits for a hold */
   waits_until?: string
+  /** spec 0041: the version waits_until is of */
+  waits_for?: string
 }
 
 export interface FollowRow {

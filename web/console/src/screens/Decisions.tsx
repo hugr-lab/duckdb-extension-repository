@@ -4,7 +4,7 @@ import { Badge, Button, Card, Confirm, Empty, ErrorBox, Loading, Mono, PageTitle
 import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { useHome } from '../lib/home'
-import { seg } from '../lib/http'
+import { ApiError, seg } from '../lib/http'
 import { type Decision, type HomeReads, type Item, decisionBody, groups, itemKey, promoteFrom } from '../lib/queue'
 import { type CatalogueBuild, PlaceDialog, RuleDialog, SourceLicence, compareVersions, entryPath, modeWords, placeBody, purgeable } from './Catalogue'
 import { promoteBody } from './Promote'
@@ -50,6 +50,7 @@ export function Decisions() {
   const [written, setWritten] = useState<Written[]>([])
   const [telling, setTelling] = useState(false)
   const [open, setOpen] = useState('')
+  const [stale, setStale] = useState('')
   const { busy, failure, act } = useAction('A decision', home?.reload)
   if (!home) return <Empty>The decision queue is the tenant administrators'.</Empty>
   const reads = home.reads
@@ -65,9 +66,20 @@ export function Decisions() {
     }).then(() => home.reload())
   }
   const undo = () => {
+    setStale('')
     act(async () => {
-      for (const w of [...written].reverse()) await client.del(`${api}/decisions/${seg(w.id)}`, { ifMatch: w.etag })
-      setWritten([])
+      const changed: string[] = []
+      for (const w of [...written].reverse()) {
+        try {
+          await client.del(`${api}/decisions/${seg(w.id)}`, { ifMatch: w.etag })
+        } catch (e) {
+          // changed (412) or removed (404) by another administrator since: not this page's to undo
+          if (!(e instanceof ApiError) || (e.status !== 412 && e.status !== 404)) throw e
+          changed.push(w.what)
+        }
+        setWritten((ws) => ws.filter((x) => x.id !== w.id))
+      }
+      if (changed.length > 0) setStale(`Another administrator changed ${changed.join(', ')} since: it was left as it is.`)
     }).then(() => home.reload())
   }
   return (
@@ -86,6 +98,7 @@ export function Decisions() {
         </span>
       </div>
       {failure != null && <ErrorBox error={failure} />}
+      {stale && <p role="status" className="m-0 text-[13px] text-warning">{stale}</p>}
       {home.error ? <ErrorBox error={home.error} /> : !reads ? <Loading /> : items.length === 0 ? <Empty>Nothing waits for a decision.</Empty> : (
         groups.map(([g, title]) => {
           const rows = items.filter((i) => i.group === g)
@@ -99,7 +112,7 @@ export function Decisions() {
                 ['', (i) => (
                   <span role="group" aria-label={`${i.name} ${itemChannel(i)} actions`.replace(/ +/g, ' ')} className="flex flex-wrap gap-1.5">
                     <ItemActions item={i} reads={reads} busy={busy} onDecide={() => decide(i)} onChanged={home.reload} />
-                    <Button tone="plain" onClick={() => setOpen(open === itemKey(i) ? '' : itemKey(i))}>{open === itemKey(i) ? 'Close' : 'Report & licence'}</Button>
+                    <Button tone="plain" expanded={open === itemKey(i)} onClick={() => setOpen(open === itemKey(i) ? '' : itemKey(i))}>Report & licence</Button>
                   </span>
                 )],
               ]} />
@@ -130,7 +143,9 @@ function ItemActions({ item: i, reads, busy, onDecide, onChanged }: { item: Item
   const setMode = (mode: string) => act(() => client.put(`${api}/channels/${seg(itemChannel(i))}/sources/${seg(i.name)}`, { body: { source: i.source, mode } }))
     .then((ok) => ok && onChanged())
   const placeTo = itemChannel(i) ? [itemChannel(i)].filter((c) => perms.mayPromote(c, i.name)) : signed.filter((c) => perms.mayPromote(c, i.name))
-  const held = i.group === 'holds' ? (i.version ?? entry?.held?.[0]) : undefined
+  // a hold's version as the server names it (the catalogue's held_until, a rule's waits_for); none known: no Place early nor Purge
+  const held = i.group === 'holds' ? i.version : undefined
+  const rule = reads.channels.find((c) => c.name === itemChannel(i))
   return (
     <>
       {i.group === 'manual' && <Take item={i} />}
@@ -138,15 +153,18 @@ function ItemActions({ item: i, reads, busy, onDecide, onChanged }: { item: Item
       {i.group === 'manual' && i.source !== 'tenant' && perms.channelAdmin(i.channel) && <Button disabled={changing} onClick={() => setMode('auto')}>Make auto</Button>}
       {i.group === 'failed' && i.mode !== 'manual' && perms.channelAdmin(i.channel) && <Button disabled={changing} onClick={() => setMode('manual')}>Make manual</Button>}
       {i.group === 'failed' && /block/i.test(i.outcome) && <Link className="text-[13px]" to={`${base}/blocks`}>Open the block</Link>}
-      {(i.group === 'holds' || i.group === 'nochannel') && placeTo.length > 0 && (
+      {(i.group === 'holds' && held || i.group === 'nochannel') && placeTo.length > 0 && (
         <Button disabled={busy} onClick={() => setPlacing(true)}>{i.group === 'holds' ? 'Place early…' : 'Place…'}</Button>
       )}
-      {(i.group === 'holds' || i.group === 'nochannel') && perms.tenantAdmin && <Button tone="danger-outline" disabled={busy} onClick={() => setPurging(true)}>Purge…</Button>}
+      {i.group === 'holds' && held && perms.tenantAdmin && <Button tone="danger-outline" disabled={busy} onClick={() => setPurging(true)}>Purge…</Button>}
+      {/* an entry's builds are purged one by one, on its page: never every version from here */}
+      {i.group === 'nochannel' && perms.tenantAdmin && <Link className="text-[13px]" to={`${base}/catalogue/${seg(i.name)}`}>Purge on its page</Link>}
       {(i.group === 'skipped' || i.group === 'nochannel') && <Button disabled={busy} onClick={() => setRuling({})}>Set rule…</Button>}
       {failure != null && <ErrorBox error={failure} />}
       <RuleDialog open={ruling !== null} channel={itemChannel(i)} channels={signed.filter((c) => !entry?.rules[c] && perms.channelAdmin(c))} name={i.name}
-        source={i.source} onClose={() => setRuling(null)} onSaved={onChanged} />
-      <PlaceDialog open={placing} name={i.name} source={i.source} suggest={held ?? entry?.versions[0]} channel={placeTo.length === 1 ? placeTo[0] : undefined}
+        source={i.source} entry={entry} rule={rule?.sources.find((s) => s.name === i.name && s.source)} hold={rule?.hold}
+        onClose={() => setRuling(null)} onSaved={onChanged} />
+      <PlaceDialog open={placing} name={i.name} source={i.source} suggest={i.group === 'holds' ? held : entry?.versions[0]} channel={placeTo.length === 1 ? placeTo[0] : undefined}
         channels={placeTo} held={i.group === 'holds' ? true : 'unknown'} onClose={() => setPlacing(false)}
         onPlace={(p) => {
           setPlacing(false)
@@ -168,8 +186,8 @@ function Take({ item: i }: { item: Extract<Item, { group: 'manual' }> }) {
   const [open, setOpen] = useState<'promote' | 'place' | ''>('')
   const { busy, failure, act } = useAction('The placement', home?.reload)
   if (!may || !versions.data) return null
-  const from = promoteFrom(versions.data.versions, i.waiting, i.channel)
-  const promote = from !== '' && perms.mayPublish(from, i.name)
+  const from = promoteFrom(versions.data.versions, i.waiting, i.channel, (c) => perms.mayPublish(c, i.name))
+  const promote = from !== ''
   const done = (ok: boolean) => ok && home?.reload()
   return (
     <>

@@ -32,8 +32,15 @@ test("the home: the catalogue against the channels, a follow's skip in its colum
   const atlas = page.getByRole('row').filter({ has: page.getByRole('link', { name: 'atlas', exact: true }) })
   await expect(atlas.getByText('manual', { exact: true })).toBeVisible()
   await expect(atlas.getByText('→ waits')).toBeVisible()
-  await expect(atlas.getByRole('button', { name: '+ Rule…' })).toHaveCount(1)
+  await expect(atlas.getByRole('button', { name: 'Add a rule for atlas in nightly' })).toHaveCount(1)
+  await expect(atlas.getByRole('button', { name: 'Set the rule for atlas in prod' })).toHaveCount(1)
   await expect(page.getByRole('link', { name: /decisions? waits?/ })).toBeVisible()
+  // tiles, enterest-ci's: nightly's follow takes it, its next placement when the publisher's day's
+  // hold ends
+  const tiles = page.getByRole('row').filter({ has: page.getByRole('link', { name: 'tiles', exact: true }) })
+  const nightly = tiles.getByRole('cell').nth(2)
+  await expect(nightly.getByText('follow', { exact: true })).toBeVisible()
+  await expect(nightly.getByText(/^next placement /)).toBeVisible()
 })
 
 test('a skip is kept in kista: undone, made again, remembered across a reload and seen by another administrator', async ({ browser }) => {
@@ -72,6 +79,26 @@ test('a skip is kept in kista: undone, made again, remembered across a reload an
   await expect(other.getByRole('heading', { name: 'Needs a decision' })).toBeVisible()
   await expect(other.getByRole('group', { name: /actions$/ }).first()).toBeVisible()
   await expect(other.getByRole('group', { name: 'atlas prod actions' })).toHaveCount(0)
+})
+
+test('a name in no channel dismissed, the dismissal undone and made again', async ({ page }) => {
+  await signIn(page, '/ui/t/acme/', 'tom')
+  await queue(page).click()
+  // the tenant's maps, taken by no channel
+  const maps = page.getByRole('group', { name: 'maps actions' })
+  await expect(maps).toBeVisible()
+  await maps.getByRole('button', { name: 'Dismiss' }).click()
+  await expect(maps).toHaveCount(0)
+  await page.getByRole('button', { name: /^Undo/ }).click()
+  await expect(maps).toBeVisible()
+  await maps.getByRole('button', { name: 'Dismiss' }).click()
+  await expect(maps).toHaveCount(0)
+  await page.reload()
+  await signIn(page, '/ui/t/acme/', 'tom')
+  await queue(page).click()
+  await expect(page.getByRole('heading', { name: 'Needs a decision' })).toBeVisible()
+  await expect(page.getByRole('group', { name: /actions$/ }).first()).toBeVisible()
+  await expect(maps).toHaveCount(0)
 })
 
 test("a follow's skip dismissed; a block says what its body is", async ({ page }) => {

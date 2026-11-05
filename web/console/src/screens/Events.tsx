@@ -19,13 +19,15 @@ export function kindParam(chosen: string[], kind: string) {
 /** Events (spec 0010) under an API path ("/tenants/acme/events" or "/events"), with the API's
  * filters, the kinds' families as chips (spec 0041); everything is rendered as text. A fixed subject
  * (a channel's administrators read their channel's events) is sent with every read. */
-export function Events({ client, path, title, subject }: { client: Client; path: string; title: string; subject?: string }) {
+export function Events({ client, path, title, subject, hidden = [] }: { client: Client; path: string; title: string; subject?: string; hidden?: string[] }) {
   const [filter, setFilter] = useState({ kind: '', actor: '', subject: '', outcome: '' })
   const [applied, setApplied] = useState(filter)
   const [chosen, setChosen] = useState<string[]>([])
   const [pages, setPages] = useState<string[]>([''])
   const cursor = pages[pages.length - 1]
-  const kinds = useLoad(() => client.get<{ kinds: { kind: string }[] }>('/event-kinds', { anonymous: true }), [])
+  const catalogue = useLoad(() => client.get<{ kinds: { kind: string }[] }>('/event-kinds', { anonymous: true }), [])
+  // the kinds this reader may read: a channel's administrators never the serving plane's
+  const offered = (catalogue.data?.data.kinds ?? []).map((k) => k.kind).filter((k) => !hidden.includes(k))
   const { data, error, loading, reload } = useLoad(() => {
     const q = new URLSearchParams({ limit: '50' })
     for (const [k, v] of Object.entries(applied)) if (v && k !== 'kind') q.set(k, v)
@@ -52,8 +54,8 @@ export function Events({ client, path, title, subject }: { client: Client; path:
       >
         <select aria-label="kind" className="rounded-full border border-line bg-surface px-3 py-1" value={filter.kind} onChange={(e) => setFilter({ ...filter, kind: e.target.value })}>
           <option value="">any kind</option>
-          {(kinds.data?.data.kinds ?? []).map((k) => (
-            <option key={k.kind} value={k.kind}>{k.kind}</option>
+          {offered.map((k) => (
+            <option key={k} value={k}>{k}</option>
           ))}
         </select>
         {input('actor', 'actor id')}
@@ -67,7 +69,7 @@ export function Events({ client, path, title, subject }: { client: Client; path:
         <Button type="submit" tone="brand">Filter</Button>
       </form>
       <div role="group" aria-label="event families" className="mb-4 flex flex-wrap gap-1.5">
-        {families((kinds.data?.data.kinds ?? []).map((k) => k.kind)).map((f) => {
+        {families(offered).map((f) => {
           const on = chosen.includes(f)
           return (
             <button key={f} type="button" aria-pressed={on} className={`chip font-mono ${on ? 'bg-brand-strong text-brand-on' : 'border border-line text-ink'}`}

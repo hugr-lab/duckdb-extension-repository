@@ -6,9 +6,10 @@ import { HomeProvider } from '../lib/home'
 import { Client } from '../lib/http'
 import { type ChannelReads, type Decision, type HomeReads, cellOf, decisionBody, promoteFrom, queue } from '../lib/queue'
 import type { CatalogueEntry } from './Catalogue'
-import { Catalogue, ruleChanges } from './Catalogue'
+import { Catalogue, ruleChanges, whatHappens } from './Catalogue'
 import { Decisions } from './Decisions'
-import { kindParam, families } from './Events'
+import { Events, kindParam, families } from './Events'
+import { servingKinds } from './Channel'
 import { whatItIs } from './Blocks'
 import { tenantSections } from './TenantArea'
 
@@ -59,6 +60,7 @@ function reads(decisions: Decision[] = []): HomeReads {
         sources: [{ name: 'acl', source: 'publisher:ci', mode: 'follow', current: '0.3.0', available: {} }],
       }),
       channel('prod', {
+        hold: '24h0m0s',
         sources: [
           { name: 'acl', source: 'publisher:ci', mode: 'manual', current: '0.3.0', waiting: '0.4.0', available: {} },
           { name: 'geo', source: 'publisher:ci', mode: 'auto', waits_until: hours(3), available: {} },
@@ -147,12 +149,35 @@ describe('the queue', () => {
     expect(decisionBody(items.find((i) => i.group === 'failed')!)).toBeNull()
   })
 
+  it("says what a rule does next: nothing by itself under manual, the newest version once the later of its holds passed", () => {
+    const e = { versions: ['1.2', '1.1'], held_until: { '1.2': '2026-11-06T09:00:00Z' } }
+    expect(whatHappens('manual', e, '1.1', '0s')).toBe('nothing is placed by itself: 1.2 waits for a placement by hand.')
+    expect(whatHappens('auto', e, '1.2', '0s')).toMatch(/^nothing newer than 1.2 yet/)
+    expect(whatHappens('auto', { versions: ['1.2'] }, undefined, '0s')).toBe("1.2 is placed at the placement pass's next look (within a minute).")
+    const both = whatHappens('auto', e, '1.1', '24h0m0s')
+    expect(both).toMatch(/its source's hold ends .* and the channel's hold, 24h after each build's arrival, has passed \(the later of the two\)/)
+    expect(whatHappens('auto', e, '1.1', '24h0m0s', '2026-11-06T10:00:00Z')).toMatch(/^1.2 is placed at the placement pass's first look after /)
+  })
+
   it('promotes from a channel holding the version as an active or deprecated release, places otherwise', () => {
     const vs = [{ version: '0.4.0', builds: [{ placed: [{ channel: 'staging', state: 'yanked' }, { channel: 'nightly', state: 'deprecated' }] }] },
       { version: '0.3.0', builds: [{ placed: [{ channel: 'dev', state: 'active' }] }] }]
     expect(promoteFrom(vs, '0.4.0', 'prod')).toBe('nightly')
     expect(promoteFrom(vs, '0.4.0', 'nightly')).toBe('')
     expect(promoteFrom(vs, '0.5.0', 'prod')).toBe('')
+    // the first holding channel the caller may publish from
+    const two = [{ version: '0.4.0', builds: [{ placed: [{ channel: 'beta', state: 'active' }, { channel: 'nightly', state: 'active' }] }] }]
+    expect(promoteFrom(two, '0.4.0', 'prod', (c) => c === 'nightly')).toBe('nightly')
+    expect(promoteFrom(two, '0.4.0', 'prod', () => false)).toBe('')
+  })
+
+  it("a rule's hold names its version (waits_for); without one, nothing is guessed", () => {
+    const r = reads()
+    r.channels[1].sources[1].waits_for = '2.0'
+    const hold = queue(r, now).find((i) => i.group === 'holds' && 'channel' in i && i.channel === 'prod')
+    expect(hold).toMatchObject({ name: 'geo', version: '2.0' })
+    const unnamed = queue(reads(), now).find((i) => i.group === 'holds' && 'channel' in i && i.channel === 'prod')
+    expect(unnamed && 'version' in unnamed ? unnamed.version : 'none').toBeUndefined()
   })
 })
 
@@ -183,7 +208,7 @@ type Call = { method: string; path: string; search: string; body?: unknown; head
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
 // the API of reads() and its decisions, kept as the server keeps them
-function api(r: HomeReads) {
+function api(r: HomeReads, deleted = 204) {
   const calls: Call[] = []
   let ds = [...r.decisions]
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
@@ -198,6 +223,7 @@ function api(r: HomeReads) {
       return json(d, 201)
     }
     if (c.method === 'DELETE' && c.path.startsWith('/decisions/')) {
+      if (deleted !== 204) return json({ status: deleted, title: 'Precondition Failed' }, deleted)
       ds = ds.filter((d) => `/decisions/${d.id}` !== c.path)
       return new Response(null, { status: 204 })
     }
@@ -232,7 +258,12 @@ describe('the pages', () => {
     expect(screen.getByText(/follows publisher:ci · hold none/)).toBeTruthy()
     expect(screen.getByRole('link', { name: /decisions wait/ })).toBeTruthy()
     const maps = screen.getByRole('link', { name: 'maps' }).closest('tr')!
-    expect(within(maps).getAllByRole('button', { name: '+ Rule…' }).length).toBe(1) // nightly; prod has a rule
+    expect(within(maps).getAllByRole('button', { name: /^Add a rule for maps in / }).map((b) => b.getAttribute('aria-label')))
+      .toEqual(['Add a rule for maps in nightly']) // prod has a rule: Set rule there
+    expect(within(maps).getByRole('button', { name: 'Set the rule for maps in prod' })).toBeTruthy()
+    expect(screen.getByText(/follows nothing · hold 24h/)).toBeTruthy() // prod's day-long hold
+    // the banner counts each group
+    expect(screen.getByText(/new versions under manual rules 1, holds ending within a day 2/)).toBeTruthy()
   })
 
   it('skips a waiting version as a decision, and undoes it with its ETag', async () => {
@@ -248,6 +279,44 @@ describe('the pages', () => {
     const del = calls.find((c) => c.method === 'DELETE')!
     expect(del.path).toBe('/decisions/d1')
     expect(del.headers['If-Match']).toBe('"v1"')
+  })
+
+  it('an Undo another administrator overtook (412) is dropped and said so', async () => {
+    const calls = api(reads(), 412)
+    home(<Decisions />)
+    fireEvent.click(within(await screen.findByRole('group', { name: 'acl prod actions' })).getByRole('button', { name: 'Skip' }))
+    await waitFor(() => expect(screen.queryByRole('group', { name: 'acl prod actions' })).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'Undo (1)' }))
+    expect(await screen.findByText(/Another administrator changed skip acl since/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Undo/ })).toBeNull()
+    expect(calls.filter((c) => c.method === 'DELETE').length).toBe(1)
+  })
+
+  it("offers no Place early nor Purge for a hold whose version is not known; the drawer's toggle says it is open", async () => {
+    api(reads())
+    home(<Decisions />)
+    const geo = await screen.findByRole('group', { name: 'geo prod actions' })
+    expect(within(geo).queryByRole('button', { name: /Place early|Purge/ })).toBeNull()
+    const toggle = within(geo).getByRole('button', { name: 'Report & licence' })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it("offers a channel's administrator no serving-plane kind, and reads its channel's subject", async () => {
+    const asked: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+      const u = new URL(input)
+      asked.push(u.pathname + u.search)
+      if (u.pathname.endsWith('/event-kinds')) return json({ kinds: [{ kind: 'install' }, { kind: 'extension.use' }, { kind: 'usage.receive' }, { kind: 'release.add' }] })
+      return json({ events: [] })
+    }))
+    const client = new Client({ base: 'https://k.example/api/v1', prefix: '/tenants/', getToken: async () => 'tok' })
+    render(<Events client={client} path="/tenants/acme/events" title="Events" subject="channel:prod" hidden={servingKinds} />)
+    await screen.findByRole('option', { name: 'release.add' })
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['any kind', 'release.add', 'any outcome', 'ok', 'refused', 'failed'])
+    expect(within(screen.getByRole('group', { name: 'event families' })).getAllByRole('button').map((b) => b.textContent)).toEqual(['release.*'])
+    expect(asked.some((q) => q.includes('subject=channel%3Aprod'))).toBe(true)
   })
 
   it("dismisses a follow's skip with its reason", async () => {

@@ -19,6 +19,9 @@ export const releaseStates: ['' | 'active' | 'deprecated' | 'yanked', string][] 
 
 type Tab = 'extensions' | 'releases' | 'sources' | 'keys' | 'events'
 
+/** The serving plane's kinds (audit.ServingKinds): a channel's administrators never read them (spec 0041). */
+export const servingKinds = ['install', 'extension.use', 'usage.receive']
+
 /** A channel: its extensions (the index, by name, page by page), all its releases, its keys. Its
  * administrators see all of them; an extension's administrators, their extensions. */
 export function Channel() {
@@ -41,7 +44,7 @@ export function Channel() {
       </PageTitle>
       {admin && detail.data && <ChannelVersions key={c} channel={c} versions={versions} onChanged={detail.reload} />}
       {tabs.length > 1 && <Chips label="channel sections" value={tab} options={tabs} onChange={(t) => setTab({ c, tab: t })} />}
-      {tab === 'events' ? <Events key={c} client={client} path={`${api}/events`} title="Events" subject={`channel:${c}`} /> : tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : tab === 'sources' ? <Sources channel={c} kind={detail.data?.data.kind} /> : !admin ? <Mine channel={c} /> :
+      {tab === 'events' ? <Events key={c} client={client} path={`${api}/events`} title="Events" subject={`channel:${c}`} hidden={servingKinds} /> : tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : tab === 'sources' ? <Sources channel={c} kind={detail.data?.data.kind} /> : !admin ? <Mine channel={c} /> :
         detail.error ? <ErrorBox error={detail.error} /> : !detail.data ? <Loading /> : <Extensions channel={c} versions={versions} />}
     </>
   )

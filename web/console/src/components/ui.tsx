@@ -16,6 +16,8 @@ export function Button(props: {
   title?: string
   /** The width of its container, the label centred. */
   wide?: boolean
+  /** A toggle's state (aria-expanded): what it opens is shown. */
+  expanded?: boolean
 }) {
   const tone = {
     brand: 'border border-brand-strong bg-brand-strong text-brand-on',
@@ -30,6 +32,7 @@ export function Button(props: {
       onClick={props.onClick}
       disabled={props.disabled}
       title={props.title}
+      aria-expanded={props.expanded}
       className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-[14px] font-semibold leading-5 transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${props.wide ? 'justify-center py-3' : ''} ${tone}`}
     >
       {props.children}

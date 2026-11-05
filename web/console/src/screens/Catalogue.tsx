@@ -5,9 +5,10 @@ import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { useHome } from '../lib/home'
 import { ApiError, seg, sourceSeg } from '../lib/http'
-import { type Cell, type HomeReads, cellOf } from '../lib/queue'
+import { type Cell, type HomeReads, cellOf, groups } from '../lib/queue'
 import { bytesOf } from '../lib/upload'
 import { AddBuildButton } from './AddBuild'
+import { PromoteButton } from './Promote'
 import { Reports } from './Reports'
 import { holdWords, type SourceRow } from './Sources'
 
@@ -344,6 +345,7 @@ export function Catalogue() {
   const sources = [...new Set(all.map((e) => e.source))].sort()
   const rows = all.filter((e) => e.name.startsWith(prefix) && (!source || e.source === source))
   const waiting = home.items.length
+  const counts = groups.map(([g, title]) => [title, home.items.filter((i) => i.group === g).length] as const).filter(([, n]) => n > 0)
   return (
     <>
       <PageTitle title="Catalogue">
@@ -351,8 +353,8 @@ export function Catalogue() {
         <span className="ml-auto pb-1"><AddBuildButton onAdded={home.reload} /></span>
       </PageTitle>
       {waiting > 0 && (
-        <Note><Link to={`${base}/decisions`}>{waiting === 1 ? '1 decision waits' : `${waiting} decisions wait`}</Link>: new versions under manual
-          rules, holds ending, names no channel takes.</Note>
+        <Note><Link to={`${base}/decisions`}>{waiting === 1 ? '1 decision waits' : `${waiting} decisions wait`}</Link>:{' '}
+          {counts.map(([title, n]) => `${title.toLowerCase()} ${n}`).join(', ')}.</Note>
       )}
       <div role="search" className="flex flex-wrap items-center gap-2">
         <SearchBox label="Find an extension in the catalogue" value={prefix} onChange={setPrefix} />
@@ -371,7 +373,8 @@ export function Catalogue() {
         <Note>A removed source's entries are listed without a page: they are not read by name, and their releases stay where they are.</Note>
       )}
       <RuleDialog open={ruling !== null} channel={ruling?.channel ?? ''} name={ruling?.e.name ?? ''} source={ruling?.e.source ?? ''}
-        onClose={() => setRuling(null)} onSaved={home.reload} />
+        entry={ruling?.e} rule={ruling ? reads?.channels.find((c) => c.name === ruling.channel)?.sources.find((s) => s.name === ruling.e.name && s.source) : undefined}
+        hold={reads?.channels.find((c) => c.name === ruling?.channel)?.hold} onClose={() => setRuling(null)} onSaved={home.reload} />
     </>
   )
 }
@@ -417,7 +420,7 @@ function Matrix({ rows, reads, onRule }: { rows: (CatalogueEntry & { key: string
               <td className="td"><Versions e={e} /></td>
               {reads.channels.map((c) => (
                 <td key={c.name} className="td">
-                  <CellView cell={cellOf(e, c, reads.decisions)}
+                  <CellView cell={cellOf(e, c, reads.decisions)} name={e.name} channel={c.name}
                     onRule={!removedSource(e.source) && perms.channelAdmin(c.name) ? () => onRule(e, c.name) : undefined} />
                 </td>
               ))}
@@ -431,8 +434,12 @@ function Matrix({ rows, reads, onRule }: { rows: (CatalogueEntry & { key: string
 
 /** A channel's cell for an entry: its rule's mode and current version, what waits and when its next
  * placement is, a failed placement; another source's rule; a follow's skip; or a rule to add. */
-function CellView({ cell, onRule }: { cell: Cell; onRule?: () => void }) {
-  const add = onRule && <button type="button" className="text-[13px] text-brand-strong hover:underline" onClick={onRule}>+ Rule…</button>
+function CellView({ cell, name, channel, onRule }: { cell: Cell; name: string; channel: string; onRule?: () => void }) {
+  const button = (label: string, aria: string) => onRule && (
+    <button type="button" className="text-[13px] text-brand-strong hover:underline" aria-label={aria} onClick={onRule}>{label}</button>
+  )
+  const add = button('+ Rule…', `Add a rule for ${name} in ${channel}`)
+  const set = button('Set rule…', `Set the rule for ${name} in ${channel}`)
   switch (cell.kind) {
     case 'rule':
       return (
@@ -441,10 +448,11 @@ function CellView({ cell, onRule }: { cell: Cell; onRule?: () => void }) {
           {cell.waiting && <span className="chip bg-warning-soft text-warning">→ waits&nbsp;<Mono>{cell.waiting}</Mono></span>}
           {cell.waitsUntil && <span className="text-[12px] text-ink-muted">next placement {when(cell.waitsUntil)}</span>}
           {cell.outcome && <span className="max-w-[14rem] truncate text-[12px] text-danger" title={cell.outcome}>failed: {cell.outcome}</span>}
+          {set}
         </span>
       )
     case 'other':
-      return <span className="text-[13px] text-ink-muted">serves it from <Mono>{cell.source}</Mono></span>
+      return <span className="flex flex-col items-start gap-0.5"><span className="text-[13px] text-ink-muted">serves it from <Mono>{cell.source}</Mono></span>{set}</span>
     case 'skipped':
       return <span className="flex flex-col items-start gap-0.5"><span className="text-[13px] text-warning">skipped: {cell.reason}</span>{add}</span>
   }
@@ -461,6 +469,10 @@ export function RuleDialog(props: {
   name: string
   source: string
   mode?: string
+  /** the entry, the channel's rule for the name and the channel's hold: what happens next */
+  entry?: Pick<CatalogueEntry, 'versions' | 'held_until'>
+  rule?: Pick<SourceRow, 'source' | 'mode' | 'current' | 'waits_until'>
+  hold?: string
   onClose: () => void
   onSaved: () => void
 }) {
@@ -472,7 +484,8 @@ export function RuleDialog(props: {
   if (props.open !== opened) {
     setOpened(props.open)
     if (props.open) {
-      setMode(props.mode ?? (props.source === 'tenant' ? 'manual' : 'auto'))
+      const kept = props.rule?.source === props.source && (props.rule.mode === 'auto' || props.rule.mode === 'manual') ? props.rule.mode : undefined
+      setMode(props.mode ?? kept ?? (props.source === 'tenant' ? 'manual' : 'auto'))
       setChannel(props.channel || (props.channels?.[0] ?? ''))
       setFailure(null)
     }
@@ -504,9 +517,32 @@ export function RuleDialog(props: {
           <option value="manual">manual</option>
         </select>
       </Field>
+      <p className="text-[13px]" aria-label="what happens"><b>What happens:</b> {whatHappens(mode, props.entry,
+        props.rule?.source === props.source ? props.rule.current : undefined, props.hold, mode === props.rule?.mode ? props.rule?.waits_until : undefined)}</p>
       {failure != null && <ErrorBox error={failure} />}
     </Confirm>
   )
+}
+
+/** What a rule does next (spec 0041, the queue's rule dialog): under manual, nothing is placed by
+ * itself; under auto, the newest version the channel does not have yet is placed at the placement
+ * pass's look once the later of its holds has passed: its source's (held_until) and the channel's
+ * (from each build's arrival), or when the rule says it places next (waits_until). */
+export function whatHappens(mode: string, e: Pick<CatalogueEntry, 'versions' | 'held_until'> | undefined, current: string | undefined, hold: string | undefined,
+  waitsUntil?: string): string {
+  const newest = e?.versions[0]
+  const next = newest && (!current || compareVersions(newest, current) > 0) ? newest : ''
+  if (mode !== 'auto') {
+    return next ? `nothing is placed by itself: ${next} waits for a placement by hand.` : 'nothing is placed by itself; a newer version waits for a placement by hand.'
+  }
+  if (!next) return `nothing newer than ${current} yet: each new version is placed once its holds have passed.`
+  if (waitsUntil) return `${next} is placed at the placement pass's first look after ${when(waitsUntil)}.`
+  const holds = []
+  const until = e?.held_until?.[next]
+  if (until) holds.push(`its source's hold ends ${when(until)}`)
+  if (holdWords(hold) !== 'none') holds.push(`the channel's hold, ${holdWords(hold)} after each build's arrival, has passed`)
+  if (holds.length === 0) return `${next} is placed at the placement pass's next look (within a minute).`
+  return `${next} is placed at the placement pass's look once ${holds.join(' and ')}${holds.length > 1 ? ' (the later of the two)' : ''}.`
 }
 
 interface ChannelRow {
@@ -580,7 +616,12 @@ export function ruleChanges(rules: Record<string, Pick<SourceRow, 'source' | 'mo
 function RulesCard({ name, entries, reads, onSaved }: { name: string; entries: CatalogueEntry[]; reads: HomeReads; onSaved: () => void }) {
   const { client, api, perms } = useTenant()
   const [drafts, setDrafts] = useState<Record<string, Draft>>({})
+  const [clearing, setClearing] = useState('')
   const { busy, failure, act } = useAction('A rule', onSaved)
+  // the name's downloads per channel, over the statistics' default 30 days
+  const downloads = useLoad(() => client.get<{ rows: { channel?: string; count: number }[] }>(
+    `${api}/stats/downloads?${new URLSearchParams({ extension: name, group: 'channel' })}`), [api, name])
+  const count = (c: string) => (downloads.data?.data.rows ?? []).filter((r) => r.channel === c).reduce((n, r) => n + r.count, 0)
   const rules: Record<string, SourceRow | undefined> = {}
   for (const c of reads.channels) rules[c.name] = c.sources.find((s) => s.name === name && s.source)
   const draft = (c: string): Draft => drafts[c] ?? { source: rules[c]?.source ?? '', mode: rules[c]?.mode ?? '' }
@@ -631,7 +672,15 @@ function RulesCard({ name, entries, reads, onSaved }: { name: string; entries: C
               </select>
             )
           }],
+          ['Downloads', (c) => (downloads.data ? <span className="text-[13px]">{count(c)}</span> : '')],
+          ['', (c) => (
+            <span role="group" aria-label={`${c} rule actions`} className="flex flex-wrap gap-1.5">
+              <PromoteButton channel={c} ext={name} />
+              {rules[c] && perms.channelAdmin(c) && <Button disabled={busy} onClick={() => setClearing(c)}>Clear…</Button>}
+            </span>
+          )],
         ]} />
+        {downloads.data && <span className="text-[12px] text-ink-muted">Downloads: the last 30 days.</span>}
         {changes.length > 0 && (
           <div role="status" aria-label="unsaved changes" className="text-[13px]">
             Not saved yet:
@@ -640,6 +689,16 @@ function RulesCard({ name, entries, reads, onSaved }: { name: string; entries: C
         )}
         {failure != null && <ErrorBox error={failure} />}
       </div>
+      <Confirm open={clearing !== ''} title={`Clear the rule for ${name} in ${clearing}?`} confirm="Clear" danger
+        onConfirm={() => {
+          const c = clearing
+          setClearing('')
+          act(() => client.del(`${api}/channels/${seg(c)}/sources/${seg(name)}`)).then(() => onSaved())
+        }}
+        onClose={() => setClearing('')}>
+        <p>Nothing serves <Mono>{name}</Mono> in <Mono>{clearing}</Mono> until its next release lands, which sets the source again, or a follow
+          takes it.</p>
+      </Confirm>
     </Card>
   )
 }
@@ -755,15 +814,22 @@ function SourceSection({ entry: e, many, targets, onChanged }: { entry: Catalogu
 export function SourceLicence({ source, name }: { source: string; name: string }) {
   const { client, api } = useTenant()
   const list = useLoad(() => client.get<{ licenses: { name: string; entry: string; plan: string; holder?: string; holder_id: string; expires_at: string; status: string; visibility: string }[] }>(`${api}/licenses`), [api])
+  // the licence keys the entry's live builds declare (spec 0035): what an import into it accepts
+  const keys = useLoad(() => (removedSource(source) || source === 'tenant' ? Promise.resolve(null)
+    : client.get<{ names: { name: string; keys: { kid: string; sources: { builds: number }[] }[] }[] }>(
+      `${api}/license-keys/${seg(name)}?${new URLSearchParams({ source })}`)), [api, name, source])
   if (list.error) return <ErrorBox error={list.error} />
   if (!list.data) return null
   const ls = list.data.data.licenses.filter((l) => l.name === name && l.entry === source)
-  if (ls.length === 0) return <span className="text-[13px] text-ink-muted">No licence in this entry.</span>
+  const kids = (keys.data?.data.names ?? []).flatMap((n) => n.keys.map((k) => ({ kid: k.kid, builds: k.sources.reduce((x, s) => x + s.builds, 0) })))
   return (
     <ul className="m-0 list-none p-0 text-[13px]">
+      {ls.length === 0 && <li className="text-ink-muted">No licence in this entry.</li>}
       {ls.map((l) => (
         <li key={l.entry + l.plan}>Licence: plan <b>{l.plan}</b> for {l.holder || <Mono>{l.holder_id}</Mono>}, expires {when(l.expires_at)} <Badge>{l.status}</Badge> <Badge>{l.visibility}</Badge></li>
       ))}
+      {keys.data && (kids.length === 0 ? <li className="text-ink-muted">Its builds declare no licence key.</li>
+        : <li>Licence keys its builds declare: {kids.map((k) => <span key={k.kid} className="mr-2"><Mono>{k.kid}</Mono> ({k.builds} {k.builds === 1 ? 'build' : 'builds'})</span>)}</li>)}
     </ul>
   )
 }

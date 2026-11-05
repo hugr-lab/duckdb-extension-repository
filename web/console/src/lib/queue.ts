@@ -131,7 +131,7 @@ export function queue(reads: HomeReads, now = Date.now()): Item[] {
       if (r.waiting && actsManual(c, r) && !skipped(ds, c.name, r.source, r.name, r.waiting)) {
         out.push({ group: 'manual', channel: c.name, source: r.source, name: r.name, waiting: r.waiting, current: r.current, mode: r.mode })
       }
-      if (soon(r.waits_until)) out.push({ group: 'holds', channel: c.name, source: r.source, name: r.name, until: r.waits_until! })
+      if (soon(r.waits_until)) out.push({ group: 'holds', channel: c.name, source: r.source, name: r.name, version: r.waits_for, until: r.waits_until! })
       if (r.outcome) out.push({ group: 'failed', channel: c.name, source: r.source, name: r.name, outcome: r.outcome, mode: r.mode })
     }
     for (const f of c.follows) {
@@ -164,9 +164,11 @@ interface Placed {
 }
 
 /** The channel a version can be promoted from into target (spec 0041; spec 0043 names the previous
- * stage once channels have an order): one holding it as an active or deprecated release, by name;
- * '' for none, and the version is placed from the catalogue instead. */
-export function promoteFrom(builds: { version: string; builds: { placed?: Placed[] }[] }[], version: string, target: string) {
+ * stage once channels have an order): one holding it as an active or deprecated release that the
+ * caller may publish from (a promotion takes publish there), the first by name; '' for none, and the
+ * version is placed from the catalogue instead. */
+export function promoteFrom(builds: { version: string; builds: { placed?: Placed[] }[] }[], version: string, target: string,
+  mayPublish: (channel: string) => boolean = () => true) {
   const holding = new Set<string>()
   for (const v of builds) {
     if (v.version !== version) continue
@@ -174,7 +176,7 @@ export function promoteFrom(builds: { version: string; builds: { placed?: Placed
       for (const p of b.placed ?? []) if (p.channel !== target && (p.state === 'active' || p.state === 'deprecated')) holding.add(p.channel)
     }
   }
-  return [...holding].sort()[0] ?? ''
+  return [...holding].sort().find(mayPublish) ?? ''
 }
 
 /** A decision's body (PUT …/decisions) for a queue item: Skip of a waiting version, or Dismiss of

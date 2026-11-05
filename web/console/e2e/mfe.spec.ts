@@ -39,9 +39,10 @@ test('two consoles in one shell: a token per audience, navigation, title and the
   await expect(server.getByRole('link', { name: 'acme' })).toBeVisible()
   expect(asked).toContain(`${kista}/acme`)
   expect(asked).toContain('api://kista-server')
-  // the acme console took the host's basePath over; the server console left the address alone
-  await expect(page).toHaveURL(/\/platform\/acme\/channels$/)
-  await expect(page.locator('#title-acme')).toHaveText('Channels')
+  // the acme console took the host's basePath over, at a tenant administrator's home, the catalogue
+  // (spec 0041); the server console left the address alone
+  await expect(page).toHaveURL(/\/platform\/acme\/catalogue$/)
+  await expect(page.locator('#title-acme')).toHaveText('Catalogue')
   await expect(page.locator('#title-server')).toHaveText('Tenants')
 
   // its moves are the host's history: back returns, the other console untouched
@@ -49,7 +50,7 @@ test('two consoles in one shell: a token per audience, navigation, title and the
   await expect(page).toHaveURL(/\/platform\/acme\/channels\/prod$/)
   await expect(acme.getByRole('link', { name: 'hello_acme' })).toBeVisible()
   await page.goBack()
-  await expect(page).toHaveURL(/\/platform\/acme\/channels$/)
+  await expect(page).toHaveURL(/\/platform\/acme\/catalogue$/)
   await expect(acme.getByRole('link', { name: 'prod' })).toBeVisible()
   await expect(server.getByRole('link', { name: 'acme' })).toBeVisible()
 
@@ -57,7 +58,7 @@ test('two consoles in one shell: a token per audience, navigation, title and the
   await page.click('#theme')
   await expect(acme).toHaveAttribute('data-kista-theme', 'dark')
   await page.click('#brand')
-  const tab = acme.getByRole('link', { name: 'Channels' })
+  const tab = acme.getByRole('link', { name: 'Catalogue' }) // the tab shown: the home
   await expect.poll(() => tab.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(200, 30, 90)')
 })
 

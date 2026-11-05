@@ -64,13 +64,22 @@ describe('mountKista', () => {
     await waitFor(() => expect(text(el)).toContain('Channels'))
     expect(getToken).toHaveBeenCalledWith('https://k.example/acme', undefined)
     expect(calls.find((c) => c.url === '/api/v1/tenants/acme/whoami')?.auth).toBe('Bearer tok')
-    // the host's basePath alone: the console's default route, replacing the host's entry
-    expect(onNavigate).toHaveBeenCalledWith('/platform/acme/channels', { replace: true })
-    expect(onTitle).toHaveBeenCalledWith('Channels')
+    // the host's basePath alone: the caller's home (a tenant administrator's: the catalogue, spec
+    // 0041), replacing the host's entry
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('/platform/acme/catalogue', { replace: true }))
+    expect(onTitle).toHaveBeenCalledWith('Catalogue')
+    expect(onNavigate).not.toHaveBeenCalledWith('/platform/acme/', expect.anything()) // the index is never the host's
     expect(el.dataset.kistaTheme).toBe('dark')
     h.update({ theme: 'light' })
     expect(el.dataset.kistaTheme).toBe('light')
     expect(() => mountKista(el, { apiBase: 'x', getToken })).toThrow(/already/)
+  })
+
+  it("a channel's administrator's home is its channels", async () => {
+    api({ '/api/v1/tenants/acme/whoami': () => json(200, { grants: [{ principal: 'role:kc|a', verbs: ['admin'], channel: 'prod' }], holds_admin: true, holds_audit: false }) })
+    const onNavigate = vi.fn()
+    h = mountKista(el, { apiBase: 'https://k.example', getToken: async () => 'tok', tenant: 'acme', basePath: '/platform/acme', onNavigate })
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('/platform/acme/channels', { replace: true }))
   })
 
   it('an audience the host overrides is the one asked for', async () => {
@@ -109,10 +118,10 @@ describe('mountKista', () => {
     api()
     const onNavigate = vi.fn()
     h = mountKista(el, { apiBase: 'https://k.example', getToken: async () => 'tok', tenant: 'acme', basePath: '/platform/acme', onNavigate })
-    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('/platform/acme/channels', { replace: true }))
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('/platform/acme/catalogue', { replace: true }))
     onNavigate.mockClear()
     h.update({ tenant: 'beta' })
-    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('/platform/acme/channels', { replace: true }))
+    await waitFor(() => expect(onNavigate).toHaveBeenCalledWith('/platform/acme/catalogue', { replace: true }))
   })
 
   it('a 401 even renewed tells the host, once', async () => {
@@ -127,7 +136,7 @@ describe('mountKista', () => {
     api()
     history.replaceState(null, '', '/platform/acme')
     h = mountKista(el, { apiBase: 'https://k.example', getToken: async () => 'tok', tenant: 'acme', basePath: '/platform/acme' })
-    await waitFor(() => expect(location.pathname).toBe('/platform/acme/channels'))
+    await waitFor(() => expect(location.pathname).toBe('/platform/acme/catalogue'))
     history.pushState(null, '', '/other-console/x')
     dispatchEvent(new PopStateEvent('popstate'))
     await new Promise((r) => setTimeout(r, 20))
@@ -152,7 +161,7 @@ describe('<kista-console>', () => {
     expect(el.dataset.contract).toBe(String(contract))
     expect(el.shadowRoot).toBeNull() // no token function yet: nothing mounted
     el.getToken = async () => 'tok'
-    await waitFor(() => expect(nav).toHaveBeenCalledWith({ path: '/p/channels', replace: true }))
+    await waitFor(() => expect(nav).toHaveBeenCalledWith({ path: '/p/catalogue', replace: true }))
     el.setAttribute('theme', 'dark')
     expect(el.dataset.kistaTheme).toBe('dark')
     el.remove()
