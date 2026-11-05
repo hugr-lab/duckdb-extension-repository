@@ -478,7 +478,14 @@ console.
   purge (`DELETE …/catalogue/builds/{id}`) of a (source, name)'s last build deletes its decisions as
   the collector's does, so neither path leaves decisions behind. `SetDecision` reads the entry (and
   a skip's version) in its own transaction, and a replacement updates at the row version it read (a
-  decision deleted meanwhile is `412`, never an answer and an event without a row). The index is
+  decision deleted meanwhile is `412`, never an answer and an event without a row). Its reads lock
+  (shared, until commit) the entry's builds and the source's upstream or publisher row
+  (`EntryVersions`, `LiveSource`; PostgreSQL `FOR SHARE`, SQL Server `HOLDLOCK, ROWLOCK`), and a
+  removed source's decisions are deleted after its row, so the collector's, a purge's and a
+  removal's deletes wait for a decision being written and delete it with them. The write takes the
+  tenant's row (shared) first, which a source's removal takes for update first, and then the source
+  row and the builds, which no deleter takes in the other order: no lock cycle. A store test starts
+  the delete between the check and the insert on each dialect. The index is
   `(source, tenant_id, package_type, name)`, which a source's delete (`WHERE source = ?`) uses.
 - **A publisher's signed request** on the decision routes is `401`, as on every management route
   that does not admit publishers (it is not a token there), rather than the `404` the Testing list

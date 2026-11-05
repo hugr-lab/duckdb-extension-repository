@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -101,10 +103,32 @@ decided_by, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, d.ID, d.Te
 
 // EntryVersions are the versions of a (source, name) of a tenant's type in the catalogue, read in
 // a decision's transaction (spec 0041: a decision is written only while its entry is there); none:
-// the entry is gone.
+// the entry is gone. The builds read are locked (shared) until commit: the collector's or a purge's
+// delete of the last one waits for the decision, and then deletes it with them, so no decision
+// outlives its entry under READ COMMITTED (SQLite's writers are serialized already).
 func (t *Tx) EntryVersions(ctx context.Context, tenantID, packageType, source, name string) ([]string, error) {
-	return t.strings(ctx, `SELECT DISTINCT package_version FROM builds WHERE tenant_id = ? AND package_type = ? AND source = ? AND name = ?`,
+	vs, err := t.strings(ctx, t.lockedRowQuery("SELECT package_version FROM builds", "tenant_id = ? AND package_type = ? AND source = ? AND name = ?", false),
 		tenantID, packageType, source, name)
+	slices.Sort(vs)
+	return slices.Compact(vs), err
+}
+
+// LiveSource reads a tenant's source in a decision's transaction (spec 0041): whether its upstream or
+// publisher is there (the tenant's own always is), its row locked (shared) until commit, so a
+// removal of the source, which deletes its decisions after its row, waits for the decision and
+// deletes it too.
+func (t *Tx) LiveSource(ctx context.Context, tenantID, source string) (bool, error) {
+	table := ""
+	id, ok := strings.CutPrefix(source, SourceUpstreamPrefix)
+	if ok {
+		table = "upstreams"
+	} else if id, ok = strings.CutPrefix(source, SourcePublisherPrefix); ok {
+		table = "publishers"
+	} else {
+		return source == SourceTenant, nil
+	}
+	ids, err := t.strings(ctx, t.lockedRowQuery("SELECT id FROM "+table, "id = ? AND tenant_id = ?", false), id, tenantID)
+	return len(ids) == 1, err
 }
 
 // GetDecision reads a tenant's decision by id (ErrNotFound for one of another tenant).

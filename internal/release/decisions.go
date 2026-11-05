@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
@@ -104,10 +103,11 @@ func (s *Service) SetDecision(ctx context.Context, a authz.Actor, tenant string,
 				return err
 			}
 		}
-		// the source read outside: still there (a source removed since takes its decisions with it)
-		if label, err := tx.SourceLabel(ctx, src); err != nil {
+		// the source read outside: still there, and kept until commit (a source removed since takes its
+		// decisions with it)
+		if live, err := tx.LiveSource(ctx, t.ID, src); err != nil {
 			return err
-		} else if strings.HasSuffix(label, "(removed)") {
+		} else if !live {
 			return fmt.Errorf("%w: %q was removed", store.ErrInvalid, in.Source)
 		}
 		// the entry, read in the transaction: a decision is written only while it is there (its last

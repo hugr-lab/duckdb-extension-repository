@@ -295,3 +295,75 @@ func TestBlockedBuilds(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0041: a decision written while its entry's last build is collected, or while its source is
+// removed, is deleted with them: the write's reads lock the builds and the source's row, so the
+// delete waits for the decision (READ COMMITTED on PostgreSQL and SQL Server; SQLite serializes its
+// writers). The delete is started between the write's check and its insert.
+func TestDecisionWriteRaces(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, ch := fixture(t, s)
+		p := store.Publisher{TenantID: tn.ID, Name: "ci"}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &p) })
+		pub := store.PublisherSource(p.ID)
+		b := cppBuild(tn, "geo", "1.0", "a")
+		b.Source = pub
+		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
+		write := func(name string, check func(tx *store.Tx) error, remove func() error) {
+			t.Helper()
+			done := make(chan error, 1)
+			started := false
+			if err := s.InTx(ctx, store.DecisionLock(tn.ID), func(tx *store.Tx) error {
+				if err := check(tx); err != nil {
+					return err
+				}
+				if !started { // once, whatever the retries
+					started = true
+					go func() { done <- remove() }()
+					time.Sleep(300 * time.Millisecond) // the delete runs, or waits for this transaction
+				}
+				d := store.Decision{TenantID: tn.ID, PackageType: "duckdb_extension", ChannelID: ch.ID, Kind: store.DecisionSkip, Source: pub,
+					Name: name, PackageVersion: "1.0", DecidedBy: "os:1:t"}
+				_, _, err := tx.SetDecision(ctx, &d)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		}
+		// the collector deletes the entry's last build
+		write("geo", func(tx *store.Tx) error {
+			vs, err := tx.EntryVersions(ctx, tn.ID, "duckdb_extension", pub, "geo")
+			if err == nil && len(vs) != 1 {
+				t.Fatalf("the entry's versions: %v", vs)
+			}
+			return err
+		}, func() error { _, err := s.DeleteBuild(ctx, b.ID, time.Now().Add(time.Hour)); return err })
+		builds, err := store.CountRaw(ctx, s, "builds", "id = ?", b.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, err := store.CountRaw(ctx, s, "decisions", "name = 'geo'"); err != nil || builds == 0 && n != 0 {
+			t.Fatalf("a decision outlived its entry's last build: %d %v", n, err)
+		}
+		// the source is removed
+		b2 := cppBuild(tn, "tiles", "1.0", "b")
+		b2.Source = pub
+		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b2) })
+		write("tiles", func(tx *store.Tx) error {
+			live, err := tx.LiveSource(ctx, tn.ID, pub)
+			if err == nil && !live {
+				t.Fatal("the publisher is not live")
+			}
+			return err
+		}, func() error {
+			return s.InTx(ctx, "", func(tx *store.Tx) error { return tx.DeletePublisher(ctx, tn.ID, "ci", "os:1:t") })
+		})
+		if n, err := store.CountRaw(ctx, s, "decisions", "source = ?", pub); err != nil || n != 0 {
+			t.Fatalf("a decision outlived its source: %d %v", n, err)
+		}
+	})
+}
