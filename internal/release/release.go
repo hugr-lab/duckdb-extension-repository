@@ -1163,11 +1163,11 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 			tx.SetWarningAct("release.public") // spec 0035 phase 2
 			err = tx.SetReleaseVisibility(ctx, &r, string(c), actor)
 		case Restore:
+			if ch.Kind == store.ChannelPassthrough { // spec 0042: a passthrough channel takes no retention (400)
+				return errNoRetention
+			}
 			if r.State != store.ReleaseRetired {
 				return refuse()
-			}
-			if ch.Kind == store.ChannelPassthrough { // spec 0042: a passthrough channel takes no retention
-				return fmt.Errorf("%w: a passthrough channel's releases are never retired", ErrState)
 			}
 			err = tx.RestoreRelease(ctx, &r, actor)
 		default:

@@ -79,7 +79,7 @@ A cell's binary is released only if every step passes:
    `blob.max_body` + 1 MiB, at no less than `upstreams.min_rate` after 30 seconds, within
    `upstreams.fetch_timeout`. The answer is spooled to a temporary file first, so a slow upstream
    never holds a storage ingest slot. `If-None-Match` is sent with the cell's last ETag when its last
-   outcome was `released`, `unchanged`, `yanked`, `conflict` or `landed`.
+   outcome was `released`, `unchanged`, `yanked`, `retired`, `conflict` or `landed`.
 2. **Decompress** a gzip answer, under `blob.max_body` + 256 bytes.
 3. **Signature**: the last 256 bytes must verify over the body with the upstream's keys. The key that
    verified is recorded.
@@ -89,8 +89,9 @@ A cell's binary is released only if every step passes:
 5. **File**: the format matches the platform and the binary exports the name's entry point, as for a
    publication. A signed binary of one extension is never served under another name.
 6. Under the channel lock: a **blocked** body, a name the tenant **shadows** with its own build, and
-   the upstream's slot. A slot that holds the same body (in any state) is `unchanged` or `yanked`: an
-   administrator's yank, visibility or current choice survives every run. A slot holding another
+   the upstream's slot. A slot that holds the same body (in any state) is `unchanged`, `yanked` or
+   `retired`: an administrator's yank, visibility or current choice, and the channel's
+   [retention](administration/tenants-and-channels.md#retention), survive every run. A slot holding another
    body is a `conflict`: versions are immutable within a source, so the version stays as it is.
 7. The body is committed and released with origin `upstream`. The upstream's original signature is
    kept with it (a passthrough channel serves that one; a signed channel serves its own), and the
@@ -296,6 +297,7 @@ skipped). A run without room counts `skipped_at_limit` ([A run at a limit](#a-ru
 | `released` | a new release was made |
 | `unchanged` | the slot already holds this body |
 | `yanked` | the slot holds this body, yanked; it stays yanked |
+| `retired` | the slot holds this body, retired by the channel's retention (spec 0042); it stays retired until an administrator restores it |
 | `conflict` | the upstream's slot holds another body; the version is immutable within its source |
 | `landed` | the build is in the catalogue, placed nowhere: the channel's rule for the name is `manual` and holds no release of its version |
 | `held` | the build is in the catalogue, held (the upstream's [hold](#holds), or the channel's); the placement pass places it in the channel when the hold ends. The cell keeps this outcome until its next fetch |
@@ -590,7 +592,9 @@ administrator's block or yank, and nothing is re-activated by a run: kista mirro
 **Lifting.** A tenant administrator lifts a revocation from the upstream's page, or with
 `upstream revocation lift <tenant> <name> <build>` (`DELETE …/upstreams/{name}/revocations/{build}`,
 `If-Match`; an `upstream.revocation.lift` event): the upstream's block of the body goes, and each
-release it yanked and still holds yanked returns to its prior state, but not a withdrawn build's,
+release it yanked and still holds yanked returns to its prior state (a release it yanked while
+[retired](administration/tenants-and-channels.md#retention) is retired again, its grace starting at
+the lift), but not a withdrawn build's,
 nor one whose body an administrator blocks (an administrator's block of the body
 takes over the upstream's records: what the upstream yanked stays yanked). A lifted revocation is
 not applied again unless the remote revokes the build more strongly (a yank lifted, then a

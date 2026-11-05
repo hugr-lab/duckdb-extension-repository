@@ -675,7 +675,7 @@ func (r *Retainer) Once(ctx context.Context, all bool) {
 		if !all && !c.CheckedAt.IsZero() && now.Before(c.CheckedAt.Add(r.Interval)) {
 			continue
 		}
-		res, held, err := r.Channel(ctx, c.ChannelID)
+		res, held, err := r.channel(ctx, c.ChannelID, !all)
 		switch {
 		case err != nil:
 			r.Log.Error("release: the retention pass", "tenant", c.Tenant, "channel", c.Channel, "error", err)
@@ -691,12 +691,27 @@ func (r *Retainer) Once(ctx context.Context, all bool) {
 
 // Channel runs the pass in one channel under its lease; held is false when another replica holds it.
 func (r *Retainer) Channel(ctx context.Context, channelID string) (RetentionResult, bool, error) {
+	return r.channel(ctx, channelID, false)
+}
+
+// channel is Channel; due skips a channel another replica looked at since the list was read (its
+// look is not an Interval old any more once the lease is held).
+func (r *Retainer) channel(ctx context.Context, channelID string, due bool) (RetentionResult, bool, error) {
 	lease := retentionLease(channelID)
 	held, err := r.Service.Store.AcquireLease(ctx, lease, r.Holder, 2*time.Minute)
 	if err != nil || !held {
 		return RetentionResult{}, false, err
 	}
 	defer func() { _ = r.Service.Store.ReleaseLease(context.WithoutCancel(ctx), lease, r.Holder) }()
+	if due {
+		_, checked, err := r.Service.Store.ChannelRetention(ctx, channelID)
+		if err != nil {
+			return RetentionResult{}, true, err
+		}
+		if !checked.IsZero() && r.Service.Store.Now().Before(checked.Add(r.Interval)) {
+			return RetentionResult{}, false, nil // looked at by another replica meanwhile
+		}
+	}
 	renew := func(ctx context.Context) error {
 		if ok, err := r.Service.Store.RenewLease(ctx, lease, r.Holder, 2*time.Minute); err != nil || !ok {
 			return errRetentionLease

@@ -63,7 +63,8 @@ the name in the channel, and the channel serves the one whose source it selected
   catalogue (the tenant's own source, per channel). The same body in the same slot with the same choices is the existing release (`200`);
   another body, or other choices, is `409`. A fix is a new version. A body another source released
   in the channel is a release of the publisher's own (`201`).
-- A yanked release keeps its slot.
+- A yanked release keeps its slot, and so does a retired one ([Retention](administration/tenants-and-channels.md#retention)):
+  any body for a retired release's slot is `409` (problem type `…/retired`); restore it instead.
 - The extension version is matched exactly and case-sensitively: `1.0` and `v1.0` differ, and DuckDB
   asks for the string as typed in `INSTALL x FROM r VERSION '…'`.
 - Platforms follow DuckDB's names: `linux_amd64`, `linux_arm64`, `osx_arm64`, `windows_amd64`, ...
@@ -554,9 +555,17 @@ An administrator of the extension (or of its channel or tenant) changes a releas
 | `activate` | a deprecated release is active again |
 | `current` | makes an active release current (a rollback, or a release published with `current=false`) |
 | `public`, `private` | changes visibility |
+| `restore` | a retired release back to the state it had (active or deprecated), keeping its sequence number: current again only if nothing newer is |
 
-`DELETE …/releases/{id}` (and `kista admin release purge`) deletes a yanked release for good; its
-slot stays taken (see [Storage](storage.md)).
+A release is in one of four states: `active`, `deprecated`, `yanked` (final: do not run it) and
+`retired`: the channel's [retention](administration/tenants-and-channels.md#retention) took it out
+of the channel (housekeeping, not a security event). A retired release is served nowhere: DuckDB gets
+the channel's missing answer, the same as for a version that never existed, and the index shows it
+`retired`. It stays signed, so a `restore` serves it again at once; a `yank` and a purge take it
+too. A withdrawn entry's release is never restored.
+
+`DELETE …/releases/{id}` (and `kista admin release purge`) deletes a yanked or retired release for
+good; its slot stays taken (see [Storage](storage.md)).
 
 Every change bumps the channel's release version, so every replica serves the change at the next
 request.

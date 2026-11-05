@@ -571,7 +571,21 @@ Storage garbage collection. File-only. See [Storage](storage.md).
 | `gc.grace` | duration | `24h` | How long what became unreferenced is kept; `4h..720h`. |
 
 While `gc.interval` is `0`, `kista admin blob gc -apply` and `kista admin release purge` need
-`-force`, because kista cannot tell that every replica runs a binary that knows about collection.
+`-force`, and the retention pass purges nothing, because kista cannot tell that every replica runs a
+binary that knows about collection.
+
+## retention
+
+The channels' version retention pass (spec 0042). The rules are each tenant's and channel's own
+(see [Retention](administration/tenants-and-channels.md#retention)): kista has no retention by
+default, so this only schedules the pass. File-only.
+
+| Setting | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `retention.interval` | duration | `24h` | How long after its last look a channel's pass runs again; `0` means no scheduled pass (only `kista admin retention run`), otherwise at least `1m`. |
+
+A grace is at most [`limits.ceilings.retention_grace`](#limitsceilings) (`2160h` by default). While
+`gc.interval` is `0`, the pass retires but purges nothing.
 
 ## catalogue
 
@@ -653,6 +667,7 @@ limits:
     tenant_cells: 100000       # every upstream of a tenant
     discovered_names: 1000     # a mirror's "*"
     max_hold: 2160h            # the longest hold (90 days)
+    retention_grace: 2160h     # the longest grace a tenant's or a channel's retention sets (90 days)
     publisher_key_lifetime: 8784h # the furthest a publisher key's expiry (366 days)
     issuer_token_lifetime: 168h   # the most an issuer's max_token_lifetime (7 days)
     events_retention: 8760h       # the longest events.retention (365 days)
@@ -672,7 +687,8 @@ a feed (the format's, the same at every site): a site whose `feeds` ceiling is a
 feeds for each plan. A ceiling lowered below a tenant's stored
 limit caps it: growth past the ceiling is refused `429 tenant-limit`, and sending the stored value again
 unchanged is not refused. An issuer record's `max_token_lifetime` above a lowered
-`issuer_token_lifetime` is capped the same way when tokens are verified. The last five bound the
+`issuer_token_lifetime` is capped the same way when tokens are verified, and so is a tenant's or a
+channel's retention grace above a lowered `retention_grace` where the rule is in force. The last five bound the
 server's own settings, their defaults included: `events_retention` and `statistics_retention` bound
 `events.retention` and `statistics.retention`, `events_retention_with_sinks` bounds
 `events.retention` while `events.sinks` is not empty, `admin_token_max_age` bounds

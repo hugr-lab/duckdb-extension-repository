@@ -198,8 +198,10 @@ LOAD my_ext FROM corp;
 ```
 
 `VERSION` makes DuckDB request the versioned path with the version verbatim. That path serves an
-`active` or `deprecated` release of that version; a yanked one is served nowhere. Without `VERSION`
-DuckDB gets the channel's current release.
+`active` or `deprecated` release of that version; a yanked one is served nowhere, and neither is one
+the channel's [retention](administration/tenants-and-channels.md#retention) retired (DuckDB gets the
+same answer as for a version that never existed; a pin keeps a version a node must keep finding).
+Without `VERSION` DuckDB gets the channel's current release.
 
 A version in a channel never changes its body: a fix is a new version. So pinning the extension
 version and the repository is enough; there is no need to pin a hash, which would change on every
