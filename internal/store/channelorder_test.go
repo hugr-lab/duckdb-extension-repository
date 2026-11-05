@@ -2,14 +2,56 @@ package store_test
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store/storetest"
 )
+
+// Spec 0043: a channel's purged slots of a name, of its source and those purged before slots had a
+// source ('*'), never another source's, name's or channel's, by version, platform and slot.
+func TestPurgedSlots(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, ch := fixture(t, s)
+		other := store.Channel{TenantID: tn.ID, Name: "staging", Kind: store.ChannelSigned}
+		inTx(t, s, func(tx *store.Tx) error { return tx.CreateChannel(ctx, &other) })
+		now := store.TimeArg(s, time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC))
+		n := 0
+		purge := func(channelID, source, name, version, platform, slot, abi string) {
+			t.Helper()
+			n++
+			if err := store.ExecRaw(ctx, s, "INSERT INTO purged_slots (channel_id, source, name, package_version, platform, slot, abi, body_hash, seq, "+
+				"release_id, purged_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)", channelID, source, name, version, platform, slot, abi,
+				strings.Repeat("a", 64), fmt.Sprintf("r%d", n), now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		purge(ch.ID, "tenant", "relay", "1.1", "osx_arm64", "v2.0.0", "cpp")
+		purge(ch.ID, "tenant", "relay", "1.1", "linux_amd64", "v2.0.0", "cpp")
+		purge(ch.ID, "*", "relay", "1.0", "linux_amd64", "v1.4.0", "cpp") // before slots had a source
+		purge(ch.ID, "upstream:x", "relay", "2.0", "linux_amd64", "v2.0.0", "cpp")
+		purge(ch.ID, "tenant", "beacon", "1.0", "linux_amd64", "v2.0.0", "cpp")
+		purge(other.ID, "tenant", "relay", "3.0", "linux_amd64", "v2.0.0", "cpp")
+		got, err := s.PurgedSlots(ctx, ch.ID, "tenant", "relay")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []store.PurgedSlot{{PackageVersion: "1.0", Platform: "linux_amd64", Slot: "v1.4.0", ABI: "cpp"},
+			{PackageVersion: "1.1", Platform: "linux_amd64", Slot: "v2.0.0", ABI: "cpp"}, {PackageVersion: "1.1", Platform: "osx_arm64", Slot: "v2.0.0", ABI: "cpp"}}
+		if !slices.Equal(got, want) {
+			t.Fatalf("relay's purged slots in prod: %+v", got)
+		}
+		if got, err := s.PurgedSlots(ctx, other.ID, "tenant", "beacon"); err != nil || len(got) != 0 {
+			t.Fatalf("none: %+v %v", got, err)
+		}
+	})
+}
 
 func oe(channel, next string) store.OrderEdge { return store.OrderEdge{Channel: channel, Next: next} }
 

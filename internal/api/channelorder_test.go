@@ -6,6 +6,58 @@ import (
 	"testing"
 )
 
+// Spec 0043: a name's index answers its administrators what the channel purged of it (the pipeline
+// counts it as had), on the DuckDB version and platform of its slot, filtered as the rows are; an
+// install holder and an anonymous caller get no purged member.
+func TestIndexPurged(t *testing.T) {
+	m := newMgmt(t)
+	const E = "/api/v1/tenants/acme/channels/prod/extensions/tresor"
+	ta := m.toks["tenant admin"]
+	id := m.ids["tresor-1.0"]
+	if r := m.call(t, "POST", E+"/releases/"+id+"/yank", ta, "", "If-Match", "*"); r.status != 200 {
+		t.Fatalf("yank: %d %s", r.status, r.body)
+	}
+	before := m.call(t, "GET", E, ta, "").json(t)
+	if p, _ := before["purged"].([]any); p == nil || len(p) != 0 {
+		t.Fatalf("nothing purged yet: %v", before["purged"])
+	}
+	v := ""
+	for _, x := range before["releases"].([]any) {
+		if x := x.(map[string]any); x["state"] == "yanked" && x["version"] == "1.0" {
+			ws, _ := x["would_serve"].([]any)
+			if len(ws) > 0 {
+				v, _ = ws[0].(string)
+			}
+		}
+	}
+	if v == "" {
+		t.Fatalf("the yanked release's DuckDB version: %v", before["releases"])
+	}
+	if r := m.call(t, "DELETE", E+"/releases/"+id, ta, "", "If-Match", "*"); r.status != 204 {
+		t.Fatalf("purge: %d %s", r.status, r.body)
+	}
+	want := `[{"duckdb_version":"` + v + `","platform":"linux_amd64","version":"1.0"}]` // as decoded and marshalled again
+	for who, tok := range map[string]string{"tenant admin": ta, "ext admin": m.toks["ext admin"], "channel adm": m.toks["channel adm"]} {
+		got, _ := json.Marshal(m.call(t, "GET", E, tok, "").json(t)["purged"])
+		if string(got) != want {
+			t.Errorf("%s: %s", who, got)
+		}
+	}
+	got, _ := json.Marshal(m.call(t, "GET", E+"?duckdb_version="+v+"&platform=linux_amd64", ta, "").json(t)["purged"])
+	if string(got) != want {
+		t.Errorf("of the cell: %s", got)
+	}
+	got, _ = json.Marshal(m.call(t, "GET", E+"?duckdb_version="+v+"&platform=osx_arm64", ta, "").json(t)["purged"])
+	if string(got) != `[]` {
+		t.Errorf("of another cell: %s", got)
+	}
+	for who, tok := range map[string]string{"install": m.toks["install"], "anonymous": ""} {
+		if r := m.call(t, "GET", E, tok, ""); r.status != 200 || strings.Contains(string(r.body), "purged") {
+			t.Errorf("%s: %d %s", who, r.status, r.body)
+		}
+	}
+}
+
 // Spec 0043: the channels' order. A tenant administrator sets it (If-Match optional, 412 when stale)
 // and its auditors and channels' administrators read it; a channel's administrator gets 404 on PUT;
 // install holders, extension administrators, distribution admins and other tenants' callers get 404;
