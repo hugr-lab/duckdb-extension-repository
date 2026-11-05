@@ -14,6 +14,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -29,6 +30,8 @@ type Forwarder struct {
 	Store       *store.Store
 	Post        Poster
 	Credentials credential.Registry
+	// Hosts is egress.hosts (spec 0044), checked before a token is asked for; nil: no list
+	Hosts       egress.HostChecker
 	Holder      string
 	Log         *slog.Logger
 	Every       time.Duration // how often it looks for upstreams due; default 1h
@@ -136,7 +139,13 @@ func (f *Forwarder) Forward(ctx context.Context, upstreamID string) (ForwardResu
 		return res, err
 	}
 	cred, cerr := f.Credentials.For(u.Credential, t.Name, u.Prefix)
+	// spec 0044: a host off egress.hosts: no token, no request, a reason of its own
+	herr := egress.CheckHost(f.Hosts, u.Prefix, f.Log, "tenant", t.Name, "upstream", u.Name)
 	for _, day := range days {
+		if reason := hostReason(herr); reason != "" {
+			res.Failed = append(res.Failed, ForwardFailed{day, reason})
+			continue
+		}
 		if cerr != nil {
 			res.Failed = append(res.Failed, ForwardFailed{day, "the credential is not configured for this upstream"})
 			continue
@@ -291,6 +300,14 @@ func (f *Forwarder) send(ctx context.Context, u store.Upstream, cred *credential
 	return first, false
 }
 
+// hostReason is a refused host's reason (spec 0044: egress-host: <host>), "" for any other error.
+func hostReason(err error) string {
+	if he := (*egress.HostError)(nil); errors.As(err, &he) {
+		return "egress-host: " + he.Host
+	}
+	return ""
+}
+
 // post sends one part.
 func (f *Forwarder) post(ctx context.Context, u store.Upstream, cred *credential.Credential, p Daily) (reason string, skip bool) {
 	body, _ := json.Marshal(p)
@@ -311,6 +328,8 @@ func (f *Forwarder) post(ctx context.Context, u store.Upstream, cred *credential
 			return fmt.Sprintf("the upstream answered %d", status), false
 		case errors.Is(ctx.Err(), context.Canceled):
 			return "stopped", false
+		case hostReason(err) != "":
+			return hostReason(err), false
 		default:
 			return "unreachable: " + err.Error(), false
 		}

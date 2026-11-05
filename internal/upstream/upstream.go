@@ -33,8 +33,8 @@ import (
 
 // DuckDB's repositories, over https (spec 0009).
 const (
-	CoreURL      = "https://extensions.duckdb.org"
-	CommunityURL = "https://community-extensions.duckdb.org"
+	CoreURL      = upspec.CoreURL
+	CommunityURL = upspec.CommunityURL
 )
 
 // Errors.
@@ -77,8 +77,11 @@ type Service struct {
 	Releases *release.Service
 	Blob     *blob.Service
 	Fetch    Fetcher
-	Authz    authz.Authorizer
-	Config   Config
+	// Hosts is egress.hosts (spec 0044), checked before an add's, a run's or a fetch's first
+	// request; nil: no list
+	Hosts  egress.HostChecker
+	Authz  authz.Authorizer
+	Config Config
 	// MaxBody is blob.max_body; MaxIngests the blob service's ingest slots (runs use half).
 	MaxBody    int64
 	MaxIngests int
@@ -186,6 +189,13 @@ func (s *Service) CheckSource(ctx context.Context, tenant string, sp Spec, chann
 		}
 	default:
 		return u, fmt.Errorf("%w: kind %q (duckdb-core, duckdb-community or repository)", store.ErrInvalid, sp.Kind)
+	}
+	// spec 0044: the host the upstream is fetched from, before any fetch (a bundle-mode upstream
+	// contacts nothing)
+	if sp.Mode != store.ModeBundle {
+		if err := egress.CheckHost(s.Hosts, s.prefix(u), s.Log, "tenant", tenant, "upstream", sp.Name); err != nil {
+			return u, err
+		}
 	}
 	if sp.Mode != store.ModeMirror && sp.Mode != store.ModePullThrough && sp.Mode != store.ModeBundle {
 		return u, fmt.Errorf("%w: mode %q (mirror, pull-through or bundle)", store.ErrInvalid, sp.Mode)
@@ -1075,7 +1085,7 @@ func (s *Service) prefix(u store.Upstream) string {
 // WithAuthz returns a service with another authorizer, sharing the configuration (a run's gates
 // are its own).
 func (s *Service) WithAuthz(az authz.Authorizer) *Service {
-	c := &Service{Store: s.Store, Releases: s.Releases, Blob: s.Blob, Fetch: s.Fetch, Authz: az, Config: s.Config,
+	c := &Service{Store: s.Store, Releases: s.Releases, Blob: s.Blob, Fetch: s.Fetch, Hosts: s.Hosts, Authz: az, Config: s.Config,
 		MaxBody: s.MaxBody, MaxIngests: s.MaxIngests, TempDir: s.TempDir, Feeds: s.Feeds, Uploads: s.Uploads, Log: s.Log,
 		DuckDB: s.DuckDB, Credentials: s.Credentials, Licenses: s.Licenses}
 	wake := s.WakeUploads() // one channel: an upload the API completes wakes this replica's runner

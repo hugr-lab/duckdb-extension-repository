@@ -19,6 +19,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/tenants"
@@ -87,7 +88,14 @@ func (h *Handler) serviceErr(w http.ResponseWriter, err error, bodyRef bool) {
 	if limitProblem(w, err) { // spec 0038
 		return
 	}
+	var he *egress.HostError
 	switch {
+	case errors.As(err, &he): // spec 0044: before the generic answers; a refusal, so a probe of the list is audited
+		note(w, func(sw *statusWriter) {
+			sw.refused, sw.refusal = true, map[string]any{"reason": typeEgressHost, "host": he.Host}
+		})
+		writeProblemWith(w, http.StatusBadRequest, typeEgressHost, he.Host+" is not among the hosts this server may reach (egress.hosts); "+
+			"the server's operator adds it", true, map[string]any{"host": he.Host})
 	case errors.Is(err, authz.ErrDenied):
 		note(w, func(sw *statusWriter) { sw.refused = true })
 		notFound(w)

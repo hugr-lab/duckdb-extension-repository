@@ -269,6 +269,10 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	if err != nil {
 		return err
 	}
+	// spec 0044: a host off egress.hosts fails the run before anything is fetched or recorded
+	if err := egress.CheckHost(s.Hosts, s.prefix(u), s.Log, "tenant", sc.Tenant.Name, "upstream", u.Name); err != nil {
+		return fmt.Errorf("%w: %w", errFailed, err)
+	}
 	// the lease is renewed, and a pause noticed, from the revocation pass on and while cells download
 	// (one may take fetch_timeout)
 	rctx, cancel := context.WithCancelCause(ctx)
@@ -851,6 +855,8 @@ func runClass(err error) string {
 		return ""
 	case errors.Is(err, errStopped):
 		return "paused"
+	case errors.Is(err, egress.ErrHostNotAllowed): // spec 0044
+		return "egress-host"
 	case errors.Is(err, ErrNoKeys):
 		return "keys"
 	case errors.Is(err, credential.ErrClient):

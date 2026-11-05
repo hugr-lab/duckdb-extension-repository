@@ -18,6 +18,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -74,6 +75,8 @@ type Service struct {
 	// Fetch and Credentials are the relay's (spec 0009's egress client and credentials).
 	Fetch       Fetcher
 	Credentials credential.Registry
+	// Hosts is egress.hosts (spec 0044), checked before a relay's token; nil: no list.
+	Hosts egress.HostChecker
 	// Interval is the time between an upstream's relay runs (licenses.refresh).
 	Interval time.Duration
 	Log      *slog.Logger

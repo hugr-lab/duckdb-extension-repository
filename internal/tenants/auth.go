@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -18,9 +20,10 @@ import (
 type AuthAdmin struct {
 	Store     *store.Store
 	Authz     authz.Authorizer
-	Fetch     auth.Fetcher // egress, for discovery at issuer add
-	PublicURL string       // audiences under it are canonical and cannot be assigned
-	AllowHTTP bool         // issuer URLs on loopback over http (profile dev)
+	Fetch     auth.Fetcher       // egress, for discovery at issuer add
+	Hosts     egress.HostChecker // egress.hosts (spec 0044), checked before an issuer's fetches; nil: no list
+	PublicURL string             // audiences under it are canonical and cannot be assigned
+	AllowHTTP bool               // issuer URLs on loopback over http (profile dev)
 	// ServerAudiences are the server tokens' audiences (spec 0007): no tenant may be assigned one.
 	ServerAudiences []string
 	// ServerIssuerURLs are the server issuers' URLs (spec 0007): a tenant's console may not sign in
@@ -113,11 +116,9 @@ func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string,
 		return store.Issuer{}, fmt.Errorf("%w: %s is a CI token issuer's: it issues tokens to any workflow for any audience; a publisher signs its "+
 			"requests with a key instead (spec 0023)", store.ErrInvalid, is.URL)
 	}
-	jwksURI := is.JWKSURI
-	if jwksURI == "" {
-		if jwksURI, err = auth.Discover(ctx, s.Fetch, is.URL); err != nil {
-			return store.Issuer{}, fmt.Errorf("%w: discovery for %s: %w", ErrIssuerFetch, is.URL, err)
-		}
+	jwksURI, err := s.IssuerJWKS(ctx, tenant, is)
+	if err != nil {
+		return store.Issuer{}, err
 	}
 	if n, err := auth.CheckJWKS(ctx, s.Fetch, jwksURI); err != nil {
 		return store.Issuer{}, fmt.Errorf("%w: the JWKS of %s: %w", ErrIssuerFetch, is.URL, err)
@@ -133,6 +134,27 @@ func (s *AuthAdmin) AddIssuer(ctx context.Context, a authz.Actor, tenant string,
 			map[string]any{"name": is.Name, "url": is.URL, "algorithms": is.Algorithms})
 	})
 	return is, err
+}
+
+// IssuerJWKS is where an issuer's keys are: its explicit jwks_uri, or the one its discovery
+// document names, read now. Each host is checked against egress.hosts first (spec 0044): the URL's
+// and an explicit jwks_uri's before any fetch, a discovered one's before it is fetched; a refused
+// one is a *egress.HostError. A discovery that fails is ErrIssuerFetch.
+func (s *AuthAdmin) IssuerJWKS(ctx context.Context, tenant string, is store.Issuer) (string, error) {
+	check := func(u string) error {
+		return egress.CheckHost(s.Hosts, u, slog.Default(), "tenant", tenant, "issuer", is.Name)
+	}
+	if err := check(is.URL); err != nil {
+		return "", err
+	}
+	if is.JWKSURI != "" {
+		return is.JWKSURI, check(is.JWKSURI)
+	}
+	uri, err := auth.Discover(ctx, s.Fetch, is.URL)
+	if err != nil {
+		return "", fmt.Errorf("%w: discovery for %s: %w", ErrIssuerFetch, is.URL, err)
+	}
+	return uri, check(uri) // the Google case: discovery on one host, the keys on another
 }
 
 // ListIssuers lists a tenant's issuer records.

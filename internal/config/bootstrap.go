@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"fmt"
 	"net"
 	"net/url"
@@ -349,6 +350,13 @@ func validateBootstrap(bad func(string, ...any), c Config) {
 		} else if err := auth.CheckIssuerUnder(&rec, c.Egress.AllowLoopbackHTTP, c.Limits.Ceilings.Settings().IssuerTokenLifetime); err != nil {
 			bad("bootstrap.issuer: %v", err)
 		}
+		// spec 0044: the hosts the bootstrap's issuer is fetched from (a discovered jwks_uri is
+		// checked when the bootstrap runs)
+		for _, f := range [][2]string{{"url", is.URL}, {"jwks_uri", is.JWKSURI}} {
+			if h := c.egressHostRefused(f[1]); f[1] != "" && h != "" {
+				bad("bootstrap.issuer.%s: %s is not on egress.hosts", f[0], h)
+			}
+		}
 		if is.MaxLifetime < 0 {
 			bad("bootstrap.issuer.max_lifetime must not be negative")
 		}
@@ -492,6 +500,12 @@ func validateBootstrapUpstreams(bad func(string, ...any), c Config, once func(wh
 			}
 		default:
 			bad("%s.kind must be %s, %s or %s", where, store.UpstreamCore, store.UpstreamCommunity, store.UpstreamRepo)
+		}
+		// spec 0044: the host the upstream is fetched from, its prefix's or its kind's built-in one
+		if src := cmp.Or(upspec.BuiltIn(u.Kind), u.Prefix); src != "" {
+			if h := c.egressHostRefused(src); h != "" {
+				bad("%s: %s is not on egress.hosts", where, h)
+			}
 		}
 		if len(u.Keys) > ceil.UpstreamKeys {
 			bad("%s.keys: at most %d", where, ceil.UpstreamKeys)

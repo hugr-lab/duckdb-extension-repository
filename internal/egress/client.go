@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -42,6 +43,11 @@ type Config struct {
 	CAFile            string
 	Timeout           time.Duration // total per request; default 10s
 	MaxBytes          int64         // default 1 MiB
+	// Hosts is egress.hosts (spec 0044): nil narrows nothing; non-nil (empty included), only a URL
+	// whose host is on it is fetched, the address rules applying as ever.
+	Hosts *Hosts
+	// Log takes the refusals of hosts not on Hosts (default slog.Default()).
+	Log *slog.Logger
 	// Resolve replaces DNS resolution (tests).
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 }
@@ -54,6 +60,8 @@ type Client struct {
 	proxy    *url.URL
 	timeout  time.Duration
 	maxBytes int64
+	hosts    *Hosts
+	log      *slog.Logger
 	resolve  func(ctx context.Context, host string) ([]netip.Addr, error)
 	hc       *http.Client
 }
@@ -61,7 +69,10 @@ type Client struct {
 // New returns a client.
 func New(cfg Config) (*Client, error) {
 	c := &Client{allow: cfg.Allow, loopback: cfg.AllowLoopbackHTTP, ownHost: normalHost(cfg.OwnHost),
-		proxy: cfg.Proxy, timeout: cfg.Timeout, maxBytes: cfg.MaxBytes, resolve: cfg.Resolve}
+		proxy: cfg.Proxy, timeout: cfg.Timeout, maxBytes: cfg.MaxBytes, hosts: cfg.Hosts, log: cfg.Log, resolve: cfg.Resolve}
+	if c.log == nil {
+		c.log = slog.Default()
+	}
 	if c.timeout == 0 {
 		c.timeout = 10 * time.Second
 	}
@@ -101,13 +112,17 @@ func New(cfg Config) (*Client, error) {
 	return c, nil
 }
 
-// dial resolves the host itself, checks every address, and connects to a checked one: directly, or
-// through the explicit proxy with CONNECT to that address. A Control hook re-checks the address the
-// socket actually connects to.
+// dial checks the host's name against egress.hosts, resolves the host itself, checks every address,
+// and connects to a checked one: directly, or through the explicit proxy with CONNECT to that
+// address. A Control hook re-checks the address the socket actually connects to.
 func (c *Client) dial(ctx context.Context, network, address string) (net.Conn, error) {
 	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, ErrRefused
+	}
+	// spec 0044: the name the transport dials, before it is resolved, dialed or sent to the proxy
+	if err := c.refusedHost(host); err != nil {
+		return nil, err
 	}
 	p, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil {
@@ -198,10 +213,22 @@ func (c *Client) checkURL(raw string) (*url.URL, error) {
 	if strings.Contains(u.Hostname(), "%") {
 		return nil, fmt.Errorf("%w: a zoned address", ErrRefused)
 	}
+	if err := c.refusedHost(u.Hostname()); err != nil { // spec 0044: early and clear; dial decides
+		return nil, err
+	}
 	if c.ownHost != "" && normalHost(u.Hostname()) == c.ownHost {
 		return nil, fmt.Errorf("%w: %s is this deployment", ErrRefused, u.Hostname())
 	}
 	return u, nil
+}
+
+// refusedHost is a host not on egress.hosts, logged (nil without a list, or for a listed host).
+func (c *Client) refusedHost(host string) error {
+	if c.hosts == nil || c.hosts.allowed(host) {
+		return nil
+	}
+	c.log.Warn("egress: refused: the host is not on egress.hosts", "host", host)
+	return &HostError{Host: host}
 }
 
 // normalHost is a host name as resolution sees it: the port dropped, IDNA-mapped, lowercase,
@@ -249,9 +276,12 @@ func (c *Client) Get(ctx context.Context, raw string) ([]byte, http.Header, erro
 	return b, resp.Header, nil
 }
 
-// doErr maps a transport error to its class.
+// doErr maps a transport error to its class; a refused host stays its *HostError.
 func doErr(err error, u *url.URL) error {
 	var oe *net.OpError
+	if he := (*HostError)(nil); errors.As(err, &he) {
+		return he
+	}
 	if errors.Is(err, ErrRefused) || errors.As(err, &oe) && errors.Is(oe.Err, ErrRefused) {
 		return fmt.Errorf("%w: %s", ErrRefused, u.Hostname())
 	}

@@ -16,6 +16,23 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
+// DuckDB's repositories, over https (spec 0009).
+const (
+	CoreURL      = "https://extensions.duckdb.org"
+	CommunityURL = "https://community-extensions.duckdb.org"
+)
+
+// BuiltIn is where a duckdb-core or duckdb-community upstream fetches from; "" for another kind.
+func BuiltIn(kind string) string {
+	switch kind {
+	case store.UpstreamCore:
+		return CoreURL
+	case store.UpstreamCommunity:
+		return CommunityURL
+	}
+	return ""
+}
+
 // Prefix normalises a repository prefix: https (http to loopback in development), no user
 // info, query, fragment or dot segments, and a port egress may reach. A bundle-mode upstream never
 // contacts its prefix, which is only the source's identity: its port is not checked.

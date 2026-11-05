@@ -23,6 +23,7 @@ import (
 	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/config"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keysource"
@@ -234,6 +235,9 @@ func orDefault(d, def time.Duration) time.Duration {
 // propagated), the network, a busy database. Anything else is not tried again.
 func transient(err error) bool {
 	var ne net.Error
+	if errors.Is(err, egress.ErrHostNotAllowed) { // spec 0044: the configuration's, until a restart
+		return false
+	}
 	return errors.Is(err, keys.ErrSigner) || errors.Is(err, tenants.ErrIssuerFetch) || errors.Is(err, upstream.ErrSourceFetch) ||
 		errors.Is(err, store.ErrBusy) || errors.As(err, &ne)
 }
@@ -603,12 +607,13 @@ func Check(ctx context.Context, d Deps, b config.Bootstrap, o Options) (Plan, er
 		switch {
 		case cur == nil:
 			// fetched now, as issuer add fetches them: an issuer not reachable yet is found before
-			// any write
-			jwks := want.JWKSURI
-			if jwks == "" {
-				if jwks, err = auth.Discover(ctx, d.Auth.Fetch, want.URL); err != nil {
-					return p, fmt.Errorf("%w: discovery for %s: %w", tenants.ErrIssuerFetch, want.URL, err)
-				}
+			// any write; a host off egress.hosts (a discovered jwks_uri's) is refused, never retried
+			jwks, err := d.Auth.IssuerJWKS(ctx, tb.Name, want)
+			if errors.Is(err, egress.ErrHostNotAllowed) {
+				item("issuer", ib.Name, Refused, "%v", err)
+				break
+			} else if err != nil {
+				return p, err
 			}
 			if n, err := auth.CheckJWKS(ctx, d.Auth.Fetch, jwks); err != nil || n == 0 {
 				return p, fmt.Errorf("%w: the JWKS of %s: %v (%d keys)", tenants.ErrIssuerFetch, want.URL, err, n)
@@ -1092,7 +1097,7 @@ func classify(err error, ub config.BootstrapUpstream, item func(kind, name strin
 	case errors.Is(err, upstream.ErrSourceFetch):
 		return err
 	case errors.Is(err, store.ErrInvalid), errors.Is(err, upstream.ErrCollision), errors.Is(err, store.ErrExists),
-		errors.Is(err, upstream.ErrNoKeys), errors.Is(err, store.ErrNotFound):
+		errors.Is(err, upstream.ErrNoKeys), errors.Is(err, store.ErrNotFound), errors.Is(err, egress.ErrHostNotAllowed):
 		item("upstream", name, Refused, "%v", err)
 	default:
 		return err

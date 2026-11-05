@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -62,11 +61,7 @@ func (c *Client) Download(ctx context.Context, raw string, o DownloadOptions, w 
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		var oe *net.OpError
-		if errors.Is(err, ErrRefused) || errors.As(err, &oe) && errors.Is(oe.Err, ErrRefused) {
-			return Download{}, fmt.Errorf("%w: %s", ErrRefused, u.Hostname())
-		}
-		return Download{}, fmt.Errorf("%w: %s", ErrConnect, u.Hostname())
+		return Download{}, doErr(err, u)
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
