@@ -37,6 +37,7 @@ type SourceView struct {
 	// spec 0041
 	Waiting    string
 	WaitsUntil time.Time
+	WaitsFor   string // the version WaitsUntil is of
 }
 
 // mayAdminChannel allows a channel's administrators (admin on the channel; tenant administrators).
@@ -205,7 +206,7 @@ func (w *waits) of(ctx context.Context, rule store.ChannelSource, v *SourceView)
 		return err
 	}
 	if auto {
-		v.WaitsUntil = lk.waitsUntil(w.now)
+		v.WaitsUntil, v.WaitsFor = lk.waitsUntil(w.now)
 	}
 	return nil
 }

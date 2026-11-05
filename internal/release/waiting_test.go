@@ -122,7 +122,7 @@ func TestWaiting(t *testing.T) {
 		if _, err := p.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", "auto"); err != nil {
 			t.Fatal(err)
 		}
-		if v := p.view(t, "tresor"); v.Waiting != "" || !v.WaitsUntil.Equal(b.CreatedAt.Add(3*time.Hour)) {
+		if v := p.view(t, "tresor"); v.Waiting != "" || !v.WaitsUntil.Equal(b.CreatedAt.Add(3*time.Hour)) || v.WaitsFor != "1.3" {
 			t.Fatalf("held by its source: %+v", v)
 		}
 		clock = clock.Add(61 * time.Minute)

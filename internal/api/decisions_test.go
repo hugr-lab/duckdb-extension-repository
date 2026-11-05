@@ -343,7 +343,7 @@ func TestCatalogueHomeReads(t *testing.T) {
 	found := false
 	for _, x := range call(200, "GET", T+"/channels/prod/sources", "").json(t)["sources"].([]any) {
 		if s := x.(map[string]any); s["name"] == "geo" {
-			if found = true; s["waits_until"] != until.Format(time.RFC3339) || s["waiting"] != nil {
+			if found = true; s["waits_until"] != until.Format(time.RFC3339) || s["waits_for"] != "1.0" || s["waiting"] != nil {
 				t.Fatalf("an auto rule waiting for a hold: %v", s)
 			}
 		}

@@ -455,15 +455,19 @@ func waitingOf(ctx context.Context, source string, lk ruleLook, now time.Time, a
 
 // waitsUntil is when a rule's next automatic placement can happen when it waits for a hold (spec
 // 0041): the earliest end of hold (the source's and the channel's) of its candidates newer than what
-// their cells had; zero for none.
-func (lk ruleLook) waitsUntil(now time.Time) time.Time {
+// their cells had, with that candidate's version (the newest of those ending then); zero for none.
+func (lk ruleLook) waitsUntil(now time.Time) (time.Time, string) {
 	var at time.Time
+	version := ""
 	for _, c := range lk.cands {
-		if c.newer && c.at.After(now) {
-			at = earliest(at, c.at)
+		if !c.newer || !c.at.After(now) {
+			continue
+		}
+		if at.IsZero() || c.at.Before(at) || c.at.Equal(at) && CompareVersions(c.b.PackageVersion, version) > 0 {
+			at, version = c.at, c.b.PackageVersion
 		}
 	}
-	return at
+	return at, version
 }
 
 // earliest is the earlier of two times, a zero one being none.

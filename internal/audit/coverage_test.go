@@ -541,6 +541,31 @@ func TestCoverage(t *testing.T) {
 	}), "source.set", "release.place")
 	en.expect("release.Service.RemoveFollow", do(func() error { return en.rel.RemoveFollow(rctx, admin, "acme", "prod", "publisher:dist") }),
 		"follow.clear")
+	// spec 0041: the follow's rule acts as manual now: a newer version waits, and the placement pass
+	// tells of it (the pass is no service method: not run again on a deleting tenant)
+	{
+		prod, err := st.GetChannel(ctx, "acme", "prod")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dist, err := st.ResolveSource(ctx, prod.TenantID, "publisher:dist")
+		if err != nil {
+			t.Fatal(err)
+		}
+		b := store.Build{TenantID: prod.TenantID, Source: dist, Name: "followed", PackageVersion: "1.1", Platform: "linux_amd64", ABI: "cpp",
+			DuckDBVersion: "v2.0.0", Origin: store.OriginPublication, Checked: true, CreatedBy: "test"}
+		h, _, _ := extfile.HashBody(bytes.NewReader(ext(t, nil, "followed", "1.1")), 1<<30)
+		b.BodyHash = h.String()
+		if err := st.InTx(ctx, "", func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) }); err != nil {
+			t.Fatal(err)
+		}
+		before := en.count()
+		(&release.Placer{Service: en.rel, Holder: "coverage", Log: slog.New(slog.DiscardHandler)}).Once(rctx, true)
+		evs := en.newest(en.count() - before)
+		if len(evs) != 1 || evs[0].Kind != "source.waiting" || evs[0].Subject != "channel:prod/ext:followed" || evs[0].Actor != "system:placement" {
+			t.Fatalf("the pass's tell: %+v", evs)
+		}
+	}
 	// spec 0033 phase B: a fresh publisher marked a distributor's, and a version of it withdrawn
 	en.expect("tenants.AuthAdmin.AddDistributorPublisher", do(func() error {
 		_, err := en.adm.AddDistributorPublisher(rctx, admin, "acme", "enterest-ci", "enterest")

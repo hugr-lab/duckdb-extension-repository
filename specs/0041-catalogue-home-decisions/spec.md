@@ -133,6 +133,8 @@ This is the source's hold only; a channel's own hold is per rule, below.
   hold: the earliest `AvailableIn(ch.Hold)` (the later of the source's hold and the channel's) among
   the candidates newer than the cells had, as the look records it in `due_at`. Omitted when nothing
   is held, and for a `manual` rule (a channel's hold applies to automatic placements only).
+  `waits_for` beside it names that candidate's version (review fix: the queue's Place early and
+  Purge name it).
 
 The pass and the answer share one function (the candidates per cell), so the console and the pass
 never disagree. The sources answer reads the channel's served cells, as the pass's look does; its
@@ -357,7 +359,8 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
   racing past a lapsed lease tell once; a failed tell is logged, not the rule's outcome.
 - **API**: the decision routes (a tenant administrator writes; a channel administrator reads its
   channel's and gets `404` on another channel's, on the tenant route and on any write; an auditor
-  reads, and writes nothing; a distribution admin, an install holder and a publisher `404`); ids out of
+  reads, and writes nothing; a distribution admin and an install holder `404`, a publisher's signed
+  request `401`, not a token on a management route); ids out of
   scope `404`; `etag` in list answers, `If-Match` on `DELETE` (`412` when stale); `situation`
   stored canonically (an array sent unsorted matches the sorted one); the checks (`400`, `404`);
   paging;
