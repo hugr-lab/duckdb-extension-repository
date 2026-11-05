@@ -33,9 +33,10 @@ func orderType(packageType string) (string, error) {
 	return t, nil
 }
 
-// mayReadOrder admits the tenant's administrators and auditors (audit on the tenant, which admin
-// implies) and its channels' administrators (admin on any of its channels).
-func (s *Service) mayReadOrder(ctx context.Context, a authz.Actor, tenant string) error {
+// mayReadOrder admits, for the order of a package type, the tenant's administrators and auditors
+// (audit on the tenant, which admin implies) and the administrators of its channels of that type
+// (admin on one of them): a channel's administrator of another type reads none of this type's.
+func (s *Service) mayReadOrder(ctx context.Context, a authz.Actor, tenant, packageType string) error {
 	err := s.Authz.Allow(ctx, a, authz.VerbAudit, authz.Resource{Tenant: tenant})
 	if !errors.Is(err, authz.ErrDenied) {
 		return err
@@ -45,6 +46,9 @@ func (s *Service) mayReadOrder(ctx context.Context, a authz.Actor, tenant string
 		return lerr
 	}
 	for _, c := range chs {
+		if c.PackageType != packageType {
+			continue
+		}
 		cerr := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: c.Name})
 		if !errors.Is(cerr, authz.ErrDenied) {
 			return cerr
@@ -56,11 +60,11 @@ func (s *Service) mayReadOrder(ctx context.Context, a authz.Actor, tenant string
 // ChannelOrder reads the order of a tenant's channels of a package type ("" the default), by
 // channel: its administrators, its channels' administrators and its auditors.
 func (s *Service) ChannelOrder(ctx context.Context, a authz.Actor, tenant, packageType string) ([]store.OrderEdge, error) {
-	if err := s.mayReadOrder(ctx, a, tenant); err != nil {
-		return nil, err
-	}
 	typ, err := orderType(packageType)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.mayReadOrder(ctx, a, tenant, typ); err != nil {
 		return nil, err
 	}
 	t, err := s.Store.GetTenant(ctx, tenant)

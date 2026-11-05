@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 )
 
 // Spec 0043: a name's index answers its administrators what the channel purged of it (the pipeline
@@ -116,6 +118,15 @@ func TestChannelOrderRoutes(t *testing.T) {
 			t.Errorf("%s writes: %d %s", who, r.status, r.body)
 		}
 	}
+	// a publisher's signed request is not a token here, as on every management route that admits no
+	// publisher (spec 0041's decisions answer it the same)
+	call(201, "POST", T+"/publishers", ta, `{"name":"ci"}`)
+	pub := m.addKey(t, ta, "acme", "ci")
+	for _, method := range []string{"GET", "PUT"} {
+		if r := m.call(t, method, T+"/channel-order", pub, ""); r.status != 401 {
+			t.Errorf("a publisher's %s: %d %s", method, r.status, r.body)
+		}
+	}
 	// without a token of the tenant: 401
 	for _, tok := range []string{"", m.toks["other admin"]} {
 		if r := m.call(t, "GET", T+"/channel-order", tok, ""); r.status != 401 {
@@ -161,5 +172,25 @@ func TestChannelOrderRoutes(t *testing.T) {
 	}
 	if b, _ := json.Marshal(last["data"]); string(b) != `{"after":[],"before":[{"channel":"nightly","next":"staging"},{"channel":"staging","next":"prod"}]}` {
 		t.Fatalf("the clearing event: %s", b)
+	}
+
+	// another type's order: its channels' administrators read it, never another type's; the event
+	// names the type
+	unregister := pkgtype.RegisterForTest("test_package")
+	defer unregister()
+	for _, c := range []string{"drivers", "drivers-prod"} {
+		call(201, "POST", T+"/channels", ta, `{"name":"`+c+`","kind":"signed","package_type":"test_package"}`)
+	}
+	call(201, "POST", T+"/grants", ta, `{"principal":"subject:corp|dina","verbs":["admin"],"channel":"drivers","package_type":"test_package"}`)
+	dina := m.keys.sign(t, idpURL, map[string]any{"sub": "dina", "aud": publicURL + "/acme"})
+	call(200, "PUT", T+"/channel-order?type=test_package", ta, `{"order":[{"channel":"drivers","next":"drivers-prod"}]}`)
+	if r := call(200, "GET", T+"/channel-order?type=test_package", dina, ""); string(r.body) != `{"order":[{"channel":"drivers","next":"drivers-prod"}]}` {
+		t.Fatalf("the drivers' administrator reads its type's order: %s", r.body)
+	}
+	call(404, "GET", T+"/channel-order", dina, "")                   // the default type's: none of its channels
+	call(404, "GET", T+"/channel-order?type=test_package", carl, "") // prod's administrator: not of that type
+	evs = call(200, "GET", T+"/events?kind=channel.order", ta, "").json(t)["events"].([]any)
+	if d := evs[0].(map[string]any)["data"].(map[string]any); d["package_type"] != "test_package" {
+		t.Fatalf("the other type's event: %v", d)
 	}
 }
