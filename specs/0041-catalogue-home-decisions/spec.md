@@ -459,8 +459,9 @@ console.
   blocked for an upstream source (spec 0039). The pass still tries such a build: its insert refuses
   it and the refusal is the rule's `outcome`, which the queue's "Placements that failed" group (Open
   the block) relies on. Under a rule placing automatically, `waiting` is what the next look places:
-  per platform and slot the newest candidate, so a blocked newest one leaves that slot nothing
-  waiting (the pass places nothing older there); under a manual rule an older unblocked version
+  per platform and slot the newest candidate, less one a newer one of another slot shadows (it
+  serves a cell in common, as the pass's check finds), so a blocked newest one leaves its slot, and
+  the older slots it shadows, nothing waiting (the pass places nothing older there); under a manual rule an older unblocked version
   still waits, since an administrator may place it.
 - **`waits_until`** is the earliest `AvailableIn(ch.Hold)` after now among the candidates newer than
   their cells had, for an `auto` rule and a follow's rule while the channel follows the source. The

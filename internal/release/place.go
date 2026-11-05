@@ -435,13 +435,45 @@ func waitingOf(ctx context.Context, source string, lk ruleLook, now time.Time, a
 		}
 	}
 	slices.SortFunc(cands, func(x, y store.Build) int { return CompareVersions(y.PackageVersion, x.PackageVersion) })
-	tried := map[[2]string]bool{} // (platform, slot) whose newest was looked at
+	if auto {
+		return autoWaiting(ctx, source, lk, cands, blocked)
+	}
 	for _, b := range cands {
-		k := [2]string{b.Platform, b.Slot()}
-		if auto && tried[k] {
+		bl, err := blocked(ctx, source, b.BodyHash)
+		if err != nil {
+			return "", err
+		}
+		if !bl {
+			return b.PackageVersion, nil
+		}
+	}
+	return "", nil
+}
+
+// autoWaiting is what the next look of a rule placing automatically places, as placeRule chooses it:
+// per platform and slot the newest candidate, less one a newer one of another slot shadows (it
+// serves a cell in common), less a blocked one (the pass tries it, and its refusal is the rule's
+// outcome); the newest of what remains. cands are newest first.
+func autoWaiting(ctx context.Context, source string, lk ruleLook, cands []store.Build, blocked blockedFn) (string, error) {
+	var best []store.Build // per (platform, slot), newest first
+	seen := map[[2]string]bool{}
+	for _, b := range cands {
+		if k := [2]string{b.Platform, b.Slot()}; !seen[k] {
+			seen[k] = true
+			best = append(best, b)
+		}
+	}
+	for i, b := range best {
+		shadowed := false
+		for _, o := range best[:i] { // the newer ones
+			if CompareVersions(o.PackageVersion, b.PackageVersion) > 0 && overlap(lk.sv.cells(b), lk.sv.cells(o)) {
+				shadowed = true
+				break
+			}
+		}
+		if shadowed {
 			continue
 		}
-		tried[k] = true
 		bl, err := blocked(ctx, source, b.BodyHash)
 		if err != nil {
 			return "", err

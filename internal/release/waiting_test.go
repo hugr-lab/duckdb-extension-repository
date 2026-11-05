@@ -19,7 +19,11 @@ import (
 // toCat publishes a version of a name into the catalogue only, as ci.
 func (p placing) toCat(t *testing.T, name string, m extfile.Metadata) store.Build {
 	t.Helper()
-	b, _, err := p.pubs.AddToCatalogue(ctx, p.pub, "acme", bytes.NewReader(built(t, m, name+"_duckdb_cpp_init")),
+	entry := name + "_duckdb_cpp_init"
+	if m.ABI == extfile.ABICStruct {
+		entry = name + "_init_c_api"
+	}
+	b, _, err := p.pubs.AddToCatalogue(ctx, p.pub, "acme", bytes.NewReader(built(t, m, entry)),
 		publish(name, m.ExtensionVersion, m.Platform))
 	if err != nil {
 		t.Fatalf("publish %s %s into the catalogue: %v", name, m.ExtensionVersion, err)
@@ -360,6 +364,35 @@ func TestWaitingBlockedAuto(t *testing.T) {
 		}
 		if v := p.view(t, "tresor"); v.Waiting != "" {
 			t.Fatalf("an auto rule past a blocked newest version: %+v", v)
+		}
+	})
+}
+
+// Spec 0041: under a rule placing automatically, a blocked newest build of one slot that shadows an
+// older one of another (a C API build serving the DuckDB version an exact-version build does) leaves
+// nothing waiting, as the pass places no older one there; under a manual rule the older one waits.
+func TestWaitingShadowedAuto(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		p := newPlacing(t, en)
+		p.toCat(t, "tresor", cpp("1.1"))
+		newest := p.toCat(t, "tresor", capi("2.0", "v1.2.0"))
+		if _, _, err := p.rel.Block(ctx, admin, "acme", newest.BodyHash, "CVE"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.rel.SetChannelHold(ctx, admin, "acme", "prod", 3*time.Hour); err != nil { // the pass places nothing meanwhile
+			t.Fatal(err)
+		}
+		if _, err := p.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", "auto"); err != nil {
+			t.Fatal(err)
+		}
+		if v := p.view(t, "tresor"); v.Waiting != "" {
+			t.Fatalf("an auto rule past a blocked C API build shadowing an older one: %+v", v)
+		}
+		if _, err := p.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", "manual"); err != nil {
+			t.Fatal(err)
+		}
+		if v := p.view(t, "tresor"); v.Waiting != "1.1" {
+			t.Fatalf("a manual rule past it: %+v", v)
 		}
 	})
 }
