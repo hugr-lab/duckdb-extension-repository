@@ -88,8 +88,9 @@ export interface CellWait {
  * - of a version S does not hold (an active release, not withdrawn, on any cell): the pass
  *   completes a held version by itself;
  * - in a slot (its version, platform and slot) S never had, purged slots included;
- * - newer than every version S's cell has or had, in any state (active, deprecated, yanked,
- *   withdrawn, and the releases it purged).
+ * - newer than every version S has or had, in any state (active, deprecated, yanked, withdrawn,
+ *   and the releases it purged), on every cell of S its build serves (a C API build's are several),
+ *   as the pass's newer() requires.
  * S with no release of the name has had nothing anywhere. */
 export function cellWaits(prev: IndexRelease[], stage: IndexRelease[], stageVersions: string[], purged: PurgedRelease[] = []): CellWait[] {
   const out: CellWait[] = []
@@ -102,12 +103,17 @@ export function cellWaits(prev: IndexRelease[], stage: IndexRelease[], stageVers
       const slot = slotOf(cur)
       const same = (x: { version: string; platform: string }) => x.version === cur.version && x.platform === platform
       if (stage.some((r) => same(r) && slotOf(r) === slot) || purged.some((p) => same(p) && p.slot === slot)) continue
-      const had = [
+      const had = (d: string) => [
         ...stage.filter((r) => r.platform === platform &&
-          (r.serves.some((s) => s.duckdb_version === duckdb) || (r.would_serve ?? []).includes(duckdb))),
-        ...purged.filter((p) => p.platform === platform && p.duckdb_version === duckdb),
+          (r.serves.some((s) => s.duckdb_version === d) || (r.would_serve ?? []).includes(d))),
+        ...purged.filter((p) => p.platform === platform && p.duckdb_version === d),
       ]
-      if (had.every((r) => compareVersions(cur.version, r.version) > 0)) out.push({ duckdb, platform, version: cur.version })
+      // newer than what every cell the build serves in the stage has or had (the pass's newer(): a C
+      // API build serves several DuckDB versions, and one of them having a newer version is enough)
+      const cells = cur.serves.map((s) => s.duckdb_version).filter((d) => stageVersions.includes(d))
+      if ([...new Set([duckdb, ...cells])].every((d) => had(d).every((r) => compareVersions(cur.version, r.version) > 0))) {
+        out.push({ duckdb, platform, version: cur.version })
+      }
     }
   }
   return out

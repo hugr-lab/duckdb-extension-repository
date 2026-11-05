@@ -98,6 +98,16 @@ describe('what waits for a stage', () => {
     expect(cellWaits(prev, [], ['v2.0.0'], [{ ...purged[0], slot: 'capi:2' }]).map((c) => c.version)).toEqual(['2.0'])
   })
 
+  it("a C API build waits nowhere when one of the stage's cells it serves has or had a newer version", () => {
+    const capi = rel('1.5', 'linux_amd64', { abi: 'c_struct', build_duckdb_version: undefined, build_c_api: 'v1.2.0',
+      serves: [{ duckdb_version: 'v1.4.0' }, { duckdb_version: 'v1.5.0' }], current_for: ['v1.4.0', 'v1.5.0'] })
+    const staging = [rel('1.6', 'linux_amd64', { build_duckdb_version: 'v1.5.0', serves: [{ duckdb_version: 'v1.5.0' }], current_for: ['v1.5.0'] })]
+    expect(cellWaits([capi], staging, ['v1.4.0', 'v1.5.0'])).toEqual([])
+    // with staging's 1.6 gone, both cells wait; with staging serving v1.4.0 only, v1.5.0 of no stage cell still counts
+    expect(cellWaits([capi], [], ['v1.4.0', 'v1.5.0']).map((c) => c.duckdb)).toEqual(['v1.4.0', 'v1.5.0'])
+    expect(cellWaits([capi], staging, ['v1.4.0']).map((c) => c.duckdb)).toEqual(['v1.4.0'])
+  })
+
   it('a version the stage holds (an active release on any cell) never waits: the pass completes it', () => {
     // 1.2 active on linux_amd64 (newer than nightly's 1.1 there): osx_arm64's 1.2 is the pass's to complete
     const held = [rel('1.2', 'linux_amd64', { current_for: ['v2.0.0'] })]
