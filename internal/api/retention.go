@@ -92,8 +92,16 @@ func (h *Handler) tenantRetention(w http.ResponseWriter, r *http.Request, c call
 		return
 	}
 	out := ruleOut(rule)
-	out["etag"] = release.RetentionTag(rule) // a PUT's If-Match: the stored rule's
-	reply(w, r, http.StatusOK, out, "", noStore)
+	out["etag"] = release.RetentionTag(rule)
+	ruleReply(w, r, rule, out)
+}
+
+// ruleReply answers a rule with the ETag of its stored values (the body's etag the same), for a
+// PUT's If-Match; never 304 to If-None-Match, since what is in force (the tenant's default, the
+// pass's look) changes without them, as limitsReply.
+func ruleReply(w http.ResponseWriter, r *http.Request, rule store.RetentionRule, out map[string]any) {
+	w.Header().Set("ETag", release.RetentionTag(rule))
+	reply(w, r, http.StatusOK, out, "-", noStore)
 }
 
 func (h *Handler) setTenantRetention(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -113,7 +121,7 @@ func channelRetentionOut(channel string, v release.ChannelRetention) map[string]
 	out := ruleOut(v.Rule)
 	out["channel"], out["in_force"] = channel, release.InForceFields(v.InForce)
 	out["checked_at"], out["next_run"] = timeOrNil(v.CheckedAt), timeOrNil(v.NextRun)
-	out["etag"] = release.RetentionTag(v.Rule) // a PUT's If-Match: the stored rule's
+	out["etag"] = release.RetentionTag(v.Rule) // the header's ETag, a PUT's If-Match
 	return out
 }
 
@@ -124,9 +132,7 @@ func (h *Handler) channelRetention(w http.ResponseWriter, r *http.Request, c cal
 		h.serviceErr(w, err, false)
 		return
 	}
-	// the answer's ETag is over its bytes, so a change of what is in force (the tenant's default, the
-	// pass's look) is never a 304; a PUT's If-Match is the body's etag, the stored rule's
-	reply(w, r, http.StatusOK, channelRetentionOut(p["c"], v), "", noStore)
+	ruleReply(w, r, v.Rule, channelRetentionOut(p["c"], v))
 }
 
 func (h *Handler) setChannelRetention(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -140,7 +146,7 @@ func (h *Handler) setChannelRetention(w http.ResponseWriter, r *http.Request, c 
 		h.serviceErr(w, err, false)
 		return
 	}
-	reply(w, r, http.StatusOK, channelRetentionOut(p["c"], v), "", noStore)
+	ruleReply(w, r, v.Rule, channelRetentionOut(p["c"], v))
 }
 
 // --- the plan ---
