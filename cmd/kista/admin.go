@@ -129,6 +129,10 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   channel unfollow <tenant>/<channel> <source>   stop following it; what it placed stays
   channel hold <tenant>/<channel> [<duration>]   the channel's hold (spec 0033): an automatic placement waits
                                                   until an entry's arrival plus it (24h, 2d; 0 for none)
+  channel order <tenant> [-type t] [<channel> <channel>... | -clear]
+                                                  the channels' order (spec 0043, for the console's display
+                                                  only): without channels, prints it; with them, sets that
+                                                  chain of the type (the whole order); -clear clears it
   channel list <tenant>
   key check -signer <ref>                         open a key, check it, sign a probe; stores nothing
   key add <tenant>/<channel> -signer <ref> [-active]
@@ -738,6 +742,8 @@ func (a *adminCmd) channel(ctx context.Context, sub string, args []string) error
 		return a.channelSource(ctx, pos, *set, *mode, *clear)
 	case (sub == "follow" || sub == "unfollow") && (len(pos) == 2 || len(pos) == 1 && sub == "follow"):
 		return a.channelFollow(ctx, sub, pos)
+	case sub == "order" && (len(pos) == 1 || len(pos) >= 3 && !*clear):
+		return a.channelOrder(ctx, pos[0], *ptype, pos[1:], *clear)
 	case sub == "hold" && (len(pos) == 1 || len(pos) == 2):
 		t, c, err := splitPath(pos[0])
 		if err != nil {
@@ -3222,6 +3228,51 @@ func (a *adminCmd) printMeta(m release.EntryMetaView, who bool) {
 	if who && m.SetBy != "" {
 		fmt.Fprintf(a.out, "set: %s by %s\n", ts(m.SetAt), m.SetBy)
 	}
+}
+
+// channelOrder prints a tenant's channels' order of a type, one chain per line, sets one chain, or
+// clears it (spec 0043).
+func (a *adminCmd) channelOrder(ctx context.Context, tenant, typ string, chain []string, clear bool) error {
+	if len(chain) > 0 || clear {
+		var edges []store.OrderEdge
+		for i := 1; i < len(chain); i++ {
+			edges = append(edges, store.OrderEdge{Channel: chain[i-1], Next: chain[i]})
+		}
+		if _, err := a.svc.Tenants.SetChannelOrder(ctx, a.actor, tenant, typ, edges, ""); err != nil {
+			return err
+		}
+		a.logf("channel order %s %s", tenant, dash(strings.Join(chain, " -> ")))
+		return nil
+	}
+	edges, err := a.svc.Tenants.ChannelOrder(ctx, a.actor, tenant, typ)
+	if err != nil {
+		return err
+	}
+	for _, c := range chains(edges) {
+		fmt.Fprintln(a.out, strings.Join(c, " -> "))
+	}
+	return nil
+}
+
+// chains are an order's chains, each from its first stage (a channel with a next and no previous),
+// by the first stage's name.
+func chains(edges []store.OrderEdge) [][]string {
+	next, prev := map[string]string{}, map[string]bool{}
+	for _, e := range edges {
+		next[e.Channel], prev[e.Next] = e.Next, true
+	}
+	var out [][]string
+	for _, e := range edges { // by channel
+		if prev[e.Channel] {
+			continue
+		}
+		c := []string{e.Channel}
+		for n := next[e.Channel]; n != ""; n = next[n] {
+			c = append(c, n)
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // channelFollow lists a channel's follows, follows a source, or stops following it (spec 0033).

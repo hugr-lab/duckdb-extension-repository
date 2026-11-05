@@ -826,6 +826,10 @@ func init() {
 		{"tenants/{t}/decisions/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).clearDecision)}},
 		{"tenants/{t}/channels/{c}/decisions", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: decisionReaders, manage: true,
 			handle: (*Handler).channelDecisions}}},
+		// spec 0043: the channels' order, read by the tenant's administrators and auditors and by its
+		// channels' administrators (the service checks admin on a channel), written by its administrators
+		{"tenants/{t}/channel-order", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, channelAdmins: true,
+			handle: (*Handler).channelOrder}, http.MethodPut: mb(pathAdmin, (*Handler).setChannelOrder)}},
 		{"events", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvents)}},
 		// spec 0010 phase 2a: download statistics
 		{"tenants/{t}/stats/downloads", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsDownloads)}},
@@ -1347,7 +1351,8 @@ func takesType(pattern, method string) bool {
 		pattern == "reserved-names", pattern == "reserved-names/{name}",
 		strings.HasPrefix(pattern, "tenants/{t}/extensions/{ext}/attachments"), strings.HasPrefix(pattern, "tenants/{t}/catalogue"),
 		strings.HasPrefix(pattern, "tenants/{t}/stats/"), strings.HasPrefix(pattern, "tenants/{t}/licenses"),
-		strings.HasPrefix(pattern, "tenants/{t}/license-keys"), pattern == "distributor-stats/downloads":
+		strings.HasPrefix(pattern, "tenants/{t}/license-keys"), pattern == "distributor-stats/downloads",
+		pattern == "tenants/{t}/channel-order": // spec 0043: an order is of one type
 		return true
 	case pattern == "tenants/{t}/grants", pattern == "tenants/{t}/extension-groups", pattern == "tenants/{t}/decisions":
 		return get

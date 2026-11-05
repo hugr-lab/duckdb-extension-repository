@@ -40,6 +40,18 @@ func TestAdminPackageTypes(t *testing.T) {
 		strings.Count(got, "test_package") != 1 {
 		t.Fatalf("channel list: %q", got)
 	}
+	// spec 0043: an order is of one type, the default without -type
+	run(0, "channel", "create", "acme/drivers-prod", "-kind", "signed", "-type", "test_package")
+	run(1, "channel", "order", "acme", "drivers", "drivers-prod") // not of the default type
+	run(0, "channel", "order", "acme", "-type", "test_package", "drivers", "drivers-prod")
+	if got := run(0, "channel", "order", "acme", "-type", "test_package"); !strings.HasPrefix(got, "drivers -> drivers-prod\n") {
+		t.Fatalf("the other type's order: %q", got)
+	}
+	if got := run(0, "channel", "order", "acme"); strings.Contains(got, "->") {
+		t.Fatalf("the default type's order: %q", got)
+	}
+	run(1, "channel", "order", "acme", "-type", "nope")
+	run(0, "channel", "order", "acme", "-type", "test_package", "-clear")
 	// the server's reservations per type
 	run(0, "reserved", "add", "httpfs", "-kind", "core", "-type", "test_package")
 	if got := run(0, "reserved", "list", "-type", "test_package"); !strings.Contains(got, "httpfs") || strings.Contains(got, "legacy_parser") {

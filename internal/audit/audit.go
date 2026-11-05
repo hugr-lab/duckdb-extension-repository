@@ -147,6 +147,7 @@ var catalogue = map[Kind][]string{
 	// channels and keys
 	"channel.create":   {"name", "kind", "package_type"},
 	"channel.versions": {"added", "removed"},
+	"channel.order":    {"before", "after", "package_type"}, // spec 0043: the order's edges before and after
 	"key.add":          {"key", "fingerprint", "scheme", "state", "protection"},
 	"key.activate":     {"key", "fingerprint", "from", "forced"},
 	"key.retire":       {"key", "fingerprint", "from", "forced"},
@@ -291,6 +292,8 @@ func SubjectForm(k Kind) string {
 	switch k {
 	case "release.promote", "release.place", "extension.use", "source.set", "source.clear", "license.public_warning", "source.waiting":
 		return "channel:<channel>/ext:<name>"
+	case "channel.order": // spec 0043: the order spans the tenant's channels
+		return "tenant:<name>"
 	case "decision.set", "decision.clear": // spec 0041: a channel's decision, or the tenant's
 		return "channel:<channel>/ext:<name> or ext:<name>"
 	case "upstream.release", "install":

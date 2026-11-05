@@ -66,6 +66,9 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		// spec 0041: a channel's decision, which references the channel
 		{"INSERT INTO decisions (id, tenant_id, package_type, channel_id, kind, source, name, package_version, version, decided_by, decided_at) " +
 			"VALUES (?, ?, 'duckdb_extension', ?, 'skip', 'tenant', 'acl', '1.0', 1, 'os:1:t', ?)", []any{id("w"), tid, cid, now}},
+		// spec 0043: the channels' order, which references channels twice (here one channel as its own
+		// next: the service never writes it, the schema takes it)
+		{"INSERT INTO channel_next (channel_id, next_channel_id, set_by, set_at) VALUES (?, ?, 'os:1:t', ?)", []any{cid, cid, now}},
 		{"INSERT INTO bundle_imports (id, tenant_id, manifest_id, manifest_created_at, manifest_sha256, exporter, bundle_key, dry_run, " +
 			"state, counts, started_at, actor) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, 'done', '{}', ?, 'os:1:t')",
 			[]any{id("m"), tid, id("n"), now, hash, fp("d"), false, now}},
@@ -160,7 +163,7 @@ func rowsOf(t *testing.T, s *store.Store, tenantID, channelID string) map[string
 			where = "upstream_id IN (SELECT id FROM upstreams WHERE tenant_id = ?)"
 		case "issuer_console_clients":
 			where = "issuer_id IN (SELECT id FROM issuers WHERE tenant_id = ?)"
-		case "release_signatures", "channel_duckdb_versions", "purged_slots", "channel_sources", "channel_follows", "follow_skips":
+		case "release_signatures", "channel_duckdb_versions", "purged_slots", "channel_sources", "channel_follows", "follow_skips", "channel_next":
 			where, arg = "channel_id = ?", channelID
 		case "key_events":
 			where = "key_id IN (SELECT id FROM channel_keys WHERE tenant_id = ?)"

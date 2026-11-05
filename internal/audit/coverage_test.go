@@ -77,6 +77,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"AddVersion": {"version.add"}, "AddVersionCAPI": {"version.c_apis"}, "AddVersionCore": {"reserved.add"}, "CreateChannel": {"channel.create"},
 		"SetChannelVersions": {"channel.versions"}, "Reserve": {"reserved.add"}, "Unreserve": {"reserved.remove"}, "ListReserved": nil,
 		"ListTenants": nil, "GetTenant": nil, "ListVersions": nil, "ListChannels": nil, "ChannelVersions": nil, "TenantState": {"tenant.read"},
+		"ChannelOrder": nil, "SetChannelOrder": {"channel.order"}, // spec 0043
 	},
 	"tenants.AuthAdmin": {
 		"AddIssuer": {"issuer.add"}, "RemoveIssuer": {"issuer.remove"}, "AddAudience": {"audience.add"},
@@ -345,6 +346,11 @@ func TestCoverage(t *testing.T) {
 			return err
 		}), "channel.versions")
 	}
+	// spec 0043: the channels' order
+	en.expect("tenants.Service.SetChannelOrder", do(func() error {
+		_, err := en.ten.SetChannelOrder(rctx, admin, "acme", "", []store.OrderEdge{{Channel: "staging", Next: "prod"}}, "")
+		return err
+	}), "channel.order")
 	en.expect("tenants.Service.SetTenantState", do(func() error {
 		_, err := en.ten.SetTenantState(rctx, admin, "acme", store.TenantSuspended, 0)
 		return err
