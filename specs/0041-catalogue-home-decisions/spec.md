@@ -1,6 +1,6 @@
 # Spec 0041: The catalogue as the console's home, and the decision queue
 
-- **Status**: accepted (the owner's decisions of 2026-11-05)
+- **Status**: implemented (phase 1: the API; phase 2: the console)
 - **Date**: 2026-11-01
 - **Author**: vgsml, Claude
 
@@ -133,6 +133,8 @@ This is the source's hold only; a channel's own hold is per rule, below.
   hold: the earliest `AvailableIn(ch.Hold)` (the later of the source's hold and the channel's) among
   the candidates newer than the cells had, as the look records it in `due_at`. Omitted when nothing
   is held, and for a `manual` rule (a channel's hold applies to automatic placements only).
+  `waits_for` beside it names that candidate's version (review fix: the queue's Place early and
+  Purge name it).
 
 The pass and the answer share one function (the candidates per cell), so the console and the pass
 never disagree. The sources answer reads the channel's served cells, as the pass's look does; its
@@ -185,12 +187,15 @@ administrators) gain a channel's administrators, for their channel only:
   events (`channel.versions`, the channel's `catalogue.hold`, `follow.set` and `follow.clear`,
   `retention.*` of spec 0042, `key.*`) and those under it (rules, releases, placements,
   `source.waiting`, `decision.*` of the channel).
-- **Two kinds left out**: `install` and `extension.use`, whatever the subject. Their actor is the
+- **The serving plane's kinds left out**: `install`, `extension.use` and `usage.receive`
+  (`audit.ServingKinds`; review fix: `usage.receive` is under `channel:<c>` too), whatever the
+  subject. Their actor is the
   installing principal, with its display name, client address and `User-Agent` (spec 0010, spec
   0012), and a channel's administrators do not see installers today: the statistics answer them
   counts per channel and extension (`stats/downloads`, `stats/usage`, through their `admin` grant),
   never who installed. The service filters them out by kind (an exclusion added to the caller's
-  `kind` list, so an explicit `kind=install` is `404`).
+  `kind` list, so an explicit `kind=install` is `404`). Every event's actor is answered such a
+  caller by its id only, without `actor_name` and `client`.
 - Any other read by such a caller is `404`, as today; `GET …/events/{id}` answers it only an event
   it could list.
 - The API rule admits the caller by the path's tenant; the service checks the subject against the
@@ -277,7 +282,8 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
                   decided_by, decided_at
                   unique (channel_id, kind, source, name)              where channel_id IS NOT NULL
                   unique (tenant_id, package_type, kind, source, name) where channel_id IS NULL
-                  index  (tenant_id, package_type, source, name)       -- the collector's and a source's deletes
+                  index  (source, tenant_id, package_type, name)       -- a source's and the collector's deletes
+                  index  (tenant_id, id)                               -- the list, the reaper, the tenant's key
 ```
 
 - The two unique keys are partial (filtered on SQL Server), as the catalogue's slot key is (spec
@@ -325,9 +331,12 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
 - **A channel's administrators' events** are their channel's subject and those under it only,
   checked by the API rule and again by the service, an exact subject or a `/` prefix (no
   `prod` → `prod2`); the tenant's other events (identity, grants, other channels, refusals with
-  `route:` subjects) stay its auditors' and administrators'. `install` and `extension.use` are left
-  out: they name installers, whom a channel's administrators do not see today (their statistics
-  are counts). The rest under the channel is what they already read through its management routes
+  `route:` subjects) stay its auditors' and administrators'. The serving plane's kinds (`install`,
+  `extension.use`, and `usage.receive`, whose subject is `channel:<c>`) are left out: they name
+  installers, whom a channel's administrators do not see today (their statistics are counts). They
+  are one list, `audit.ServingKinds`, which a test checks against every event `internal/serve`
+  writes under a channel's subject. An event's actor is answered a channel's administrators by its
+  id only: `actor_name` and `client` are cleared. The rest under the channel is what they already read through its management routes
   (its rules, follows, hold, releases, keys and their events, `…/keys/events`).
 - **Fail closed**: a tell that fails is tried again and never shown as a failed placement; a
   decision that fails to write leaves the item in the queue.
@@ -351,7 +360,8 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
   racing past a lapsed lease tell once; a failed tell is logged, not the rule's outcome.
 - **API**: the decision routes (a tenant administrator writes; a channel administrator reads its
   channel's and gets `404` on another channel's, on the tenant route and on any write; an auditor
-  reads, and writes nothing; a distribution admin, an install holder and a publisher `404`); ids out of
+  reads, and writes nothing; a distribution admin and an install holder `404`, a publisher's signed
+  request `401`, not a token on a management route); ids out of
   scope `404`; `etag` in list answers, `If-Match` on `DELETE` (`412` when stale); `situation`
   stored canonically (an array sent unsorted matches the sorted one); the checks (`400`, `404`);
   paging;
@@ -423,6 +433,121 @@ console. The website: `catalogue.md` (`held_until`, `waiting`, the waiting event
 home, the queue, decisions), `api.md` (the routes), `observability.md` (`source.waiting`,
 `decision.*`, a channel's administrators reading their channel's events), `access.md` (the same),
 `administration/upgrading.md` (the migration's `min_reader`).
+
+Delivered as two phases on one branch, `0041-catalogue-home-impl`: phase 1 the API, phase 2 the
+console.
+
+### As built (phase 1: the API)
+
+- **One look, two readers.** `lookAt` (`internal/release/place.go`) reads a rule's candidates as the
+  pass always did (checked, servable, not purged for good, a slot that never had the version, neither
+  revoked nor withdrawn), each with its `AvailableIn(ch.Hold)` and whether it is newer than every
+  cell it serves has or had (`served.newest`, the pass's `newer`: every cell of the build, not some
+  cell). The pass places from it; the sources answer's `waiting` (`waitingOf`) and `waits_until`
+  (`ruleLook.waitsUntil`) read the same look (`lookOf`). The pass reads each rule it looks at; the
+  sources answer reads a channel's rules at once (`store.ChannelRuleReads`: their builds, the builds
+  purged for good, the channel's releases and purged slots, of its rules with a mode only: a rule an
+  arrival wrote waits for nothing), the channel's DuckDB versions and the
+  tenant's blocks once and an upstream's blocks once, so its statements do not grow with the rules (a
+  test counts them); a name's answer reads that name only.
+- **A held version's builds never wait.** A candidate of a version the channel holds (an active
+  release) is the pass's to complete, so it is never `waiting`: a second platform, or a DuckDB
+  version the channel starts serving, tells nothing and queues nothing. A channel has no list of
+  platforms (every platform is served), so "a platform the channel does not serve" is no case; the
+  test takes a second platform of a held version instead.
+- **Blocked bodies.** `waiting` leaves out a candidate whose body the tenant blocked, or its upstream
+  blocked for an upstream source (spec 0039). The pass still tries such a build: its insert refuses
+  it and the refusal is the rule's `outcome`, which the queue's "Placements that failed" group (Open
+  the block) relies on. Under a rule placing automatically, `waiting` is what the next look places:
+  per platform and slot the newest candidate, less one a newer one of another slot shadows (it
+  serves a cell in common, as the pass's check finds), so a blocked newest one leaves its slot, and
+  the older slots it shadows, nothing waiting (the pass places nothing older there); under a manual rule an older unblocked version
+  still waits, since an administrator may place it.
+- **`waits_until`** is the earliest `AvailableIn(ch.Hold)` after now among the candidates newer than
+  their cells had, for an `auto` rule and a follow's rule while the channel follows the source. The
+  pass's `due_at` is unchanged for an automatic rule (it also wakes for a completion's hold); under a
+  manual rule it is also the earliest end of the source's hold among the newer held candidates (not
+  only the newest's), so a version is told when it starts waiting. `waits_for` names the candidate's
+  version, the newest of those whose hold ends then.
+- **The tell** is written after the look's `SetRuleChecked`, by `store.TellWaiting`: one transaction
+  updating `told_version` where the source, the mode, `set_at <= start` and the `told_version` read
+  by `DueRules` still hold, and writing the event only when a row changed. Its error is logged; the
+  rule's outcome is never touched. `current` is the newest active or deprecated (not withdrawn)
+  version of the source in the channel.
+- **Decisions.** `before` in `decision.set` is the replaced decision's version or situation.
+  `package_type` is in the answers and the events when not the default. A channel's decision
+  (dismissals too) is on a signed channel; a follow skip's `situation` is 1 to 400 bytes. On the
+  tenant's list `?type=` absent lists every type, and an unknown `?channel=` is `404`. A catalogue
+  purge (`DELETE …/catalogue/builds/{id}`) of a (source, name)'s last build deletes its decisions as
+  the collector's does, so neither path leaves decisions behind. `SetDecision` reads the entry (and
+  a skip's version) in its own transaction, and a replacement updates at the row version it read (a
+  decision deleted meanwhile is `412`, never an answer and an event without a row). Its reads lock
+  (shared, until commit) the entry's builds and the source's upstream or publisher row
+  (`EntryVersions`, `LiveSource`; PostgreSQL `FOR SHARE`, SQL Server `HOLDLOCK, ROWLOCK`), and a
+  removed source's decisions are deleted after its row, so the collector's, a purge's and a
+  removal's deletes wait for a decision being written and delete it with them. The write takes the
+  tenant's row (shared) first, which a source's removal takes for update first, and then the source
+  row and the builds, which no deleter takes in the other order: no lock cycle. A store test starts
+  the delete between the check and the insert on each dialect. The index is
+  `(source, tenant_id, package_type, name)`, which a source's delete (`WHERE source = ?`) uses, and
+  `ix_decisions_tenant (tenant_id, id)` serves the tenant's list, the reaper's batched deletes and the
+  tenant's foreign key.
+- **A publisher's signed request** on the decision routes is `401`, as on every management route
+  that does not admit publishers (it is not a token there), rather than the `404` the Testing list
+  names; an install holder, a distribution admin and the other refusals are `404`.
+- **A channel's administrators' events.** The route rule admits a tenant principal without `audit`
+  (`channelAdmins`), and the handler checks the subject's channel against `admin` on it. In a `kind`
+  list that names other kinds too, the serving plane's kinds (`audit.ServingKinds`: `install`,
+  `extension.use`, `usage.receive`) are dropped; a list naming only them is `404`. The answers clear
+  `actor_name` and `client`. The store's subject filter gained `SubjectTree` (the exact subject, or the prefix
+  `subject/`).
+- **Docs.** `administration/upgrading.md` lists `0050_event_pruned` too, which spec 0040's change
+  had left out of the `min_reader` table.
+
+### As built (phase 2: the console)
+
+- **The home's reads** (`web/console/src/lib/home.tsx`) are read once for a tenant administrator's
+  pages: the catalogue, the signed channels of the default type with each one's sources, follows and
+  hold, and every decision (paged). The matrix, the queue and the navigation's count share them, and
+  every action reads them again. The queue's groups are pure functions (`lib/queue.ts`) with the unit
+  tests.
+- **The home.** The console, standalone or embedded, opens a tenant administrator's (and a server
+  administrator's opened tenant) on **Catalogue**, with **Needs a decision** under it and its count
+  (visually hidden text for screen readers); anyone else's on **Channels**. The micro-frontend's
+  default route is the tenant's index, which goes on to the caller's home; the host is told that path,
+  never the index.
+- **Promote** in the queue names the first channel, by name, holding the waiting version as an
+  active or deprecated release that the caller may publish from, until spec 0043 gives the channels
+  an order; it is offered only with `promote` on the name in the target, and **Place** only with
+  `promote`.
+- **Holds** name their version (the catalogue's `held_until`, a rule's `waits_for`): **Place early**
+  and **Purge** are offered for that version only, the builds placed nowhere listed before the
+  confirmation. A name in no channel links to its page to purge, build by build; nothing purges
+  every version from the queue. **Make auto** and **Make manual** are one `PUT …/sources/{name}`. "In
+  no channel, or some channels only" counts the signed channels of the default type.
+- **Undo** removes each decision as its `DELETE` succeeds; one another administrator changed (`412`)
+  or removed (`404`) since is dropped, and the page says so.
+- **The rule dialog** says what happens next: nothing by itself under `manual`; under `auto` the
+  newest version the channel lacks, at the pass's look once the later of its source's hold
+  (`held_until`) and the channel's (from each build's arrival) has passed, or after `waits_until`
+  when the rule waits already. Matrix cells with a rule offer **Set rule…**, empty ones **+ Rule…**,
+  each labelled with the name and the channel. The "decisions wait" banner counts each group.
+- **The entry's page** is `catalogue/{name}` (the old `catalogue/{source}/{name}` shows the same
+  page): the rules editor (with each channel's downloads of the name over 30 days, **Promote…**
+  from that channel, K4's dialog, and **Clear…**), then each source's section (its licence, the
+  licence keys its builds declare from `…/license-keys/{name}?source=`, and its versions), then the
+  name's **Reports** (every body's: a report belongs to a body, and the page shows them once). The
+  **Report & licence** drawer in the queue shows the licence and reports, its toggle with
+  `aria-expanded`.
+- **A channel's administrator** who is not an auditor gets an **Events** tab on the channel's page,
+  reading `subject=channel:<c>`, which offers neither the serving plane's kinds nor their families.
+- **Tests.** Unit tests of the matrix's cells, the queue's groups, Skip and Dismiss with Undo, the
+  rule editor's changes and the home by grants (`src/screens/home.test.tsx`); the console end to end
+  (`e2e/decisions.spec.ts`) on run.sh's fixture, a manual rule for the tenant's `atlas` in prod and
+  enterest-ci's `tiles`, which nightly's follow places once the publisher's day's hold ends: the
+  home, a Skip and its Undo, a dismissal of a name in no channel and its Undo, a follow skip's
+  dismissal, a block saying what its body is; a stale-ETag Undo is a unit test. `console.spec.ts`
+  waits for the channel's page after leaving the home; `mfe.spec.ts` lands on the catalogue.
 
 ## Follow-ups
 

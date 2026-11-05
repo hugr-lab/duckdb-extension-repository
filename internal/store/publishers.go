@@ -128,7 +128,9 @@ VALUES (?, ?, ?, ?, ?, ?)`, tenantID, p.ID, p.Name, p.Distributor, t.s.d.timeArg
 			return err
 		}
 	}
-	if err := t.dropFollows(ctx, PublisherSource(p.ID)); err != nil { // spec 0033: nothing follows a gone source
+	// spec 0033: nothing follows a gone source; spec 0041: its decisions after its row, which a
+	// decision being written holds (LiveSource), so that decision is deleted too
+	if err := t.dropFollows(ctx, PublisherSource(p.ID)); err != nil {
 		return err
 	}
 	return t.BumpAuth(ctx, tenantID)

@@ -259,6 +259,13 @@ var catalogue = map[Kind][]string{
 		"corrupt", "record", "unreadable", "marked", "unmarked", "bytes", "error"},
 	"audit.sink":     {"sink", "state", "class", "status"},
 	"request.failed": {"route", "status", "count"},
+	// spec 0041: a version waiting under a manual rule (or a follow's acting as manual), told once per
+	// version, with the version the channel holds from the source and the rule's mode
+	"source.waiting": {"source", "version", "current", "mode", "package_type"},
+	// spec 0041: an administrator's decision on the queue written (before: the version or situation
+	// of the one it replaced) or removed
+	"decision.set":   {"id", "kind", "source", "version", "situation", "package_type", "before"},
+	"decision.clear": {"id", "kind", "source", "version", "situation", "package_type"},
 }
 
 // Kinds lists the catalogue: each kind with its fields, sorted by kind.
@@ -282,8 +289,10 @@ type KindInfo struct {
 func SubjectForm(k Kind) string {
 	const release = "channel:<channel>/ext:<name>/release:<id>"
 	switch k {
-	case "release.promote", "release.place", "extension.use", "source.set", "source.clear", "license.public_warning":
+	case "release.promote", "release.place", "extension.use", "source.set", "source.clear", "license.public_warning", "source.waiting":
 		return "channel:<channel>/ext:<name>"
+	case "decision.set", "decision.clear": // spec 0041: a channel's decision, or the tenant's
+		return "channel:<channel>/ext:<name> or ext:<name>"
 	case "upstream.release", "install":
 		return release
 	case "server.start", "audit.dropped":
@@ -323,6 +332,11 @@ func SubjectForm(k Kind) string {
 		"attestation_key": "attestation-key:<id>", "feed": "feed:<name>", "license": "license:<name>", "catalogue": "ext:<name>",
 		"follow": "channel:<channel>"}[prefix]
 }
+
+// ServingKinds are the kinds the serving plane writes under a channel's subject, their actor the
+// serving caller (an installing principal, with its name and address): a channel's administrators
+// never read them (spec 0041). internal/serve's events are checked against it by a test.
+var ServingKinds = []Kind{"install", "extension.use", "usage.receive"}
 
 // Known reports whether a kind is in the catalogue.
 func Known(k Kind) bool { _, ok := catalogue[k]; return ok }

@@ -317,7 +317,7 @@ See [Tenants and channels](tenants-and-channels.md) and
 
 | Command | What it does | Output |
 | --- | --- | --- |
-| `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode), `HELD` (the versions held), `REVOKED` (the versions a purge kept, revoked), `WITHDRAWN` (the versions withdrawn) |
+| `catalogue list <tenant> [-source <source>] [-name <name>]` | the tenant's [catalogue](../upstreams.md#the-catalogue-and-a-channels-rules) | `SOURCE`, `NAME`, `VERSIONS` (newest first), `RULES` (channel=mode), `HELD` (the versions held, each with the end of its hold: `1.1(until <time>)`, spec 0041), `REVOKED` (the versions a purge kept, revoked), `WITHDRAWN` (the versions withdrawn) |
 | `catalogue show <tenant> <source> <name>` | an entry's builds | `VERSION`, `PLATFORM`, `SLOT`, `BODY`, `VISIBILITY`, `ORIGIN`, `CREATED`, `RELEASED IN`, `HELD UNTIL`, `REVOKED`, `WITHDRAWN` (when, and the reason), `ID` (the build's, for `catalogue purge`); after the table, `summary:` and `icon: <sha256> <width>x<height>` (`-` for none, spec 0036) |
 | `catalogue add <tenant> <file\|-> -name <name> [-private]` | puts a build into the catalogue only, placed nowhere (source `tenant`; the file checks always run) | the build's id |
 | `catalogue list\|show\|add … -type <package type>` | the catalogue of a [package type](../concepts.md#packages-and-package-types) (`duckdb_extension` by default; this server reads DuckDB extensions only) | |
@@ -362,7 +362,7 @@ Details are in [Publishing](../publishing.md).
 | Command | What it does |
 | --- | --- |
 | `block add <tenant> <body hash> -reason <text>` | bans a body tenant-wide; its releases are yanked and it cannot be released again |
-| `block list <tenant>` | `BODY HASH`, `REASON`, `CREATED`, `BY` |
+| `block list <tenant>` | `BODY HASH`, `REASON`, `CREATED`, `BY`, `WHAT` (spec 0041: the first of the tenant's catalogue builds of the body, `+n` for more; `-` for none) |
 | `block remove <tenant> <body hash>` | lifts the ban; yanked releases stay yanked |
 
 ## Issuers, audiences and grants

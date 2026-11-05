@@ -1,13 +1,15 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { Ban, BarChart3, Boxes, CloudDownload, Fingerprint, Gauge, KeyRound, Library, List, Package, Send, ShieldCheck } from 'lucide-react'
+import { Ban, BarChart3, Boxes, CloudDownload, Fingerprint, Gauge, Inbox, KeyRound, Library, List, Package, Send, ShieldCheck } from 'lucide-react'
 import { type Perms, useTenant } from '../lib/context'
 import { useSections, type NavItem } from '../lib/frame'
+import { HomeProvider, useHome } from '../lib/home'
 import { Empty } from '../components/ui'
 import { Access } from './Access'
 import { Blocks } from './Blocks'
-import { Catalogue, CatalogueEntryPage } from './Catalogue'
+import { Catalogue, CatalogueNamePage } from './Catalogue'
 import { Channel, Extension } from './Channel'
 import { Channels } from './Channels'
+import { Decisions } from './Decisions'
 import { Events } from './Events'
 import { GroupPage, Groups } from './Groups'
 import { Identity } from './Identity'
@@ -19,11 +21,19 @@ import { Release } from './Release'
 import { Stats } from './Stats'
 
 /** A tenant's sections, for whatever the caller's grants allow; they go to the frame's sidebar
- * (standalone) or tabs (embedded). */
+ * (standalone) or tabs (embedded). A tenant administrator's pages share the home's reads (spec
+ * 0041: the catalogue's matrix, the decision queue and its count). */
 export function TenantArea({ label }: { label?: React.ReactNode }) {
+  const { perms } = useTenant()
+  if (perms.tenantAdmin) return <HomeProvider><Area label={label} /></HomeProvider>
+  return <Area label={label} />
+}
+
+function Area({ label }: { label?: React.ReactNode }) {
   const { perms, client, api, base } = useTenant()
-  const tabs = tenantSections(perms, base)
-  useSections('tenant', perms.anything ? { label, items: tabs } : null, `${base}|${tabs.map((t) => t.to).join(',')}`)
+  const waiting = useHome()?.items.length ?? 0
+  const tabs = tenantSections(perms, base, waiting)
+  useSections('tenant', perms.anything ? { label, items: tabs } : null, `${base}|${tabs.map((t) => `${t.to}:${t.badge ?? ''}`).join(',')}`)
   if (!perms.anything) return <Empty>Nothing to administer here.</Empty>
   return (
     <Routes>
@@ -33,7 +43,9 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
       <Route path="channels/:c/extensions/:ext" element={<Extension />} />
       <Route path="channels/:c/releases/:ext/:id" element={<Release />} />
       <Route path="catalogue" element={<Catalogue />} />
-      <Route path="catalogue/:source/:name" element={<CatalogueEntryPage />} />
+      <Route path="catalogue/:name" element={<CatalogueNamePage />} />
+      <Route path="catalogue/:source/:name" element={<CatalogueNamePage />} />
+      <Route path="decisions" element={<Decisions />} />
       <Route path="upstreams" element={<Upstreams />} />
       <Route path="upstreams/:name" element={<UpstreamPage />} />
       <Route path="blocks" element={<Blocks />} />
@@ -52,16 +64,19 @@ export function TenantArea({ label }: { label?: React.ReactNode }) {
   )
 }
 
-/** The sections a caller's grants show in a tenant (the API decides what each answers). */
-export function tenantSections(perms: Perms, base: string): NavItem[] {
+/** The sections a caller's grants show in a tenant (the API decides what each answers); the first is
+ * its home: a tenant administrator's the catalogue, with the decisions that wait under it (spec
+ * 0041), anyone else's its channels. */
+export function tenantSections(perms: Perms, base: string, waiting = 0): NavItem[] {
   const admin = perms.server || perms.grants.some((g) => g.verbs.includes('admin'))
   const tabs: NavItem[] = []
-  if (admin) tabs.push({ to: `${base}/channels`, label: 'Channels', icon: Package })
   // spec 0015 phases 2a, 2b: a group's administrators read their groups; the rest is a tenant administrator's
   if (perms.tenantAdmin) {
     tabs.push({ to: `${base}/catalogue`, label: 'Catalogue', icon: Library }) // spec 0033: the tenant's administrators read it
-    tabs.push({ to: `${base}/upstreams`, label: 'Upstreams', icon: CloudDownload })
+    tabs.push({ to: `${base}/decisions`, label: 'Needs a decision', icon: Inbox, badge: waiting })
   }
+  if (admin) tabs.push({ to: `${base}/channels`, label: 'Channels', icon: Package })
+  if (perms.tenantAdmin) tabs.push({ to: `${base}/upstreams`, label: 'Upstreams', icon: CloudDownload })
   // the organisation: who may do what, and what the tenant holds besides its channels
   const org = 'Organisation'
   if (perms.tenantAdmin || perms.groups.length > 0) tabs.push({ to: `${base}/groups`, label: 'Groups', icon: Boxes, section: org })

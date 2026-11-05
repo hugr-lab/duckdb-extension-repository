@@ -109,6 +109,9 @@ type EventFilter struct {
 	Kinds    []string
 	NotKinds bool
 	Subject  string // a prefix
+	// SubjectTree reads Subject as that exact subject and the prefix Subject/ (spec 0041: a channel's
+	// administrators' channel:<c>, never matching channel:<c>2), not as a bare prefix
+	SubjectTree bool
 	// the cursor: the last (at, id) returned; a time with no id is a time covered (spec 0040), the
 	// next read starting at it
 	AfterAt   time.Time
@@ -144,11 +147,16 @@ func (s *Store) ListEvents(ctx context.Context, tenantID string, f EventFilter) 
 		}
 	}
 	if f.Subject != "" {
+		prefix, exact := f.Subject, ""
+		if f.SubjectTree {
+			prefix, exact = f.Subject+"/", "subject = ? OR "
+			args = append(args, f.Subject)
+		}
 		if s.d.Name == "sqlite" { // SQLite's LIKE ignores case: compare the prefix's characters
-			q, args = q+" AND substr(subject, 1, ?) = ?", append(args, len([]rune(f.Subject)), f.Subject)
+			q, args = q+" AND ("+exact+"substr(subject, 1, ?) = ?)", append(args, len([]rune(prefix)), prefix)
 		} else { // a prefix, its LIKE metacharacters escaped (SQL Server's [ too)
-			esc := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`, "[", `\[`).Replace(f.Subject)
-			q, args = q+` AND subject LIKE ? ESCAPE '\'`, append(args, esc+"%")
+			esc := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`, "[", `\[`).Replace(prefix)
+			q, args = q+" AND ("+exact+`subject LIKE ? ESCAPE '\')`, append(args, esc+"%")
 		}
 	}
 	cmp, order := "<", "DESC"

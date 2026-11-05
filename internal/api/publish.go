@@ -336,10 +336,33 @@ type blockJSON struct {
 	Reason    string `json:"reason"`
 	CreatedAt string `json:"created_at"`
 	CreatedBy string `json:"created_by"`
+	// Builds are the tenant's catalogue builds with the body (spec 0041: what it is), in the reads
+	Builds *[]blockedBuildJSON `json:"builds,omitempty"`
+}
+
+type blockedBuildJSON struct {
+	Source      string `json:"source"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Platform    string `json:"platform"`
+	Slot        string `json:"slot"`
+	PackageType string `json:"package_type,omitempty"` // omitted when it is the default
 }
 
 func blockOf(b store.Block, c caller) blockJSON {
 	return blockJSON{BodyHash: b.BodyHash, Reason: b.Reason, CreatedAt: timeOf(b.CreatedAt), CreatedBy: createdBy(b.CreatedBy, c)}
+}
+
+// withBuilds is a block's read, with what its body is (spec 0041; "builds": [] for nothing the tenant
+// holds).
+func withBuilds(bj blockJSON, bs []store.BlockedBuild) blockJSON {
+	out := []blockedBuildJSON{}
+	for _, b := range bs {
+		out = append(out, blockedBuildJSON{Source: b.Source, Name: b.Name, Version: b.Version, Platform: b.Platform, Slot: b.Slot,
+			PackageType: shownType(b.PackageType)})
+	}
+	bj.Builds = &out
+	return bj
 }
 
 func (h *Handler) listBlocks(w http.ResponseWriter, r *http.Request, c caller, p params) {
@@ -354,9 +377,14 @@ func (h *Handler) listBlocks(w http.ResponseWriter, r *http.Request, c caller, p
 		return
 	}
 	bs, next := paged(bs, func(b store.Block) string { return b.BodyHash }, limit, after)
+	builds, err := h.o.Releases.BlockBuilds(r.Context(), a, p["t"], "")
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
 	out := []blockJSON{}
 	for _, b := range bs {
-		out = append(out, blockOf(b, c))
+		out = append(out, withBuilds(blockOf(b, c), builds[b.BodyHash]))
 	}
 	reply(w, r, http.StatusOK, list("blocks", out, next), "", noStore)
 }
@@ -391,7 +419,12 @@ func (h *Handler) getBlock(w http.ResponseWriter, r *http.Request, c caller, p p
 		h.serviceErr(w, err, false)
 		return
 	}
-	reply(w, r, http.StatusOK, blockOf(b, c), "", noStore)
+	builds, err := h.o.Releases.BlockBuilds(r.Context(), a, p["t"], b.BodyHash)
+	if err != nil {
+		h.serviceErr(w, err, false)
+		return
+	}
+	reply(w, r, http.StatusOK, withBuilds(blockOf(b, c), builds[b.BodyHash]), "", noStore)
 }
 
 func (h *Handler) removeBlock(w http.ResponseWriter, r *http.Request, c caller, p params) {

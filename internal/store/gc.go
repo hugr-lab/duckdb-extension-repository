@@ -302,14 +302,25 @@ func (s *Store) DeleteBuild(ctx context.Context, id string, cutoff time.Time) (b
 	deleted := false
 	err := s.tx(ctx, nil, func(t *Tx) error {
 		deleted = false
+		var tenantID, typ, source, name string
+		err := t.queryRow(ctx, "SELECT tenant_id, package_type, source, name FROM builds WHERE id = ?", id).Scan(&tenantID, &typ, &source, &name)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 		res, err := t.exec(ctx, "DELETE FROM builds WHERE id = ? AND used_at < ? AND landed = ? AND withdrawn_at IS NULL AND "+
 			"NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = builds.id)", id, t.s.d.timeArg(cutoff), false)
 		if err != nil {
 			return err
 		}
 		n, err := res.RowsAffected()
-		deleted = n == 1
-		return err
+		if deleted = n == 1; err != nil || !deleted {
+			return err
+		}
+		// spec 0041: the last build of a (source, name) takes its decisions with it
+		return t.dropEntryDecisions(ctx, tenantID, typ, source, name)
 	})
 	if s.d.foreignKey(err) || errors.Is(err, ErrBusy) {
 		return false, nil

@@ -430,7 +430,16 @@ the two; `kista admin publisher list` shows it as `HELD FOR`, `publisher show` a
   nothing, and reads neither `grants/principals` nor an upstream's sub-routes. An administrator of
   one package type, a channel, an extension or a group holds no tenant-wide `audit` (a group's
   administrator still reads its own group); a distribution admin still reads only distributors'
-  publishers and their keys. These reads write no event.
+  publishers and their keys. These reads write no event. An auditor reads the
+  [decisions](catalogue.md#know-what-waits) on the decision queue too (spec 0041), and writes none.
+- A channel's administrator who is not an auditor reads its channel's events (spec 0041):
+  `GET …/events?subject=channel:<c>` (that subject and those under `channel:<c>/`) or a longer
+  prefix, and `…/events/{id}` of such an event, never the serving plane's kinds (`install`,
+  `extension.use`, `usage.receive`: they name the installers, whom it sees as counts only), and each
+  event's actor by its id only, without its display name or client address; and its channel's
+  decisions
+  (`GET …/channels/{c}/decisions`). The decision queue and writing decisions are the tenant's
+  administrators'.
 - `created_by`, and an event's `actor`, take these forms for a tenant's readers:
   `principal:<tenant>/<issuer id>|<sub>` (the token's bare `sub`; `client:<id>` for a token without
   a `sub`; `sub:<sub>` only when the `sub` itself begins with `client:` or `sub:`; the issuer

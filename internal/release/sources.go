@@ -19,7 +19,10 @@ import (
 // its count. Spec 0033: the rule's mode, the newest version of the source the channel holds
 // (Current, an active or deprecated release) and the newest available in the catalogue (Newest: a
 // version with a held build is not, phase A2, nor one withdrawn, phase B, nor one revoked, which the
-// pass never places either, phase C), and the placement pass's last outcome.
+// pass never places either, phase C), and the placement pass's last outcome. Spec 0041: what waits
+// under a rule with a mode (Waiting: the newest version it could take that the channel has not had,
+// as the pass's candidates), and, under a rule placing automatically, when its next placement can
+// happen while it waits for a hold (WaitsUntil, zero for none).
 type SourceView struct {
 	Name      string
 	Source    string
@@ -31,6 +34,10 @@ type SourceView struct {
 	Newest    string
 	Outcome   string
 	OutcomeAt time.Time
+	// spec 0041
+	Waiting    string
+	WaitsUntil time.Time
+	WaitsFor   string // the version WaitsUntil is of
 }
 
 // mayAdminChannel allows a channel's administrators (admin on the channel; tenant administrators).
@@ -54,6 +61,11 @@ func (s *Service) sourceOfType(ctx context.Context, ch store.Channel, src, label
 // Sources lists a channel's names with their sources: every name with a selected source or a
 // release, by name.
 func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel string) ([]SourceView, error) {
+	return s.sources(ctx, a, tenant, channel, "")
+}
+
+// sources is Sources, of one name only ("": every name).
+func (s *Service) sources(ctx context.Context, a authz.Actor, tenant, channel, only string) ([]SourceView, error) {
 	ch, err := s.mayAdminChannel(ctx, a, tenant, channel)
 	if err != nil {
 		return nil, err
@@ -86,7 +98,7 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 	if err != nil {
 		return nil, err
 	}
-	rels, err := s.Store.ListReleases(ctx, ch.ID, "")
+	rels, err := s.Store.ListReleases(ctx, ch.ID, only)
 	if err != nil {
 		return nil, err
 	}
@@ -99,22 +111,29 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 			current[r.Name] = r.PackageVersion
 		}
 	}
+	w, err := s.waitsOf(ctx, ch, only)
+	if err != nil {
+		return nil, err
+	}
 	names := map[string]bool{}
 	for n := range sel {
-		names[n] = true
+		names[n] = only == "" || n == only
 	}
 	for n := range avail {
-		names[n] = true
+		names[n] = only == "" || n == only
 	}
 	out := make([]SourceView, 0, len(names))
-	for n := range names {
+	for n, ok := range names {
+		if !ok {
+			continue
+		}
 		v := SourceView{Name: n, Available: map[string]int{}}
 		if x, ok := sel[n]; ok {
 			v.Source, v.SetBy, v.SetAt = store.Label(labels, x.Source), x.SetBy, x.SetAt
 			v.Mode, v.Outcome, v.OutcomeAt, v.Current = x.Mode, x.Outcome, x.OutcomeAt, current[n]
 			for _, ver := range catalogue[[2]string{x.Source, n}] {
 				k := [2]string{x.Source, n}
-				if slices.Contains(held[k], ver) || slices.Contains(withdrawn[k], ver) || slices.Contains(revoked[k], ver) {
+				if _, h := held[k][ver]; h || slices.Contains(withdrawn[k], ver) || slices.Contains(revoked[k], ver) {
 					continue
 				}
 				if v.Newest == "" || CompareVersions(ver, v.Newest) > 0 {
@@ -125,15 +144,96 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 		for src, k := range avail[n] {
 			v.Available[store.Label(labels, src)] += k
 		}
+		if x, ok := sel[n]; ok && x.Mode != store.RuleNone {
+			if err := w.of(ctx, x, &v); err != nil {
+				return nil, err
+			}
+		}
 		out = append(out, v)
 	}
 	slices.SortFunc(out, func(x, y SourceView) int { return strings.Compare(x.Name, y.Name) })
 	return out, nil
 }
 
+// waits are a channel's rules' reads for their Waiting and WaitsUntil (spec 0041), read at once
+// (store.ChannelRuleReads), so a channel's answer costs the same statements however many rules it
+// has; each rule's look is then the placement pass's (lookOf).
+type waits struct {
+	ch        store.Channel
+	now       time.Time
+	capis     map[string][]store.CAPI
+	reads     store.RuleReads
+	following map[string]bool // a follow's rules place automatically while the channel follows the source
+	blocked   map[string]bool // the tenant's blocked bodies
+	upstream  map[string]map[string]bool
+	store     *store.Store
+}
+
+// waitsOf reads a channel's rules (of one name, or every name: "") for their waits.
+func (s *Service) waitsOf(ctx context.Context, ch store.Channel, name string) (*waits, error) {
+	w := &waits{ch: ch, now: s.Store.Now(), following: map[string]bool{}, upstream: map[string]map[string]bool{}, store: s.Store}
+	fs, err := s.Store.Follows(ctx, ch.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fs {
+		w.following[f.Source] = true
+	}
+	if w.capis, err = s.Store.ChannelCAPIs(ctx, ch.ID); err != nil {
+		return nil, err
+	}
+	if w.reads, err = s.Store.ChannelRuleReads(ctx, ch, name); err != nil {
+		return nil, err
+	}
+	if w.blocked, err = s.Store.BlockedHashes(ctx, ch.TenantID); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+// of fills a rule's Waiting and WaitsUntil: WaitsUntil only for a rule placing automatically (auto,
+// or a follow's while the channel follows its source), since a channel's hold applies to automatic
+// placements only.
+func (w *waits) of(ctx context.Context, rule store.ChannelSource, v *SourceView) error {
+	builds, rels := w.reads.Of(rule.Source, rule.Name)
+	if len(builds) == 0 {
+		return nil
+	}
+	lk := lookOf(w.ch, w.capis, builds, w.reads.Purged, rels)
+	auto := rule.Mode == store.RuleAuto || rule.Mode == store.RuleFollow && w.following[rule.Source]
+	var err error
+	if v.Waiting, err = waitingOf(ctx, rule.Source, lk, w.now, auto, w.isBlocked); err != nil {
+		return err
+	}
+	if auto {
+		v.WaitsUntil, v.WaitsFor = lk.waitsUntil(w.now)
+	}
+	return nil
+}
+
+// isBlocked reads an upstream's blocks once, for the first of its rules that asks.
+func (w *waits) isBlocked(ctx context.Context, source, hash string) (bool, error) {
+	if w.blocked[hash] {
+		return true, nil
+	}
+	id, ok := strings.CutPrefix(source, store.SourceUpstreamPrefix)
+	if !ok {
+		return false, nil
+	}
+	ub, read := w.upstream[id]
+	if !read {
+		var err error
+		if ub, err = w.store.UpstreamBlockedHashes(ctx, id); err != nil {
+			return false, err
+		}
+		w.upstream[id] = ub
+	}
+	return ub[hash], nil
+}
+
 // Source is one name's view (Sources); a name with neither a source nor a release is not found.
 func (s *Service) Source(ctx context.Context, a authz.Actor, tenant, channel, name string) (SourceView, error) {
-	vs, err := s.Sources(ctx, a, tenant, channel)
+	vs, err := s.sources(ctx, a, tenant, channel, name)
 	if err != nil {
 		return SourceView{}, err
 	}

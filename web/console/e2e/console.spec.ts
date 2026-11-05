@@ -53,6 +53,7 @@ test('an extension administrator sees only its extension', async ({ page }) => {
   await signInTenant(page, 'eve')
   await expect(page.getByRole('link', { name: 'prod' })).toBeVisible()
   await page.getByRole('link', { name: 'prod' }).click()
+  await expect(page.getByRole('heading', { name: 'prod' })).toBeVisible() // the channel's page, not the page before
   await expect(page.getByRole('link', { name: 'tresor' })).toBeVisible()
   await expect(page.getByRole('link', { name: 'hello_acme' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Keys' })).toHaveCount(0)
@@ -66,6 +67,7 @@ test('a token without admin or audit has nothing to administer', async ({ page }
 test('a tenant administrator yanks and purges a release', async ({ page }) => {
   await signInTenant(page, 'tom')
   await page.getByRole('link', { name: 'prod' }).click()
+  await expect(page.getByRole('heading', { name: 'prod' })).toBeVisible() // the channel's page, not the page before
   await page.getByRole('link', { name: 'tresor' }).click()
   await page.getByRole('link', { name: '1.0' }).click()
   await expect(page.getByRole('heading', { name: 'tresor 1.0' })).toBeVisible()
@@ -99,6 +101,7 @@ test('a server administrator sees the tenants and opens one', async ({ page }) =
   await page.getByRole('link', { name: 'acme' }).click()
   await expect(page.getByRole('heading', { name: 'acme' })).toBeVisible()
   await page.getByRole('link', { name: 'prod' }).click()
+  await expect(page.getByRole('heading', { name: 'prod' })).toBeVisible() // the channel's page, not the page before
   await expect(page.getByRole('link', { name: 'hello_acme' })).toBeVisible()
 })
 
@@ -140,6 +143,7 @@ test('an ended session signs in again in a popup and keeps what was typed', asyn
 test('a tenant administrator attaches an SBOM and reads its summary (spec 0011)', async ({ page }) => {
   await signInTenant(page, 'tom')
   await page.getByRole('link', { name: 'prod' }).click()
+  await expect(page.getByRole('heading', { name: 'prod' })).toBeVisible() // the channel's page, not the page before
   await page.getByRole('link', { name: 'hello_acme' }).click()
   await page.getByRole('table').getByRole('link').first().click()
   await expect(page.getByRole('heading', { name: /^hello_acme / })).toBeVisible()

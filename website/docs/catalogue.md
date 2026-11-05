@@ -106,6 +106,48 @@ Placing needs `promote` on the name in the channel, which `admin` does not imply
 DuckDB versions or platforms that arrive later follow it. A held version is placed only with `-early`,
 by a channel administrator; the choice is recorded in the `release.place` event.
 
+### Know what waits
+
+kista says what waits for an administrator, and when what waits for a hold arrives (spec 0041):
+
+- **A held version's end.** `GET …/catalogue` lists, beside each entry's `held` versions,
+  `held_until`: each held version with the moment it leaves held (the latest end of hold of its
+  builds held now). `kista admin catalogue list` shows it in its `HELD` column. That is the source's
+  hold; a channel's own hold is per rule, below.
+- **What a rule waits for.** A channel's `GET …/sources` answers, per rule with a mode, `waiting`:
+  the newest version the rule could take that the channel has not had, as the placement pass reads
+  its candidates (an available entry, its body not blocked, for a DuckDB version the channel serves,
+  newer than everything its cells have or had from the source, yanked and purged releases included).
+  Under an `auto` rule it is what the next look places; under a `manual` one, what you may place. A
+  rule that places automatically also answers `waits_until` while its next placement waits for a
+  hold: the earliest end of the source's and the channel's holds among its candidates.
+- **A tell.** When the placement pass finds a version waiting under a `manual` rule (or a follow's
+  rule once the channel no longer follows the source), it writes the event `source.waiting`, once
+  per version: subject `channel:<c>/ext:<name>`, data the source, the version, the channel's current
+  version and the rule's mode. A version arriving held is told when its source's hold ends. The
+  tenant's own source is never the pass's: what waits under its rules is in the sources answer, and
+  no event tells of it. kista delivers the event to no one itself: the tenant's administrators and
+  auditors read it, a channel's administrators read their channel's (see
+  [Observability](observability.md#reading-events)), and an operator's
+  [sinks](observability.md) carry it to whatever alerts people.
+
+What the console's **Needs a decision** queue shows is computed from these reads; an
+administrator's answer to an item is a **decision**, kept in kista so every administrator sees the
+same queue:
+
+| Kind | Scope | The item comes back when |
+| --- | --- | --- |
+| `skip` | a channel, a source, a name: the waiting version skipped | a newer version waits |
+| `dismiss` (a follow's skip) | a channel, a source, a name: the skip's reason | the follow skips the name for another reason |
+| `dismiss` (no channel, or some channels only) | the tenant, a source, a name: the channels whose rules take the name | that set of channels changes |
+
+A decision changes nothing else: a skipped version can still be placed or promoted, and a dismissal
+changes no follow. The tenant's administrators write them (`PUT …/decisions`) and remove them
+(`DELETE …/decisions/{id}` with `If-Match`); they and the tenant's auditors read every decision
+(`GET …/decisions`), a channel's administrators their channel's (`GET …/channels/{c}/decisions`).
+A decision goes with its source, and with the last build of its name from that source. The routes
+are in the [API reference](api.md#decisions).
+
 ### Roll back, or stay on a version
 
 Yank the bad release ([Changing a release](publishing.md#changing-a-release)): the previous one is
@@ -208,17 +250,21 @@ after its table.
 
 ## In the console
 
-- **Catalogue** (tenant administrators) lists every source and name with its icon and summary, its
-  versions, each marked held, revoked or withdrawn, and the channels whose rules take it, filtered by
-  a name prefix and a source. An entry's page shows its icon and summary, with **Edit…** (the
-  summary, a PNG file, or removing the icon) on the tenant's own sources, never on a distributor's
-  entry, and each version's builds: platform, DuckDB version or C API, state (held
-  until when, withdrawn and why, revoked), visibility and the channels it is placed in. **Place…**
+- **Catalogue** (tenant administrators: their home, spec 0041) is a matrix: every source and name
+  with its icon, summary and versions (each marked held, revoked or withdrawn), against the tenant's
+  signed channels, each cell the channel's rule, what waits under it, a failed placement, another
+  source's rule or a follow's skip, and **+ Rule…**; filtered by a name prefix and a source. **Needs
+  a decision** under it is the [queue](#know-what-waits), with its count. An entry's page is per
+  name, every source side by side: each channel's rule for it edited in place, then per source its
+  licence, **Edit…** (the summary, a PNG file, or removing the icon) on the tenant's own sources,
+  never on a distributor's entry, and each version's builds: platform, DuckDB version or C API,
+  state (held until when, withdrawn and why, revoked), visibility and the channels it is placed in. **Place…**
   places a version into a signed channel where the caller holds `promote` on the name (privately, not
   current, or early for a held version, a channel administrator's); **Purge…** deletes a build placed
   nowhere; a server administrator withdraws a distributor's version with **Withdraw…** and a reason.
 - A channel's **Sources** tab (its administrators) shows each name's source, the rule's mode, the
-  version the channel holds and the newest available one, and the placement pass's last outcome;
+  version the channel holds and what waits (`waiting`, and `waits_until` while a hold lasts), and the
+  placement pass's last outcome;
   **Change…** switches the source or the mode, **Place…** places a version by hand, **Clear…**
   removes the rule. Beside it are the channel's **hold** and its **Follows**, each with the names it
   skips and why, followed and unfollowed there.

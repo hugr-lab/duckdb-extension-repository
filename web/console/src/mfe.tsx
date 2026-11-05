@@ -78,6 +78,7 @@ export function innerPath(basePath: string, hostPath: string, fallback: string):
 const titles: [RegExp, string][] = [
   [/^\/tenants\/[^/]+\/channels/, 'Channels'], [/^\/tenants\/[^/]+\/events/, 'Events'], [/^\/tenants\/[^/]+\/stats/, 'Statistics'],
   [/^\/tenants/, 'Tenants'], [/^\/events/, 'Events'], [/^\/channels/, 'Channels'], [/^\/stats/, 'Statistics'],
+  [/^\/catalogue/, 'Catalogue'], [/^\/decisions/, 'Needs a decision'], // spec 0041: a tenant administrator's home and queue
 ]
 
 // --- styles: constructed sheets in the shadow root, so a host's CSP needs no 'unsafe-inline' ---
@@ -231,7 +232,7 @@ function Embedded({ o, live, element }: { o: KistaOptions; live: Live; element: 
       )}
       <Warnings warnings={warnings} onDismiss={() => setWarnings([])} />
       <EpochContext.Provider value={epoch}>
-        <Sync o={o} live={live} fallback={tenant !== undefined ? '/channels' : '/tenants'} />
+        <Sync o={o} live={live} fallback={tenant !== undefined ? '/' : '/tenants'} />
         <Routes>
           <Route path="/*" element={tenant !== undefined ? <Tenant client={client} tenant={tenant} root="" /> : <Server client={client} root="" />} />
         </Routes>
@@ -257,7 +258,8 @@ function Sync({ o, live, fallback }: { o: KistaOptions; live: Live; fallback: st
   // the console navigated: the host's address and title follow
   useEffect(() => {
     const full = base + loc.pathname + loc.search
-    if (!(loc.state as { fromHost?: boolean } | null)?.fromHost) {
+    // a tenant's index goes on to its home at once: the host is told the home
+    if (loc.pathname !== '/' && !(loc.state as { fromHost?: boolean } | null)?.fromHost) {
       const replace = how !== 'PUSH' // the first entry and a replace take the host's entry over
       if (o.onNavigate) o.onNavigate(full, { replace })
       else if (window.location.pathname + window.location.search !== full) window.history[replace ? 'replaceState' : 'pushState'](null, '', full)
@@ -298,7 +300,9 @@ export function mountKista(element: HTMLElement, options: KistaOptions): KistaHa
   let gone = false
   const render = () => {
     element.dataset.kistaTheme = live.theme // the variables' dark defaults, on :host
-    const fallback = live.tenant !== undefined ? '/channels' : '/tenants'
+    // a tenant's: its index, which goes to the caller's home (spec 0041: a tenant administrator's the
+    // catalogue, anyone else's the channels)
+    const fallback = live.tenant !== undefined ? '/' : '/tenants'
     const first = innerPath(options.basePath ?? '', start, fallback)
     const [pathname, search] = first.includes('?') ? [first.slice(0, first.indexOf('?')), first.slice(first.indexOf('?'))] : [first, '']
     // nothing to tell the host when its path is the console's already, or is not below basePath at

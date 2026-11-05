@@ -19,6 +19,8 @@ import (
 type DueRule struct {
 	TenantID, ChannelID, Name, Source, Mode string
 	PackageType                             string
+	// Told is the version the rule's last source.waiting named (spec 0041), as DueRules read it
+	Told string
 }
 
 // DueRules lists the rules with a mode, of signed channels of active tenants, that the placement
@@ -29,7 +31,7 @@ type DueRule struct {
 // has entries of the name held at their arrival (available_at set: its hold, or its home channel's),
 // which its runs left to the pass (Home).
 func (s *Store) DueRules(ctx context.Context, sweep bool) ([]DueRule, error) {
-	q := `SELECT c.tenant_id, cs.channel_id, cs.name, cs.source, cs.mode, c.package_type FROM channel_sources cs
+	q := `SELECT c.tenant_id, cs.channel_id, cs.name, cs.source, cs.mode, c.package_type, cs.told_version FROM channel_sources cs
 JOIN channels c ON c.id = cs.channel_id JOIN tenants t ON t.id = c.tenant_id
 WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.source <> 'tenant' AND (cs.mode IN ('auto', 'manual', 'follow')
 	OR cs.mode = '' AND cs.source LIKE 'upstream:%' AND EXISTS (SELECT 1 FROM builds l WHERE l.tenant_id = c.tenant_id
@@ -43,9 +45,11 @@ WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.
 	var rules []DueRule
 	if err := s.eachRow(ctx, q+" ORDER BY c.tenant_id, cs.channel_id, cs.name", args, func(sc func(...any) error) error {
 		var r DueRule
-		if err := sc(&r.TenantID, &r.ChannelID, &r.Name, &r.Source, &r.Mode, &r.PackageType); err != nil {
+		var told sql.NullString
+		if err := sc(&r.TenantID, &r.ChannelID, &r.Name, &r.Source, &r.Mode, &r.PackageType, &told); err != nil {
 			return err
 		}
+		r.Told = told.String
 		if pkgtype.Known(r.PackageType) { // spec 0034: a channel of a type this binary does not know places nothing
 			rules = append(rules, r)
 		}
@@ -137,6 +141,95 @@ func (t *Tx) SourceReleases(ctx context.Context, channelID, source, name string)
 	return out, purged.Err()
 }
 
+// RuleReads are what the placement pass reads of a rule (SourceBuilds, PurgedBuilds and
+// SourceReleases), for many rules of a channel at once, by (source, name) (spec 0041: the sources
+// answer looks at every rule of a channel).
+type RuleReads struct {
+	Builds   map[[2]string][]Build
+	Purged   map[string]bool // build ids
+	Releases map[[2]string][]Candidate
+	// Slots are the channel's purged slots by name, Source "*" for one purged before slots had a
+	// source (it is every source's)
+	Slots map[string][]Candidate
+}
+
+// Of are a (source, name)'s builds, and its releases and purged slots in the channel, as
+// SourceBuilds and SourceReleases answer them.
+func (rr RuleReads) Of(source, name string) ([]Build, []Candidate) {
+	rels := slices.Clone(rr.Releases[[2]string{source, name}])
+	for _, c := range rr.Slots[name] {
+		if c.Source == source || c.Source == "*" {
+			c.Source = source
+			rels = append(rels, c)
+		}
+	}
+	return rr.Builds[[2]string{source, name}], rels
+}
+
+// ChannelRuleReads reads, for a channel's rules with a mode (of one name, or every name: ""), the
+// catalogue builds of each rule's (source, name), those purged for good, and the releases and purged
+// slots of those names in the channel: four statements, however many rules. A rule without a mode
+// (an arrival's: a mirror's names in its own channel) waits for nothing, and is not read.
+func (s *Store) ChannelRuleReads(ctx context.Context, ch Channel, name string) (RuleReads, error) {
+	rr := RuleReads{Builds: map[[2]string][]Build{}, Purged: map[string]bool{}, Releases: map[[2]string][]Candidate{}, Slots: map[string][]Candidate{}}
+	of, args := "", []any{ch.ID, ch.TenantID, ch.PackageType}
+	if name != "" {
+		of, args = " AND cs.name = ?", append(args, name)
+	}
+	rules := ` FROM builds b JOIN channel_sources cs ON cs.source = b.source AND cs.name = b.name
+WHERE cs.channel_id = ? AND cs.mode <> '' AND b.tenant_id = ? AND b.package_type = ?` + of
+	if err := s.eachRow(ctx, "SELECT "+prefixed("b.", buildCols)+rules+" ORDER BY b.created_at, b.id", args, func(sc func(...any) error) error {
+		b, err := scanBuild(rowScanner(sc))
+		if err == nil {
+			k := [2]string{b.Source, b.Name}
+			rr.Builds[k] = append(rr.Builds[k], b)
+		}
+		return err
+	}); err != nil {
+		return rr, err
+	}
+	if err := s.eachRow(ctx, "SELECT b.id"+rules+` AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)
+AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = b.tenant_id
+	AND c.package_type = b.package_type AND p.name = b.name AND p.package_version = b.package_version AND p.body_hash = b.body_hash
+	AND p.source IN (b.source, '*'))`, args, func(sc func(...any) error) error {
+		var id string
+		err := sc(&id)
+		rr.Purged[id] = err == nil
+		return err
+	}); err != nil {
+		return rr, err
+	}
+	// the names of the channel's rules with a mode only
+	on, rargs := " AND r.name IN (SELECT cs.name FROM channel_sources cs WHERE cs.channel_id = r.channel_id AND cs.mode <> '')", []any{ch.ID}
+	if name != "" {
+		on, rargs = on+" AND r.name = ?", append(rargs, name)
+	}
+	if err := s.eachRow(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id WHERE r.channel_id = ?"+on, rargs,
+		func(sc func(...any) error) error {
+			c, err := scanCandidate(rowScanner(sc))
+			if err == nil {
+				k := [2]string{c.Source, c.Name}
+				rr.Releases[k] = append(rr.Releases[k], c)
+			}
+			return err
+		}); err != nil {
+		return rr, err
+	}
+	on = strings.ReplaceAll(on, "r.", "p.")
+	err := s.eachRow(ctx, "SELECT p.release_id, p.package_version, p.platform, p.slot, p.abi, p.body_hash, p.seq, p.source, p.name FROM purged_slots p WHERE p.channel_id = ?"+on,
+		rargs, func(sc func(...any) error) error {
+			c := Candidate{Release: Release{ChannelID: ch.ID, State: ReleasePurged}}
+			var seq sql.NullInt64
+			if err := sc(&c.ID, &c.PackageVersion, &c.Platform, &c.Slot, &c.ABI, &c.BodyHash, &seq, &c.Source, &c.Name); err != nil {
+				return err
+			}
+			c.Seq = seq.Int64
+			rr.Slots[c.Name] = append(rr.Slots[c.Name], c)
+			return nil
+		})
+	return rr, err
+}
+
 // SetRuleChecked records the placement pass's look at a rule, begun at start: when (builds made
 // after it are looked at next time), its outcome ("" for none), and when the first hold it waits for
 // ends (spec 0033 phase A2: due, zero for none). A rule changed since the look began (its source,
@@ -172,6 +265,34 @@ WHERE channel_id = ? AND name = ? AND source = ? AND mode = ? AND set_at <= ?`,
 			outcome, tx.s.d.timeArg(tx.Now()), r.ChannelID, r.Name, r.Source, r.Mode, tx.s.d.timeArg(start))
 		return err
 	})
+}
+
+// TellWaiting records that a look at a rule, begun at start, found version waiting under it (spec
+// 0041): told_version and the event (event, in the same transaction), by an update that requires
+// what the look read: the rule's source and mode unchanged, set_at not after start, and told_version
+// still r.Told. Of two looks that read the same told_version only the first to commit tells; told
+// reports whether this one did.
+func (s *Store) TellWaiting(ctx context.Context, r DueRule, start time.Time, version string, event func(*Tx) error) (told bool, err error) {
+	err = s.InTx(ctx, "", func(tx *Tx) error {
+		told = false
+		q, args := `UPDATE channel_sources SET told_version = ? WHERE channel_id = ? AND name = ? AND source = ? AND mode = ? AND set_at <= ?`,
+			[]any{version, r.ChannelID, r.Name, r.Source, r.Mode, tx.s.d.timeArg(start)}
+		if r.Told == "" {
+			q += " AND told_version IS NULL"
+		} else {
+			q, args = q+" AND told_version = ?", append(args, r.Told)
+		}
+		res, err := tx.exec(ctx, q, args...)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return err
+		}
+		told = true
+		return event(tx)
+	})
+	return told && err == nil, err
 }
 
 // PurgedBuilds are a tenant's builds of a package (type, name) from a source that are released
@@ -238,9 +359,26 @@ GROUP BY source, name, package_version`, []any{tenantID, packageType}, func(sc f
 }
 
 // HeldVersions are a tenant's catalogue of a type's held versions (spec 0033 phase A2): those of each
-// (source, name) with a build held now.
-func (s *Store) HeldVersions(ctx context.Context, tenantID, packageType string) (map[[2]string][]string, error) {
-	return s.versionsWhere(ctx, tenantID, packageType, "available_at > ?", s.d.timeArg(s.Now()))
+// (source, name) with a build held now, each with the latest end of hold of its builds held now, the
+// moment it leaves held (spec 0041: held_until).
+func (s *Store) HeldVersions(ctx context.Context, tenantID, packageType string) (map[[2]string]map[string]time.Time, error) {
+	out := map[[2]string]map[string]time.Time{}
+	err := s.eachRow(ctx, `SELECT source, name, package_version, MAX(available_at) FROM builds WHERE tenant_id = ? AND package_type = ?
+AND available_at > ? GROUP BY source, name, package_version`, []any{tenantID, packageType, s.d.timeArg(s.Now())},
+		func(sc func(...any) error) error {
+			var src, name, v string
+			var until time.Time
+			if err := sc(&src, &name, &v, scanTime{&until}); err != nil {
+				return err
+			}
+			k := [2]string{src, name}
+			if out[k] == nil {
+				out[k] = map[string]time.Time{}
+			}
+			out[k][v] = until
+			return nil
+		})
+	return out, err
 }
 
 // RevokedVersions are a tenant's catalogue of a type's revoked versions (spec 0033 phase A2): those of
@@ -467,6 +605,10 @@ func (t *Tx) DeleteEntry(ctx context.Context, tenantID, id string) (Build, error
 		if t.s.d.foreignKey(err) { // a placement released it meanwhile
 			return Build{}, fmt.Errorf("%w: the build was just released", ErrConflict)
 		}
+		return Build{}, err
+	}
+	// spec 0041: the last build of a (source, name) takes its decisions with it
+	if err := t.dropEntryDecisions(ctx, b.TenantID, b.PackageType, b.Source, b.Name); err != nil {
 		return Build{}, err
 	}
 	// a mirror's cell that landed it fetches it again at its next run

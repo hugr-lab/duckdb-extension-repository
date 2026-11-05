@@ -4,20 +4,39 @@ import type { Client } from '../lib/http'
 import { useLoad } from '../lib/context'
 import type { Event } from './types'
 
+/** The families of the event catalogue's kinds ("release.*"), sorted. */
+export function families(kinds: string[]) {
+  return [...new Set(kinds.filter((k) => k.includes('.')).map((k) => `${k.slice(0, k.indexOf('.'))}.*`))].sort()
+}
+
+/** The kind parameter (spec 0040: a list of kinds and families): the families chosen, and the kind
+ * chosen unless one of them takes it in. */
+export function kindParam(chosen: string[], kind: string) {
+  const covered = kind && chosen.some((f) => kind.startsWith(f.slice(0, -1)))
+  return [...chosen, ...(kind && !covered ? [kind] : [])].join(',')
+}
+
 /** Events (spec 0010) under an API path ("/tenants/acme/events" or "/events"), with the API's
- * filters; everything is rendered as text. */
-export function Events({ client, path, title }: { client: Client; path: string; title: string }) {
+ * filters, the kinds' families as chips (spec 0041); everything is rendered as text. A fixed subject
+ * (a channel's administrators read their channel's events) is sent with every read. */
+export function Events({ client, path, title, subject, hidden = [] }: { client: Client; path: string; title: string; subject?: string; hidden?: string[] }) {
   const [filter, setFilter] = useState({ kind: '', actor: '', subject: '', outcome: '' })
   const [applied, setApplied] = useState(filter)
+  const [chosen, setChosen] = useState<string[]>([])
   const [pages, setPages] = useState<string[]>([''])
   const cursor = pages[pages.length - 1]
-  const kinds = useLoad(() => client.get<{ kinds: { kind: string }[] }>('/event-kinds', { anonymous: true }), [])
+  const catalogue = useLoad(() => client.get<{ kinds: { kind: string }[] }>('/event-kinds', { anonymous: true }), [])
+  // the kinds this reader may read: a channel's administrators never the serving plane's
+  const offered = (catalogue.data?.data.kinds ?? []).map((k) => k.kind).filter((k) => !hidden.includes(k))
   const { data, error, loading, reload } = useLoad(() => {
     const q = new URLSearchParams({ limit: '50' })
-    for (const [k, v] of Object.entries(applied)) if (v) q.set(k, v)
+    for (const [k, v] of Object.entries(applied)) if (v && k !== 'kind') q.set(k, v)
+    const kind = kindParam(chosen, applied.kind)
+    if (kind) q.set('kind', kind)
+    if (subject) q.set('subject', applied.subject.startsWith(`${subject}/`) ? applied.subject : subject)
     if (cursor) q.set('cursor', cursor)
     return client.get<{ events: Event[]; next?: string }>(`${path}?${q}`)
-  }, [path, applied, cursor])
+  }, [path, applied, cursor, chosen.join(','), subject])
   const [open, setOpen] = useState<Event | null>(null)
   const input = (k: keyof typeof filter, label: string) => (
     <input aria-label={label} placeholder={label} className="rounded-full border border-line bg-surface px-3 py-1" value={filter[k]}
@@ -35,12 +54,12 @@ export function Events({ client, path, title }: { client: Client; path: string; 
       >
         <select aria-label="kind" className="rounded-full border border-line bg-surface px-3 py-1" value={filter.kind} onChange={(e) => setFilter({ ...filter, kind: e.target.value })}>
           <option value="">any kind</option>
-          {(kinds.data?.data.kinds ?? []).map((k) => (
-            <option key={k.kind} value={k.kind}>{k.kind}</option>
+          {offered.map((k) => (
+            <option key={k} value={k}>{k}</option>
           ))}
         </select>
         {input('actor', 'actor id')}
-        {input('subject', 'subject prefix')}
+        {input('subject', subject ? `subject under ${subject}/` : 'subject prefix')}
         <select aria-label="outcome" className="rounded-full border border-line bg-surface px-3 py-1" value={filter.outcome} onChange={(e) => setFilter({ ...filter, outcome: e.target.value })}>
           <option value="">any outcome</option>
           <option value="ok">ok</option>
@@ -49,6 +68,15 @@ export function Events({ client, path, title }: { client: Client; path: string; 
         </select>
         <Button type="submit" tone="brand">Filter</Button>
       </form>
+      <div role="group" aria-label="event families" className="mb-4 flex flex-wrap gap-1.5">
+        {families(offered).map((f) => {
+          const on = chosen.includes(f)
+          return (
+            <button key={f} type="button" aria-pressed={on} className={`chip font-mono ${on ? 'bg-brand-strong text-brand-on' : 'border border-line text-ink'}`}
+              onClick={() => { setChosen(on ? chosen.filter((x) => x !== f) : [...chosen, f].sort()); setPages(['']) }}>{f}</button>
+          )
+        })}
+      </div>
       {loading ? <Loading /> : error ? <ErrorBox error={error} /> : data!.data.events.length === 0 ? <Empty>No events.</Empty> : (
         <>
           <Table

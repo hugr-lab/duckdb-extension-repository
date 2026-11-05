@@ -5,6 +5,7 @@ import { useLoad, usePaged, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
 import { WhoMayUse } from './Access'
 import { Keys } from './Keys'
+import { Events } from './Events'
 import { PromoteButton } from './Promote'
 import { Reports } from './Reports'
 import { Sources } from './Sources'
@@ -16,7 +17,10 @@ export const platforms = ['linux_amd64', 'linux_arm64', 'linux_amd64_musl', 'lin
 
 export const releaseStates: ['' | 'active' | 'deprecated' | 'yanked', string][] = [['', 'All'], ['active', 'Active'], ['deprecated', 'Deprecated'], ['yanked', 'Yanked']]
 
-type Tab = 'extensions' | 'releases' | 'sources' | 'keys'
+type Tab = 'extensions' | 'releases' | 'sources' | 'keys' | 'events'
+
+/** The serving plane's kinds (audit.ServingKinds): a channel's administrators never read them (spec 0041). */
+export const servingKinds = ['install', 'extension.use', 'usage.receive']
 
 /** A channel: its extensions (the index, by name, page by page), all its releases, its keys. Its
  * administrators see all of them; an extension's administrators, their extensions. */
@@ -27,7 +31,9 @@ export function Channel() {
   const [picked, setTab] = useState<{ c: string; tab: Tab }>({ c, tab: 'extensions' })
   const detail = useLoad(() => client.get<{ kind: string; duckdb_versions?: { duckdb_version: string }[] }>(`${api}/channels/${seg(c)}`), [api, c])
   const versions = detail.data?.data.duckdb_versions?.map((v) => v.duckdb_version) ?? []
-  const tabs: [Tab, string][] = admin ? [['extensions', 'Extensions'], ['releases', 'All releases'], ['sources', 'Sources'], ['keys', 'Keys']] : [['extensions', 'Extensions']]
+  // spec 0041: a channel's administrator who does not audit the tenant reads its channel's events here
+  const tabs: [Tab, string][] = admin ? [['extensions', 'Extensions'], ['releases', 'All releases'], ['sources', 'Sources'], ['keys', 'Keys'],
+    ...(perms.canAudit ? [] : [['events', 'Events'] as [Tab, string]])] : [['extensions', 'Extensions']]
   // a tab chosen in another channel, or one this caller is not offered here, is not kept
   const tab = picked.c === c && tabs.some(([t]) => t === picked.tab) ? picked.tab : 'extensions'
   return (
@@ -38,7 +44,7 @@ export function Channel() {
       </PageTitle>
       {admin && detail.data && <ChannelVersions key={c} channel={c} versions={versions} onChanged={detail.reload} />}
       {tabs.length > 1 && <Chips label="channel sections" value={tab} options={tabs} onChange={(t) => setTab({ c, tab: t })} />}
-      {tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : tab === 'sources' ? <Sources channel={c} kind={detail.data?.data.kind} /> : !admin ? <Mine channel={c} /> :
+      {tab === 'events' ? <Events key={c} client={client} path={`${api}/events`} title="Events" subject={`channel:${c}`} hidden={servingKinds} /> : tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : tab === 'sources' ? <Sources channel={c} kind={detail.data?.data.kind} /> : !admin ? <Mine channel={c} /> :
         detail.error ? <ErrorBox error={detail.error} /> : !detail.data ? <Loading /> : <Extensions channel={c} versions={versions} />}
     </>
   )

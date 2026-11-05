@@ -41,3 +41,12 @@ func SetReleaseSourcesChunk(n int) (restore func()) {
 	releaseSourcesChunk = n
 	return func() { releaseSourcesChunk = old }
 }
+
+// SetAfterDecisionRead sets a hook run between SetDecision's read of the decision it replaces and
+// its write (spec 0041), until the returned func clears it.
+func SetAfterDecisionRead(f func(t *Tx, exec func(q string, args ...any) error)) (restore func()) {
+	afterDecisionRead = func(t *Tx) {
+		f(t, func(q string, args ...any) error { _, err := t.exec(context.Background(), q, args...); return err })
+	}
+	return func() { afterDecisionRead = nil }
+}

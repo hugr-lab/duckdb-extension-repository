@@ -208,7 +208,7 @@ func TestHolds(t *testing.T) {
 		if pt, _, err := s.ChannelPullThrough(ctx, ch.ID); err != nil || len(pt) != 1 {
 			t.Fatalf("pull-through without a channel hold: %+v %v", pt, err)
 		}
-		// the catalogue's held versions
+		// the catalogue's held versions (each with its end of hold: TestHeldUntil)
 		hv, err := s.HeldVersions(ctx, tn.ID, "duckdb_extension")
 		if err != nil || len(hv[[2]string{pub, "geo"}]) != 2 || len(hv[[2]string{store.UpstreamSource(eager.ID), "eagerx"}]) != 1 {
 			t.Fatalf("held versions: %v %v", hv, err)

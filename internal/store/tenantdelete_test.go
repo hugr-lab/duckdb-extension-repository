@@ -63,6 +63,9 @@ func fullTenant(t *testing.T, s *store.Store, name, n string) (store.Tenant, sto
 		{"INSERT INTO channel_sources (channel_id, name, source, set_by, set_at) VALUES (?, 'json', 'tenant', 'os:1:t', ?)", []any{cid, now}},
 		{"INSERT INTO channel_follows (channel_id, source, set_by, set_at) VALUES (?, 'publisher:x', 'os:1:t', ?)", []any{cid, now}},
 		{"INSERT INTO follow_skips (channel_id, source, name, reason) VALUES (?, 'publisher:x', 'json', 'reserved')", []any{cid}},
+		// spec 0041: a channel's decision, which references the channel
+		{"INSERT INTO decisions (id, tenant_id, package_type, channel_id, kind, source, name, package_version, version, decided_by, decided_at) " +
+			"VALUES (?, ?, 'duckdb_extension', ?, 'skip', 'tenant', 'acl', '1.0', 1, 'os:1:t', ?)", []any{id("w"), tid, cid, now}},
 		{"INSERT INTO bundle_imports (id, tenant_id, manifest_id, manifest_created_at, manifest_sha256, exporter, bundle_key, dry_run, " +
 			"state, counts, started_at, actor) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, 'done', '{}', ?, 'os:1:t')",
 			[]any{id("m"), tid, id("n"), now, hash, fp("d"), false, now}},

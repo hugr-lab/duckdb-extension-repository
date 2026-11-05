@@ -335,6 +335,211 @@ func (s served) complete(it *item) {
 	}
 }
 
+// candidate is a build of a rule's source the channel could take (spec 0033: the placement pass's
+// candidates): checked, for a DuckDB version the channel serves, not purged for good, in a slot that
+// neither has nor had the version, neither revoked nor withdrawn.
+type candidate struct {
+	b store.Build
+	// at is when an automatic placement may take it: the later of its source's hold and the
+	// channel's (AvailableIn)
+	at time.Time
+	// newer: newer than every version its cells have or had from the source (any state; yanked,
+	// purged)
+	newer bool
+}
+
+// ruleLook is what a look at a rule reads (spec 0041: the pass and the sources answer share it):
+// what the source's releases serve in the channel, the source's candidates, and the newest version
+// the channel holds from the source (an active or deprecated release, not withdrawn).
+type ruleLook struct {
+	sv      served
+	cands   []candidate
+	current string
+}
+
+// lookAt reads a rule's look: the source's builds of the name in the channel's catalogue, and the
+// source's releases of it in the channel.
+func (s *Service) lookAt(ctx context.Context, ch store.Channel, source, name string) (ruleLook, error) {
+	builds, err := s.Store.SourceBuilds(ctx, ch.TenantID, ch.PackageType, source, name)
+	if err != nil || len(builds) == 0 {
+		return ruleLook{}, err
+	}
+	capis, err := s.Store.ChannelCAPIs(ctx, ch.ID)
+	if err != nil {
+		return ruleLook{}, err
+	}
+	purged, err := s.Store.PurgedBuilds(ctx, ch.TenantID, ch.PackageType, source, name)
+	if err != nil {
+		return ruleLook{}, err
+	}
+	var rels []store.Candidate
+	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+		var err error
+		rels, err = tx.SourceReleases(ctx, ch.ID, source, name)
+		return err
+	}); err != nil {
+		return ruleLook{}, err
+	}
+	return lookOf(ch, capis, builds, purged, rels), nil
+}
+
+// lookOf is a rule's look from what was read of it: the channel's DuckDB versions, the source's
+// builds of the name (purged: those purged for good), and its releases and purged slots there.
+func lookOf(ch store.Channel, capis map[string][]store.CAPI, builds []store.Build, purged map[string]bool, rels []store.Candidate) ruleLook {
+	lk := ruleLook{sv: newServed(rels, capis)}
+	for _, r := range rels {
+		if (r.State == store.ReleaseActive || r.State == store.ReleaseDeprecated) && !r.Withdrawn &&
+			(lk.current == "" || CompareVersions(r.PackageVersion, lk.current) > 0) {
+			lk.current = r.PackageVersion
+		}
+	}
+	for _, b := range builds {
+		if !b.Checked || servable(capis, b) != nil || purged[b.ID] || lk.sv.had[[3]string{b.PackageVersion, b.Platform, b.Slot()}] {
+			continue
+		}
+		if b.Revoked() || b.Withdrawn() { // spec 0033: revoked, only a channel administrator places it (early); withdrawn, no one
+			continue
+		}
+		lk.cands = append(lk.cands, candidate{b: b, at: b.AvailableIn(ch.Hold), newer: newer(b.PackageVersion, lk.sv.cells(b), lk.sv.newest)})
+	}
+	return lk
+}
+
+// blockedFn reports whether a body of a source's build is blocked: in the tenant, or by the source's
+// upstream (spec 0039).
+type blockedFn func(ctx context.Context, source, hash string) (bool, error)
+
+// blockedNow reads each body's blocks as it is asked (the pass's look, a candidate or two).
+func (s *Service) blockedNow(tenantID string) blockedFn {
+	return func(ctx context.Context, source, hash string) (bool, error) {
+		blocked, err := s.Store.Blocked(ctx, tenantID, hash)
+		if id, ok := strings.CutPrefix(source, store.SourceUpstreamPrefix); err == nil && !blocked && ok {
+			blocked, err = s.Store.UpstreamBlocked(ctx, id, hash)
+		}
+		return blocked, err
+	}
+}
+
+// waitingOf is a rule's waiting version (spec 0041): the newest of its candidates newer than what
+// their cells had whose entry is available (its source's hold ended) and whose body is not blocked
+// (in the tenant, or by its upstream); "" for none. A candidate of a version the channel holds is
+// not one: the pass completes it by itself. Under a rule placing automatically (auto) it is what the
+// next look places: per platform and slot the newest candidate, so a blocked newest one, which the
+// pass tries all the same (its refusal is the rule's outcome), leaves that slot nothing waiting; an
+// administrator placing by hand may take an older one.
+func waitingOf(ctx context.Context, source string, lk ruleLook, now time.Time, auto bool, blocked blockedFn) (string, error) {
+	var cands []store.Build
+	for _, c := range lk.cands {
+		if c.newer && !c.b.Held(now) && !lk.sv.held[c.b.PackageVersion] {
+			cands = append(cands, c.b)
+		}
+	}
+	slices.SortFunc(cands, func(x, y store.Build) int { return CompareVersions(y.PackageVersion, x.PackageVersion) })
+	if auto {
+		return autoWaiting(ctx, source, lk, cands, blocked)
+	}
+	for _, b := range cands {
+		bl, err := blocked(ctx, source, b.BodyHash)
+		if err != nil {
+			return "", err
+		}
+		if !bl {
+			return b.PackageVersion, nil
+		}
+	}
+	return "", nil
+}
+
+// autoWaiting is what the next look of a rule placing automatically places, as placeRule chooses it:
+// per platform and slot the newest candidate, less one a newer one of another slot shadows (it
+// serves a cell in common), less a blocked one (the pass tries it, and its refusal is the rule's
+// outcome); the newest of what remains. cands are newest first.
+func autoWaiting(ctx context.Context, source string, lk ruleLook, cands []store.Build, blocked blockedFn) (string, error) {
+	var best []store.Build // per (platform, slot), newest first
+	seen := map[[2]string]bool{}
+	for _, b := range cands {
+		if k := [2]string{b.Platform, b.Slot()}; !seen[k] {
+			seen[k] = true
+			best = append(best, b)
+		}
+	}
+	for i, b := range best {
+		shadowed := false
+		for _, o := range best[:i] { // the newer ones
+			if CompareVersions(o.PackageVersion, b.PackageVersion) > 0 && overlap(lk.sv.cells(b), lk.sv.cells(o)) {
+				shadowed = true
+				break
+			}
+		}
+		if shadowed {
+			continue
+		}
+		bl, err := blocked(ctx, source, b.BodyHash)
+		if err != nil {
+			return "", err
+		}
+		if !bl {
+			return b.PackageVersion, nil
+		}
+	}
+	return "", nil
+}
+
+// waitsUntil is when a rule's next automatic placement can happen when it waits for a hold (spec
+// 0041): the earliest end of hold (the source's and the channel's) of its candidates newer than what
+// their cells had, with that candidate's version (the newest of those ending then); zero for none.
+func (lk ruleLook) waitsUntil(now time.Time) (time.Time, string) {
+	var at time.Time
+	version := ""
+	for _, c := range lk.cands {
+		if !c.newer || !c.at.After(now) {
+			continue
+		}
+		if at.IsZero() || c.at.Before(at) || c.at.Equal(at) && CompareVersions(c.b.PackageVersion, version) > 0 {
+			at, version = c.at, c.b.PackageVersion
+		}
+	}
+	return at, version
+}
+
+// earliest is the earlier of two times, a zero one being none.
+func earliest(a, b time.Time) time.Time {
+	if a.IsZero() || !b.IsZero() && b.Before(a) {
+		return b
+	}
+	return a
+}
+
+// tellWaiting writes source.waiting for a version waiting under a manual rule (or a follow's rule
+// acting as manual) newer than the one the rule last told of (spec 0041), once per version: with
+// told_version, in one transaction, only if the rule is as its look read it (store.TellWaiting).
+func (s *Service) tellWaiting(ctx context.Context, r store.DueRule, start time.Time, res lookResult) error {
+	if res.waiting == "" || r.Told != "" && CompareVersions(res.waiting, r.Told) <= 0 {
+		return nil
+	}
+	ch, err := s.channelByID(ctx, r.ChannelID)
+	if err != nil {
+		return err
+	}
+	label, err := s.Store.SourceLabel(ctx, r.Source)
+	if err != nil {
+		return err
+	}
+	f := map[string]any{"source": label, "version": res.waiting, "current": res.current, "mode": r.Mode}
+	if ch.PackageType != pkgtype.Default {
+		f["package_type"] = ch.PackageType
+	}
+	if s.beforeTell != nil {
+		if err := s.beforeTell(); err != nil {
+			return err
+		}
+	}
+	_, err = s.Store.TellWaiting(ctx, r, start, res.waiting, func(tx *store.Tx) error {
+		return tx.Event(ctx, ch.TenantID, placer.String(), "source.waiting", "channel:"+ch.Name+"/ext:"+r.Name, f)
+	})
+	return err
+}
+
 // PlaceRule places what a channel's rule takes (spec 0033): for an auto rule, per cell the newest
 // build of its source the channel serves when it is newer than every version the cells it serves
 // have or had; for both modes, a build of a version the channel holds (an active release of the
@@ -344,8 +549,8 @@ func (s served) complete(it *item) {
 // revoked. Each build is placed on its own, renewing the caller's lease first; it returns how many
 // were placed and the first failure's text ("" for none).
 func (s *Service) PlaceRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, error) {
-	n, failure, _, err := s.placeRule(ctx, r, renew)
-	return n, failure, err
+	res, err := s.placeRule(ctx, r, renew)
+	return res.placed, res.failure, err
 }
 
 // homeCheck is what a mirror's run checks of a build it releases into its home channel, made again
@@ -402,11 +607,21 @@ func (s *Service) homeOf(ctx context.Context, r store.DueRule, tenant string) (h
 	return h, true, nil
 }
 
-// placeRule is PlaceRule, with when the first hold it waits for ends (zero for none): the pass looks
-// at the rule again then. A mirror's rule without a mode in its home channel (store.DueRules) places,
-// as an auto rule, the entries its runs left to the pass, held at their arrival (available_at set),
-// once they are available, with the run's checks (homeOf).
-func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (int, string, time.Time, error) {
+// lookResult is a look at a rule: how many builds it placed, the first failure's text ("" for none),
+// when the first hold it waits for ends (zero for none: the pass looks at the rule again then), and,
+// under a manual rule (or a follow's rule acting as manual), the version waiting for an administrator
+// with the newest version the channel holds from the source (spec 0041: what source.waiting tells).
+type lookResult struct {
+	placed           int
+	failure          string
+	due              time.Time
+	waiting, current string
+}
+
+// placeRule is PlaceRule, with the rest of its look (lookResult). A mirror's rule without a mode in
+// its home channel (store.DueRules) places, as an auto rule, the entries its runs left to the pass,
+// held at their arrival (available_at set), once they are available, with the run's checks (homeOf).
+func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(context.Context) error) (lookResult, error) {
 	// spec 0035 phase 2: the look's licence warnings, once per source, name and channel (a follow's
 	// look's, when it places through its rules)
 	ctx = store.WithLicenseWarnings(ctx)
@@ -417,7 +632,7 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 	if r.Mode == store.RuleFollow { // a follow's rule: auto while the channel follows the source
 		following, err := s.Store.Following(ctx, r.ChannelID, r.Source)
 		if err != nil {
-			return 0, "", time.Time{}, err
+			return lookResult{}, err
 		}
 		r.Mode = store.RuleManual
 		if following {
@@ -427,61 +642,40 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 	}
 	ch, err := s.channelByID(ctx, r.ChannelID)
 	if err != nil {
-		return 0, "", time.Time{}, err
+		return lookResult{}, err
 	}
 	if r.PackageType == "" { // a rule read without its channel's type: the channel's
 		r.PackageType = ch.PackageType
 	}
 	if !pkgtype.Known(r.PackageType) { // spec 0034: a rule of a channel of a type this binary does not know places nothing
-		return 0, "", time.Time{}, nil
+		return lookResult{}, nil
 	}
-	builds, err := s.Store.SourceBuilds(ctx, r.TenantID, r.PackageType, r.Source, r.Name)
-	if err != nil || len(builds) == 0 {
-		return 0, "", time.Time{}, err
+	now := s.Store.Now() // what is held is held at the look's start
+	lk, err := s.lookAt(ctx, ch, r.Source, r.Name)
+	if err != nil || len(lk.cands) == 0 {
+		return lookResult{}, err
 	}
 	tn, err := s.Store.GetTenantAnyByID(ctx, r.TenantID)
 	if err != nil {
-		return 0, "", time.Time{}, err
+		return lookResult{}, err
 	}
 	var hc homeCheck
 	if home {
 		var ok bool
 		if hc, ok, err = s.homeOf(ctx, r, tn.Name); err != nil || !ok {
-			return 0, "", time.Time{}, err
+			return lookResult{}, err
 		}
-	}
-	capis, err := s.Store.ChannelCAPIs(ctx, r.ChannelID)
-	if err != nil {
-		return 0, "", time.Time{}, err
-	}
-	purged, err := s.Store.PurgedBuilds(ctx, r.TenantID, r.PackageType, r.Source, r.Name)
-	if err != nil {
-		return 0, "", time.Time{}, err
-	}
-	var cands []store.Candidate
-	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
-		var err error
-		cands, err = tx.SourceReleases(ctx, r.ChannelID, r.Source, r.Name)
-		return err
-	}); err != nil {
-		return 0, "", time.Time{}, err
 	}
 	label, err := s.Store.SourceLabel(ctx, r.Source)
 	if err != nil {
-		return 0, "", time.Time{}, err
+		return lookResult{}, err
 	}
-	sv := newServed(cands, capis)
+	sv := lk.sv
 	var items []item
 	var due time.Time                   // when the first hold this look waits for ends
-	now := s.Store.Now()                // what is held is held at the look's start
 	best := map[[2]string]store.Build{} // (platform, slot) → the newest new version
-	for _, b := range builds {
-		if !b.Checked || servable(capis, b) != nil || purged[b.ID] || sv.had[[3]string{b.PackageVersion, b.Platform, b.Slot()}] {
-			continue
-		}
-		if b.Revoked() || b.Withdrawn() { // spec 0033: revoked, only a channel administrator places it (early); withdrawn, no one
-			continue
-		}
+	for _, c := range lk.cands {
+		b := c.b
 		// a mirror's runs released what was not held at its arrival; the rest is the pass's, as the run
 		// would take it now
 		if home && (b.AvailableAt.IsZero() || !hc.takes(b)) {
@@ -489,10 +683,13 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 		}
 		// spec 0033 phase A2: an entry held, or within the channel's hold, waits, and the pass looks
 		// again when the first hold ends; then only a version newer than what the channel had, so an
-		// older version whose hold ends later does not overtake a newer one
-		if at := b.AvailableIn(ch.Hold); at.After(now) {
-			if due.IsZero() || at.Before(due) {
-				due = at
+		// older version whose hold ends later does not overtake a newer one. Spec 0041: under a manual
+		// rule a newer version starts waiting for an administrator when its source's hold ends, and
+		// the pass looks again then to tell of it.
+		if c.at.After(now) {
+			due = earliest(due, c.at)
+			if r.Mode == store.RuleManual && c.newer && b.Held(now) {
+				due = earliest(due, b.AvailableAt)
 			}
 			continue
 		}
@@ -503,7 +700,7 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 			items = append(items, it)
 			continue
 		}
-		if r.Mode != store.RuleAuto || !newer(b.PackageVersion, sv.cells(b), sv.newest) {
+		if r.Mode != store.RuleAuto || !c.newer {
 			continue
 		}
 		k := [2]string{b.Platform, b.Slot()}
@@ -535,11 +732,17 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 		}
 		return strings.Compare(x.b.Platform+"/"+x.b.Slot(), y.b.Platform+"/"+y.b.Slot())
 	})
-	placed, failure := 0, ""
+	res := lookResult{current: lk.current}
+	if r.Mode == store.RuleManual && !home {
+		if res.waiting, err = waitingOf(ctx, r.Source, lk, now, false, s.blockedNow(r.TenantID)); err != nil {
+			return lookResult{}, err
+		}
+	}
 	for _, it := range items {
 		if renew != nil {
 			if err := renew(ctx); err != nil {
-				return placed, failure, due, err
+				res.due = due
+				return res, err
 			}
 		}
 		_, existed, err := s.insert(ctx, placer, r.ChannelID, []item{it}, placeEvent(ctx, r.Name, label, how, false))
@@ -548,13 +751,14 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 			if soon := s.Store.Now().Add(time.Minute); due.IsZero() || soon.Before(due) {
 				due = soon
 			}
-		case err != nil && failure == "":
-			failure = fmt.Sprintf("%s %s %s: %v", it.b.PackageVersion, it.b.Platform, it.b.Slot(), err)
+		case err != nil && res.failure == "":
+			res.failure = fmt.Sprintf("%s %s %s: %v", it.b.PackageVersion, it.b.Platform, it.b.Slot(), err)
 		case err == nil && !existed:
-			placed++
+			res.placed++
 		}
 	}
-	return placed, failure, due, nil
+	res.due = due
+	return res, nil
 }
 
 // Placer runs the placement pass (spec 0033): every Interval, the rules whose source has builds
@@ -682,24 +886,28 @@ func (p *Placer) channel(ctx context.Context, channelID string, follows []store.
 			return // the lease was lost: another replica goes on
 		}
 		start := p.Service.Store.Now()
-		placed, failure, due, err := p.Service.placeRule(ctx, r, renew)
+		res, err := p.Service.placeRule(ctx, r, renew)
 		if errors.Is(err, errLeaseLost) {
 			return // another replica goes on
 		}
-		if placed > 0 {
-			p.Log.Info("release: placed a rule's builds", "channel", r.ChannelID, "name", r.Name, "placed", placed)
+		if res.placed > 0 {
+			p.Log.Info("release: placed a rule's builds", "channel", r.ChannelID, "name", r.Name, "placed", res.placed)
 		}
 		if err != nil {
 			// the look did not finish: its outcome is the error, and when it looked and what it waits
 			// for stay as they were, so the next pass looks again
 			p.Log.Error("release: placing a rule's builds", "channel", r.ChannelID, "name", r.Name, "error", err)
-			if err := p.Service.Store.SetRuleOutcome(ctx, r, start, cmp.Or(failure, err.Error())); err != nil {
+			if err := p.Service.Store.SetRuleOutcome(ctx, r, start, cmp.Or(res.failure, err.Error())); err != nil {
 				p.Log.Error("release: recording a rule's look", "channel", r.ChannelID, "name", r.Name, "error", err)
 			}
 			continue
 		}
-		if err := p.Service.Store.SetRuleChecked(ctx, r, start, start.Add(-placeSkew), failure, due); err != nil {
+		if err := p.Service.Store.SetRuleChecked(ctx, r, start, start.Add(-placeSkew), res.failure, res.due); err != nil {
 			p.Log.Error("release: recording a rule's look", "channel", r.ChannelID, "name", r.Name, "error", err)
+		}
+		// spec 0041: a failed tell is logged, never the rule's outcome; the next look tries again
+		if err := p.Service.tellWaiting(ctx, r, start, res); err != nil {
+			p.Log.Error("release: telling of a version waiting under a rule", "channel", r.ChannelID, "name", r.Name, "error", err)
 		}
 	}
 }

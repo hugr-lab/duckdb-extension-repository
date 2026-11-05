@@ -98,6 +98,11 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/n.
 "$work/fixture" "$work/hello2.duckdb_extension" 2.0 f hello_acme
 "$work/fixture" "$work/maps10.duckdb_extension" 1.0 g maps
 "$work/fixture" "$work/maps11.duckdb_extension" 1.1 h maps
+# spec 0041: atlas 1.0 and 1.1, the tenant's, under a manual rule in prod: 1.1 waits for a decision
+"$work/fixture" "$work/atlas10.duckdb_extension" 1.0 k atlas
+"$work/fixture" "$work/atlas11.duckdb_extension" 1.1 l atlas
+# spec 0041: tiles, enterest-ci's, which nightly's follow takes and places once its day's hold ends
+"$work/fixture" "$work/tiles10.duckdb_extension" 1.0 m tiles
 # K4: a build a server administrator adds to the catalogue from the console, its footer read there
 "$work/fixture" "$work/k4_tool.duckdb_extension" 0.4 j k4_tool
 # spec 0036: geo_tools' icon (its distributor's publisher's), and one tom gives maps in the console
@@ -199,6 +204,9 @@ k publisher key add acme vault-dist "$work/vault-dist.pub" -expires 1d
 k channel follow acme/nightly publisher:enterest-ci
 k catalogue add acme "$work/maps10.duckdb_extension" -name maps
 k catalogue add acme "$work/maps11.duckdb_extension" -name maps
+k catalogue add acme "$work/atlas10.duckdb_extension" -name atlas
+k catalogue add acme "$work/atlas11.duckdb_extension" -name atlas
+k channel source acme/prod atlas -set tenant -mode manual
 serve() {
 	"$work/kista" serve -config "$work/kista.yaml" >>"$work/kista.log" 2>&1 &
 	serve_pid=$!
@@ -229,6 +237,7 @@ cat_path="/api/v1/tenants/acme/catalogue/extensions"
 publish enterest-ci "$cat_path/geo_tools/builds?version=0.9&platform=linux_amd64" "$work/geo09.duckdb_extension"
 publish enterest-ci "$cat_path/geo_tools/builds?version=1.0&platform=linux_amd64" "$work/geo10.duckdb_extension"
 publish enterest-ci "$cat_path/hello_acme/builds?version=2.0&platform=linux_amd64" "$work/hello2.duckdb_extension"
+publish enterest-ci "$cat_path/tiles/builds?version=1.0&platform=linux_amd64" "$work/tiles10.duckdb_extension"
 publish vault-dist "$cat_path/vault/builds?version=1.1&platform=linux_amd64" "$work/vault11.duckdb_extension"
 # spec 0036: the distributor's publisher sets geo_tools' icon and summary, signing the request
 printf '{"summary":"Geometry tools for maps","icon":{"content_type":"image/png","data":"%s"}}' \

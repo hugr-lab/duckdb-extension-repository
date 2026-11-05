@@ -228,6 +228,19 @@ func SetTxHook(f func()) {
 	txHook.Store(&f)
 }
 
+// CountQueries makes the store count every statement it sends into n, until it is closed; for
+// tests only (spec 0041: a read whose statements do not grow with its rows). Call it before the
+// store is used concurrently.
+func CountQueries(s *Store, n *atomic.Int64) {
+	d := *s.d
+	rebind := d.rebind
+	d.rebind = func(q string) string {
+		n.Add(1)
+		return rebind(q)
+	}
+	s.d = &d
+}
+
 // TimeArg is a timestamp argument in the store's dialect; for test fixtures only.
 func TimeArg(s *Store, t time.Time) any { return s.d.timeArg(t) }
 

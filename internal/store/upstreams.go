@@ -481,10 +481,12 @@ func (t *Tx) DeleteUpstream(ctx context.Context, u Upstream, expected int64) err
 			return err
 		}
 	}
-	if err := t.dropFollows(ctx, UpstreamSource(u.ID)); err != nil { // spec 0033: nothing follows a gone source
+	if err := t.cas(ctx, "DELETE FROM upstreams WHERE id = ? AND version = ?", []any{u.ID, u.Version}, func() {}); err != nil {
 		return err
 	}
-	return t.cas(ctx, "DELETE FROM upstreams WHERE id = ? AND version = ?", []any{u.ID, u.Version}, func() {})
+	// spec 0033: nothing follows a gone source; spec 0041: its decisions after its row, which a
+	// decision being written holds (LiveSource), so that decision is deleted too
+	return t.dropFollows(ctx, UpstreamSource(u.ID))
 }
 
 // SetUpstream changes an upstream's visibility or state (compare-and-set; expected 0 skips the

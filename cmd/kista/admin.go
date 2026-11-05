@@ -1579,9 +1579,21 @@ func (a *adminCmd) block(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		a.table("BODY HASH\tREASON\tCREATED\tBY", func(w io.Writer) {
+		builds, err := a.svc.Releases.BlockBuilds(ctx, a.actor, pos[0], "")
+		if err != nil {
+			return err
+		}
+		// spec 0041: what the body is, the first of the tenant's builds of it and how many more
+		a.table("BODY HASH\tREASON\tCREATED\tBY\tWHAT", func(w io.Writer) {
 			for _, b := range bs {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", b.BodyHash, b.Reason, ts(b.CreatedAt), b.CreatedBy)
+				what := "-"
+				if bb := builds[b.BodyHash]; len(bb) > 0 {
+					what = fmt.Sprintf("%s %s %s %s", bb[0].Source, bb[0].Name, bb[0].Version, bb[0].Platform)
+					if len(bb) > 1 {
+						what += fmt.Sprintf(" +%d", len(bb)-1)
+					}
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.BodyHash, b.Reason, ts(b.CreatedAt), b.CreatedBy, what)
 			}
 		})
 	case sub == "remove" && len(pos) == 2:
@@ -3099,8 +3111,12 @@ func (a *adminCmd) catalogue(ctx context.Context, sub string, args []string) err
 					rules = append(rules, ch+"="+mode)
 				}
 				slices.Sort(rules)
+				var held []string // spec 0041: each held version with its end of hold
+				for _, v := range e.Held {
+					held = append(held, v+"(until "+ts(e.HeldUntil[v])+")")
+				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Source, e.Name, strings.Join(e.Versions, " "), dash(strings.Join(rules, " ")),
-					dash(strings.Join(e.Held, " ")), dash(strings.Join(e.Revoked, " ")), dash(strings.Join(e.Withdrawn, " ")))
+					dash(strings.Join(held, " ")), dash(strings.Join(e.Revoked, " ")), dash(strings.Join(e.Withdrawn, " ")))
 			}
 		})
 	case sub == "show" && len(pos) == 3:
