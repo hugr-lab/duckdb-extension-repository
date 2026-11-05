@@ -185,8 +185,9 @@ so the operator declares it:
   raises `min_reader` to 52: stop every older replica first (its tenant reaper does not know the
   table, which references channels).
 - **What changes.** New: the routes `GET` and `PUT …/channel-order`, the event `channel.order`, `kista
-  admin channel order`, and the console's pipeline. The order is for display only: nothing placed,
-  promoted or served changes.
+  admin channel order`, the console's pipeline, and in a name's index (`GET
+  …/channels/{c}/extensions/{name}`) the member `purged` for the name's administrators (what the
+  channel purged of it). The order is for display only: nothing placed, promoted or served changes.
 
 ### The catalogue as the console's home, and decisions (spec 0041)
 

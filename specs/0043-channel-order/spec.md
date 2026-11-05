@@ -194,63 +194,86 @@ Delivered on one branch, `0043-channel-order-impl`.
 - **The ETag** is a hash of the edges (`"o<hex>"`): the table keeps no row version, and an order
   set again unchanged keeps its ETag. `If-Match` is compared in the transaction.
 - **Who reads.** The route admits any of the tenant's principals that is not a publisher
-  (`channelAdmins`); the service admits `audit` on the tenant (its administrators and auditors), or
-  `admin` on one of its channels (one authorisation per channel: a grant on the channel, as the
-  console's `channelAdmin`, never one on an extension or a group in it). An install holder, an
-  extension administrator and a distribution admin get `404`; a caller without a token of the
-  tenant `401`.
-- **`channel.order`** carries `before` and `after` sorted by channel, `[]` for none.
+  (`channelAdmins`; a publisher's signed request is `401`, as on the decision routes); the service
+  parses the type first and admits `audit` on the tenant (its administrators and auditors), or
+  `admin` on one of its channels of that type (one authorisation per channel: a grant on the
+  channel, as the console's `channelAdmin`, never one on an extension or a group in it), so a
+  channel's administrator of another type reads none of the type's order (review fix). An install
+  holder, an extension administrator and a distribution admin get `404`; a caller without a token
+  of the tenant `401`.
+- **`channel.order`** carries `before` and `after` sorted by channel, `[]` for none, and
+  `package_type` when not the default.
 - **The CLI** prints one chain per line, `nightly -> staging -> prod`; setting takes two channels
   or more (one is a usage error), `-clear` none.
 - **The console.** The home's reads read the order once (`GET …/channel-order`) and list the signed
   channels in its sequence (`inOrder`): the matrix's columns, the entry page's rules, the queue's
   channel filter. The queue's **Promote** names the item's previous stage first when it holds the
-  version (`promoteFrom`). Channels shows a tenant administrator **Set the order…** while there is
-  none, then **List** and **Pipeline** (`?view=pipeline`); the order dialog lists each signed
-  channel of the default type with its next, and sends the whole order at the ETag read when it
-  opened. The pipeline (`screens/Pipeline.tsx`) draws each chain's stage cards (follows, rules
-  counted by mode, DuckDB versions from the channel's public detail, hold, names, "N versions
-  wait") and a table per stage (rule, current, "serves it from …", "no rule", what waits).
-- **What waits, in the console** (`lib/order.ts`: `cellWaits`, `stageWait`). For a stage's rule of
+  version (`promoteFrom`). Once the home's reads are there, Channels shows a tenant administrator
+  **Set the order…** while there is none, then the **Channels view** switch, **List** and
+  **Pipeline** (`?view=pipeline`). The order dialog lists each signed channel of the default type
+  with its next, sends the whole order at the ETag read when it opened, keeping the edges of
+  channels it does not list (`orderBody`), refuses to save with no channel listed, and reads the
+  order again on a `412`.
+- **The pipeline** (`screens/Pipeline.tsx`, the mockup's Catalogue-Pipeline): each chain's stage
+  cards (follows, rules counted by their mode's words, "as it lands" included, DuckDB versions from
+  the channel's public detail, hold, names, and what waits for it, or "Reading what waits…", or that
+  it could not be read), then one matrix per chain: a row per name, a column per stage with arrows
+  between them, each cell the name's rule (mode and current version, "serves it from …" when it
+  names another source than the previous stage's, or "no rule") and what waits from the previous
+  stage, with **Report & licence** (named "Report & licence of <name> for <stage>": a row may wait
+  in several stages).
+- **What waits, in the console** (`lib/order.ts`: `cellWaits`, `stageWait`), as the placement
+  pass's `lookOf` and `waitingOf` find a rule's waiting version (spec 0041). For a stage's rule of
   source X whose previous stage selects X and has a `current`, the console reads both stages' index
   of the name (`GET …/channels/{c}/extensions/{name}`, a tenant administrator's full view): the
-  previous stage's current per cell is a release's `current_for`, and what the stage's cell has or
-  had is its releases' `serves` and `would_serve` (active, deprecated, yanked, withdrawn) and its
-  `purged` (below). A stage's index holds only its selected source, which is X there. Each (channel,
-  name) is read once.
+  previous stage's current per cell is a release's `current_for`. The cell waits when that version
+  is not one the stage holds (an active release, not withdrawn, on any cell: `sv.held`, which the
+  pass completes by itself; a deprecated one holds nothing, as there), when the stage never had it
+  in its slot (its version, platform and slot, `sv.had`: the stage's releases, whose slot is
+  computed as `store.Build.Slot`, `capi:<major>` for a C API build, and its purged slots), and when
+  it is newer than what the stage's cell has or had (`sv.newest`: its releases' `serves` and
+  `would_serve`, active, deprecated, yanked and withdrawn, and its purged slots of that DuckDB
+  version). A stage's index holds only its selected source, which is X there. Each (channel, name)
+  is read once.
 - **Purged releases** (a coordination fix: the Design counts them, no answer carried them). A
   purge (spec 0016 phase 2) deletes the release and keeps its slot in `purged_slots`, which only the
-  placement pass's look read. The name's index (`GET …/channels/{c}/extensions/{name}`) now
-  answers the name's administrators `purged: [{"version", "duckdb_version", "platform"}]`
-  (`store.PurgedSlots`): the channel's purged slots of its selected source and those purged before
-  slots had a source (`*`), each on its slot's DuckDB version, of the channel's DuckDB versions,
-  filtered by `duckdb_version` and `platform` as the rows are. A C API build's slot names no DuckDB
-  version and is left out, as the pass's `newServed` leaves it out. Install holders and anonymous
-  callers get no such member; it is read-only and bounded as the rows are, one name of one
-  channel. The console counts these versions as had, so a version the stage purged never waits
-  again. Retired versions (spec 0042) are to come with that spec.
-- **The panel.** **Report & licence** shows the entry's licence (`SourceLicence`) and the reports of
-  the bodies of the version's builds in the previous stage, then **Promote…** (K4's dialog, made
-  `PromoteDialog`, its source the previous stage, its target the stage, the version filled in; with
-  `promote` on the name in the stage and `publish` in the previous one) and **Skip** under a manual
-  rule.
+  placement pass's look read. The name's index now answers the name's administrators `purged:
+  [{"version", "platform", "slot", "duckdb_version"}]` (`store.PurgedSlots`): the channel's purged
+  slots of its selected source and those purged before slots had a source (`*`), each with its slot
+  and the DuckDB version the slot is (`""` for a C API build's `capi:<major>`), filtered by
+  `duckdb_version` and `platform` as the rows are (a C API build's by its platform only). Install
+  holders and anonymous callers get no such member; it is read-only and bounded as the rows are,
+  one name of one channel. The console counts them as had, so a version the stage purged never
+  waits again. Retired versions (spec 0042) are to come with that spec.
+- **The panel.** **Report & licence**, focused when it opens, shows the entry's licence
+  (`SourceLicence`), the reports of each body of the version's builds in the previous stage under
+  its platform (none when no body is known: never every report of the name), a link to the
+  entry's page with every report, then **Promote…** (K4's dialog, made `PromoteDialog`, its source
+  the previous stage, its target the stage, the version filled in; with `promote` on the name in
+  the stage and `publish` in the previous one, else a note names the right missing), **Skip** under
+  a manual rule, and **Not now**.
 - **Not shown: the stage's retention** (spec 0042), which is not implemented yet: the card gains it
   with spec 0042's console.
 - **Tests.** Store (three dialects): `TestChannelOrder` (replacement, the refusals, a reversed
   chain, another type's order apart, clearing, the migration's `min_reader`), `TestPurgedSlots`
   (the source's and `*`, never another source's, name's or channel's), the reaper's.
-  API: `TestChannelOrderRoutes` (the readers, `404` and `401`, `If-Match` and `412`, `304`, the
-  refusals, no event for an unchanged order, `channel.order`'s data, the public list unchanged);
-  `TestIndexPurged` (`purged` for the name's administrators, filtered by cell, none for an install
-  holder or an anonymous caller).
+  API: `TestChannelOrderRoutes` (the readers, `404` and `401`, a publisher's signed request,
+  `If-Match` and `412`, `304`, the refusals, no event for an unchanged order, `channel.order`'s data,
+  the public list unchanged; another type's order read by its channels' administrators only, its
+  event's `package_type`); `TestIndexPurged` (`purged` for the name's administrators, a C API
+  build's slot, filtered by cell, none for an install holder or an anonymous caller).
   `channel.order` in the events registry, `SubjectForm` and `TestCoverage`. CLI: `TestAdminCLI` and
   `TestAdminPackageTypes` (`-type`). Console: `src/screens/pipeline.test.tsx` (the chains and the
-  columns' sequence; the cells, a yanked, deprecated and purged version counted as had; a stage
-  with no release; the newest of two cells; a skip; Promote
-  filled in from the previous stage; Skip; the order dialog with its ETag; a channel administrator's
-  list); end to end, `e2e/pipeline.spec.ts` on run.sh's fixture (staging, and the tenant's relay and
-  beacon placed into nightly under staging's manual rules): the order set, two versions waiting
-  for staging, relay promoted after its panel, beacon skipped, the catalogue's columns in order.
+  columns' sequence; the dialog's body keeping unlisted edges; rules by mode; the cells: a yanked,
+  deprecated and purged version had, a purged C API slot had, a version the stage holds never
+  waiting, a withdrawn or deprecated one holding nothing; a stage with no release; the newest of two
+  cells; a skip; the matrix's row; Promote filled in from the previous stage; reports by body, none
+  without one, Not now; Skip; a purged version; reading and a failed read; the missing right; the
+  order dialog with its ETag and a `412` read again; a channel administrator's list; the queue's
+  Promote from the previous stage where another channel holds the version too); end to end,
+  `e2e/pipeline.spec.ts` on run.sh's fixture (staging, and the tenant's relay and beacon placed into
+  nightly under staging's manual rules): the order set, two versions waiting for staging, relay's
+  row and panel, relay promoted, beacon skipped, the catalogue's columns in order.
 
 ## Follow-ups
 

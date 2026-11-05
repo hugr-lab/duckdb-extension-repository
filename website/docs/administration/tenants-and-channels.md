@@ -286,8 +286,8 @@ puts the catalogue's columns in its sequence, and offers a promotion from the pr
 kista reads it nowhere else: placement, promotion, holds and serving keep their meaning, and a
 promotion still names its source channel each time, with its rights (`publish` there, `promote` in
 the target), so a promotion out of order is allowed. Only the tenant's administrators set it (it
-spans channels); its channels' administrators and its auditors read it. The public channel lists
-do not show it.
+spans channels); its auditors and the administrators of its channels of that type read it. The
+public channel lists do not show it.
 
 ### Channel kinds
 

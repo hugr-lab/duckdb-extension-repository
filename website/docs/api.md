@@ -365,7 +365,7 @@ names](publishing.md#reserved-names); `kista duckdb core-extensions <tag>` print
 | `GET tenants/{t}/channels` | public |
 | `GET tenants/{t}/channels/{c}` | public: kind, DuckDB versions and C API maxima, signing keys |
 | `GET tenants/{t}/channels/{c}/extensions[?duckdb_version=&platform=&prefix=&cursor=&limit=]` | public, in the caller's view |
-| `GET tenants/{t}/channels/{c}/extensions/{name}[?duckdb_version=&platform=]` | public, in the caller's view; to the name's administrators also `purged`, the releases the channel purged of its selected source, `[{"version", "duckdb_version", "platform"}]` (each on its slot's DuckDB version; a C API build's are left out, as the placement pass counts them), filtered as the rows are (spec 0043) |
+| `GET tenants/{t}/channels/{c}/extensions/{name}[?duckdb_version=&platform=]` | public, in the caller's view; to the name's administrators also `purged`, the releases the channel purged of its selected source, `[{"version", "platform", "slot", "duckdb_version"}]` (the slot as the release had it; `duckdb_version` the DuckDB version the slot is, `""` for a C API build's `capi:<major>`), filtered as the rows are (a C API build's by its platform) (spec 0043) |
 | `GET tenants/{t}/channels/{c}/extensions/{name}/versions/{v}?duckdb_version=&platform=` | public: `available`, `deprecated`, `yanked`, `withdrawn` (only a [withdrawn](upstreams.md#withdrawals) release would serve it: a `withdrawn` list of its rows) or `missing`. An index row of a withdrawn build carries `"withdrawn": true` and `withdrawn_reason`, its DuckDB versions in `would_serve` (spec 0039) |
 | `GET tenants/{t}/channels/{c}/extensions/{name}/attachments[/{id}]` | public, in the caller's view |
 | `GET tenants/{t}/attestation-keys` | public |
@@ -450,7 +450,7 @@ strict chain per package type, for the console's display only.
 
 | Route | Who |
 | --- | --- |
-| `GET tenants/{t}/channel-order[?type=]` | tenant admin, a channel admin (of any of the tenant's channels), an auditor: `{"order": [{"channel": "nightly", "next": "staging"}, {"channel": "staging", "next": "prod"}]}`, by channel, with an `ETag` |
+| `GET tenants/{t}/channel-order[?type=]` | tenant admin, a channel admin (of one of the tenant's channels of the type), an auditor: `{"order": [{"channel": "nightly", "next": "staging"}, {"channel": "staging", "next": "prod"}]}`, by channel, with an `ETag` |
 | `PUT tenants/{t}/channel-order[?type=]` | tenant admin: the whole order of the type, the same body (`{"order": []}` clears it); `If-Match` optional (`412` when it no longer matches). Every channel named is the tenant's, signed and of the type; no channel twice as `channel` nor twice as `next`, none its own next, no cycle: `400` naming the first problem. It answers the order in force |
 
 A `PUT` that changes the order writes `channel.order` (subject `tenant:<name>`, `before` and
