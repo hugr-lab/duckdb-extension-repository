@@ -39,6 +39,7 @@ func TestAdminRetention(t *testing.T) {
 	run(0, "tenant", "create", "acme")
 	run(0, "version", "add", "v2.0.0", "-kind", "release", "-c-api", "v1.5.6", "-core-extensions", coreFile(t, "json"))
 	run(0, "channel", "create", "acme/prod", "-kind", "signed")
+	run(0, "channel", "create", "acme/core", "-kind", "passthrough")
 	run(0, "channel", "versions", "acme/prod", "-add", "v2.0.0")
 	run(0, "key", "add", "acme/prod", "-signer", "file:a.pem", "-active")
 	var ids []string
@@ -59,7 +60,7 @@ func TestAdminRetention(t *testing.T) {
 		ids = append(ids, strings.TrimSpace(out.String()))
 	}
 	// the rules: the tenant's keep, the channel's grace; default, none
-	if got := run(0, "tenant", "retention", "acme", "-keep", "1"); !strings.Contains(got, "keep 1, grace default") {
+	if got := run(0, "tenant", "retention", "acme", "-keep", "1"); !strings.Contains(got, "keep 1, grace unset") {
 		t.Fatalf("tenant retention: %q", got)
 	}
 	if got := run(0, "channel", "retention", "acme/prod"); !strings.Contains(got, "in force: none (missing: grace)") {
@@ -74,10 +75,22 @@ func TestAdminRetention(t *testing.T) {
 	}
 	run(0, "channel", "retention", "acme/prod", "-keep", "default")
 	run(2, "channel", "retention", "acme/prod", "-keep", "many")
-	run(2, "channel", "retention", "acme/prod", "-keep", "0")        // the API refuses keep 0: none is the word
-	run(2, "channel", "retention", "acme/prod", "-grace", "none")    // a channel's grace is a duration or default
-	run(2, "tenant", "retention", "acme", "-grace", "default")       // a tenant's is a duration or none
+	run(2, "channel", "retention", "acme/prod", "-keep", "0")     // the API refuses keep 0: none is the word
+	run(2, "channel", "retention", "acme/prod", "-grace", "none") // a channel's grace is a duration or default
+	// a tenant's field is a value or none; default is no word there, and each scope's error says its words
+	if got := run(2, "tenant", "retention", "acme", "-grace", "default"); !strings.Contains(got, "or none (no default)") {
+		t.Fatalf("a tenant's -grace default: %q", got)
+	}
+	if got := run(2, "tenant", "retention", "acme", "-keep", "default"); !strings.Contains(got, "-keep is a whole number from 1, or none (no default)") {
+		t.Fatalf("a tenant's -keep default: %q", got)
+	}
+	if got := run(2, "channel", "retention", "acme/prod", "-keep", "x"); !strings.Contains(got, "or default (the tenant's)") {
+		t.Fatalf("a channel's -keep x: %q", got)
+	}
 	run(1, "channel", "retention", "acme/prod", "-grace", "100000h") // above the ceiling
+	if got := run(0, "channel", "retention", "acme/core"); !strings.Contains(got, "in force: none (a passthrough channel)") {
+		t.Fatalf("a passthrough channel: %q", got)
+	}
 	// the plan, the dry run, then the pass
 	if got := run(0, "channel", "retention-plan", "acme/prod"); strings.Count(got, "retire") != 2 {
 		t.Fatalf("the plan: %q", got)

@@ -19,33 +19,38 @@ import (
 
 // ruleFlags applies -keep and -grace to a rule read: a flag not given keeps its field; at a channel
 // "default" leaves a field out (the tenant's) and keep "none" is no retention there; at a tenant
-// "none" leaves a field out. A keep is a whole number from 1, as the API takes it.
+// "none" leaves a field out (no default) and "default" is no word. A keep is a whole number from 1,
+// as the API takes it.
 func ruleFlags(r store.RetentionRule, keep, grace *string, given map[string]bool, channel bool) (store.RetentionRule, error) {
 	if given["keep"] {
 		switch k := *keep; {
-		case k == "default" || k == "none" && !channel:
+		case channel && k == "default", !channel && k == "none":
 			r.Keep = nil
-		case k == "none":
+		case channel && k == "none":
 			none := 0
 			r.Keep = &none
 		default:
 			n, err := strconv.Atoi(k)
 			if err != nil || n < 1 {
-				return r, fmt.Errorf("%w: -keep is a whole number from 1, none or default", errUsage)
+				if channel {
+					return r, fmt.Errorf("%w: -keep is a whole number from 1, none (no retention here) or default (the tenant's)", errUsage)
+				}
+				return r, fmt.Errorf("%w: -keep is a whole number from 1, or none (no default)", errUsage)
 			}
 			r.Keep = &n
 		}
 	}
 	if given["grace"] {
 		switch g := *grace; {
-		case g == "default" && channel || g == "none" && !channel:
+		case channel && g == "default", !channel && g == "none":
 			r.Grace = nil
-		case g == "none" || g == "default":
-			return r, fmt.Errorf("%w: -grace is a duration or %s here", errUsage, map[bool]string{true: "default", false: "none"}[channel])
 		default:
-			d, err := parseHold(*grace)
-			if err != nil {
-				return r, fmt.Errorf("%w: -grace is a duration such as 720h or 30d, 0 to purge at the next pass, or default", errUsage)
+			d, err := parseHold(g)
+			if err != nil || g == "none" || g == "default" {
+				if channel {
+					return r, fmt.Errorf("%w: -grace is a duration such as 720h or 30d, 0 to purge at the next pass, or default (the tenant's)", errUsage)
+				}
+				return r, fmt.Errorf("%w: -grace is a duration such as 720h or 30d, 0 to purge at the next pass, or none (no default)", errUsage)
 			}
 			r.Grace = &d
 		}
@@ -53,9 +58,14 @@ func ruleFlags(r store.RetentionRule, keep, grace *string, given map[string]bool
 	return r, nil
 }
 
-func ruleText(r store.RetentionRule) string {
+// ruleText is a stored rule: a channel's field not set is the tenant's ("default"), a tenant's
+// "unset".
+func ruleText(r store.RetentionRule, channel bool) string {
 	f := release.RuleFields(r)
-	k, g := "default", "default"
+	k, g := "unset", "unset"
+	if channel {
+		k, g = "default", "default"
+	}
 	if v, ok := f["keep"]; ok {
 		k = fmt.Sprint(v)
 	}
@@ -66,6 +76,9 @@ func ruleText(r store.RetentionRule) string {
 }
 
 func inForceText(r release.RuleInForce) string {
+	if r.Passthrough {
+		return "none (a passthrough channel)"
+	}
 	if !r.Active() {
 		if r.None {
 			return "none (the channel's)"
@@ -100,9 +113,9 @@ func (a *adminCmd) tenantRetention(ctx context.Context, args []string) error {
 		if r, err = a.svc.Releases.SetTenantRetention(ctx, a.actor, pos[0], next, release.RetentionTag(r)); err != nil {
 			return err
 		}
-		a.logf("tenant retention %s %s", pos[0], ruleText(r))
+		a.logf("tenant retention %s %s", pos[0], ruleText(r, false))
 	}
-	fmt.Fprintln(a.out, ruleText(r))
+	fmt.Fprintln(a.out, ruleText(r, false))
 	return nil
 }
 
@@ -136,9 +149,9 @@ func (a *adminCmd) channelRetention(ctx context.Context, sub string, args []stri
 			if v, err = a.svc.Releases.SetChannelRetention(ctx, a.actor, t, c, next, release.RetentionTag(v.Rule)); err != nil {
 				return err
 			}
-			a.logf("channel retention %s/%s %s", t, c, ruleText(v.Rule))
+			a.logf("channel retention %s/%s %s", t, c, ruleText(v.Rule, true))
 		}
-		fmt.Fprintf(a.out, "rule: %s\nin force: %s\n", ruleText(v.Rule), inForceText(v.InForce))
+		fmt.Fprintf(a.out, "rule: %s\nin force: %s\n", ruleText(v.Rule, true), inForceText(v.InForce))
 		if !v.CheckedAt.IsZero() {
 			fmt.Fprintf(a.out, "checked: %s\n", ts(v.CheckedAt))
 		}

@@ -344,6 +344,9 @@ func admin(args, env []string, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		if errors.Is(err, errUsage) {
+			if err != errUsage { // a usage error with its words: they first
+				fmt.Fprintln(stderr, "kista admin:", err)
+			}
 			fmt.Fprint(stderr, adminUsage)
 			return 2
 		}
