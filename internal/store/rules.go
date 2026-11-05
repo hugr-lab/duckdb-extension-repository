@@ -166,9 +166,10 @@ func (rr RuleReads) Of(source, name string) ([]Build, []Candidate) {
 	return rr.Builds[[2]string{source, name}], rels
 }
 
-// ChannelRuleReads reads, for a channel's rules (of one name, or every name: ""), the catalogue builds
-// of each rule's (source, name), those purged for good, and the releases and purged slots of the
-// channel: four statements, however many rules.
+// ChannelRuleReads reads, for a channel's rules with a mode (of one name, or every name: ""), the
+// catalogue builds of each rule's (source, name), those purged for good, and the releases and purged
+// slots of those names in the channel: four statements, however many rules. A rule without a mode
+// (an arrival's: a mirror's names in its own channel) waits for nothing, and is not read.
 func (s *Store) ChannelRuleReads(ctx context.Context, ch Channel, name string) (RuleReads, error) {
 	rr := RuleReads{Builds: map[[2]string][]Build{}, Purged: map[string]bool{}, Releases: map[[2]string][]Candidate{}, Slots: map[string][]Candidate{}}
 	of, args := "", []any{ch.ID, ch.TenantID, ch.PackageType}
@@ -176,7 +177,7 @@ func (s *Store) ChannelRuleReads(ctx context.Context, ch Channel, name string) (
 		of, args = " AND cs.name = ?", append(args, name)
 	}
 	rules := ` FROM builds b JOIN channel_sources cs ON cs.source = b.source AND cs.name = b.name
-WHERE cs.channel_id = ? AND b.tenant_id = ? AND b.package_type = ?` + of
+WHERE cs.channel_id = ? AND cs.mode <> '' AND b.tenant_id = ? AND b.package_type = ?` + of
 	if err := s.eachRow(ctx, "SELECT "+prefixed("b.", buildCols)+rules+" ORDER BY b.created_at, b.id", args, func(sc func(...any) error) error {
 		b, err := scanBuild(rowScanner(sc))
 		if err == nil {
@@ -198,9 +199,10 @@ AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id 
 	}); err != nil {
 		return rr, err
 	}
-	on, rargs := "", []any{ch.ID}
+	// the names of the channel's rules with a mode only
+	on, rargs := " AND r.name IN (SELECT cs.name FROM channel_sources cs WHERE cs.channel_id = r.channel_id AND cs.mode <> '')", []any{ch.ID}
 	if name != "" {
-		on, rargs = " AND r.name = ?", append(rargs, name)
+		on, rargs = on+" AND r.name = ?", append(rargs, name)
 	}
 	if err := s.eachRow(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id WHERE r.channel_id = ?"+on, rargs,
 		func(sc func(...any) error) error {
@@ -213,8 +215,8 @@ AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id 
 		}); err != nil {
 		return rr, err
 	}
-	on = strings.ReplaceAll(on, "r.", "")
-	err := s.eachRow(ctx, "SELECT release_id, package_version, platform, slot, abi, body_hash, seq, source, name FROM purged_slots WHERE channel_id = ?"+on,
+	on = strings.ReplaceAll(on, "r.", "p.")
+	err := s.eachRow(ctx, "SELECT p.release_id, p.package_version, p.platform, p.slot, p.abi, p.body_hash, p.seq, p.source, p.name FROM purged_slots p WHERE p.channel_id = ?"+on,
 		rargs, func(sc func(...any) error) error {
 			c := Candidate{Release: Release{ChannelID: ch.ID, State: ReleasePurged}}
 			var seq sql.NullInt64

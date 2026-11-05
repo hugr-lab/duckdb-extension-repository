@@ -446,7 +446,8 @@ console.
   cell). The pass places from it; the sources answer's `waiting` (`waitingOf`) and `waits_until`
   (`ruleLook.waitsUntil`) read the same look (`lookOf`). The pass reads each rule it looks at; the
   sources answer reads a channel's rules at once (`store.ChannelRuleReads`: their builds, the builds
-  purged for good, the channel's releases and purged slots), the channel's DuckDB versions and the
+  purged for good, the channel's releases and purged slots, of its rules with a mode only: a rule an
+  arrival wrote waits for nothing), the channel's DuckDB versions and the
   tenant's blocks once and an upstream's blocks once, so its statements do not grow with the rules (a
   test counts them); a name's answer reads that name only.
 - **A held version's builds never wait.** A candidate of a version the channel holds (an active

@@ -375,3 +375,37 @@ func TestDecisionWriteRaces(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0041: a channel's rule reads take its rules with a mode only: a rule an arrival wrote (a
+// mirror's names in its own channel) waits for nothing, and its builds are not read.
+func TestChannelRuleReads(t *testing.T) {
+	each(t, func(t *testing.T, e storetest.Engine) {
+		s := e.Open(t)
+		tn, ch := fixture(t, s)
+		for _, n := range []string{"json", "acl"} {
+			b := cppBuild(tn, n, "1.0", map[string]string{"json": "a", "acl": "b"}[n])
+			b.Source = store.SourceTenant
+			inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
+		}
+		inTx(t, s, func(tx *store.Tx) error {
+			if _, err := tx.SetChannelSource(ctx, ch.ID, "json", store.SourceTenant, "os:1:t"); err != nil { // no mode
+				return err
+			}
+			_, err := tx.SetChannelRule(ctx, ch.ID, "acl", store.SourceTenant, store.RuleManual, "os:1:t")
+			return err
+		})
+		for _, name := range []string{"", "acl", "json"} {
+			rr, err := s.ChannelRuleReads(ctx, ch, name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			builds, rels := rr.Of(store.SourceTenant, "json")
+			if len(builds) != 0 || len(rels) != 0 {
+				t.Fatalf("%q: a rule without a mode read: %v %v", name, builds, rels)
+			}
+			if bs, _ := rr.Of(store.SourceTenant, "acl"); (name == "json") != (len(bs) == 0) {
+				t.Fatalf("%q: the manual rule's builds: %v", name, bs)
+			}
+		}
+	})
+}
