@@ -1,12 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { Perms, TenantContext } from '../lib/context'
 import { HomeProvider } from '../lib/home'
 import { Client } from '../lib/http'
 import { type ChannelReads, type Decision, type HomeReads, cellOf, decisionBody, promoteFrom, queue } from '../lib/queue'
 import type { CatalogueEntry } from './Catalogue'
-import { Catalogue, ruleChanges, whatHappens } from './Catalogue'
+import { Catalogue, CatalogueNamePage, ruleChanges, whatHappens } from './Catalogue'
 import { Decisions } from './Decisions'
 import { Events, kindParam, families } from './Events'
 import { servingKinds } from './Channel'
@@ -228,6 +228,7 @@ function api(r: HomeReads, deleted = 204) {
       return new Response(null, { status: 204 })
     }
     if (c.path === '/catalogue') return json({ entries: r.entries })
+    if (c.path === '/licenses') return json({ licenses: [] })
     if (c.path === '/channels') return json({ channels: r.channels.map((x) => ({ name: x.name, kind: 'signed' })) })
     if (c.path === '/decisions') return json({ decisions: ds })
     const m = /^\/channels\/([^/]+)\/(sources|follows|hold)$/.exec(c.path)
@@ -317,6 +318,21 @@ describe('the pages', () => {
     expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['any kind', 'release.add', 'any outcome', 'ok', 'refused', 'failed'])
     expect(within(screen.getByRole('group', { name: 'event families' })).getAllByRole('button').map((b) => b.textContent)).toEqual(['release.*'])
     expect(asked.some((q) => q.includes('subject=channel%3Aprod'))).toBe(true)
+  })
+
+  it("says so on the entry's page when its downloads or licence keys cannot be read", async () => {
+    api(reads()) // neither stats/downloads nor license-keys is answered: 404
+    const client = new Client({ base: 'https://k.example/api/v1', prefix: '/tenants/', getToken: async () => 'tok' })
+    render(
+      <MemoryRouter initialEntries={['/t/acme/catalogue/acl']}>
+        <TenantContext.Provider value={{ client, tenant: 'acme', perms: new Perms(false, [{ principal: 'p', verbs: ['admin'] }]), api: '/tenants/acme', base: '/t/acme' }}>
+          <HomeProvider>
+            <Routes><Route path="/t/acme/catalogue/:name" element={<CatalogueNamePage />} /></Routes>
+          </HomeProvider>
+        </TenantContext.Provider>
+      </MemoryRouter>)
+    expect(await screen.findByText(/^The downloads could not be read/)).toBeTruthy()
+    expect(await screen.findByText(/^The licence keys could not be read/)).toBeTruthy()
   })
 
   it("dismisses a follow's skip with its reason", async () => {

@@ -20,6 +20,7 @@ const confirm = (page: Page, name: string) => page.getByRole('dialog').getByRole
 const queue = (page: Page) => nav(page, /^Needs a decision/)
 
 test("the home: the catalogue against the channels, a follow's skip in its column", async ({ page }) => {
+  test.setTimeout(150_000)
   await signIn(page, '/ui/t/acme/', 'tom')
   // a tenant administrator's home is the catalogue
   await expect(page).toHaveURL(/\/ui\/t\/acme\/catalogue$/)
@@ -37,9 +38,13 @@ test("the home: the catalogue against the channels, a follow's skip in its colum
   await expect(page.getByRole('link', { name: /decisions? waits?/ })).toBeVisible()
   // tiles, enterest-ci's: nightly's follow takes it, its next placement when the publisher's day's
   // hold ends
+  // (the follow takes it at the placement pass's look: every minute)
   const tiles = page.getByRole('row').filter({ has: page.getByRole('link', { name: 'tiles', exact: true }) })
   const nightly = tiles.getByRole('cell').nth(2)
-  await expect(nightly.getByText('follow', { exact: true })).toBeVisible()
+  await expect(async () => {
+    await page.getByRole('button', { name: 'Refresh' }).click()
+    await expect(nightly.getByText('follow', { exact: true })).toBeVisible({ timeout: 2_000 })
+  }).toPass({ timeout: 110_000 })
   await expect(nightly.getByText(/^next placement /)).toBeVisible()
 })
 

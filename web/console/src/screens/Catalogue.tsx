@@ -681,6 +681,7 @@ function RulesCard({ name, entries, reads, onSaved }: { name: string; entries: C
           )],
         ]} />
         {downloads.data && <span className="text-[12px] text-ink-muted">Downloads: the last 30 days.</span>}
+        {downloads.error != null && <p role="alert" className="m-0 text-[12px] text-danger">The downloads could not be read: {errorText(downloads.error)}</p>}
         {changes.length > 0 && (
           <div role="status" aria-label="unsaved changes" className="text-[13px]">
             Not saved yet:
@@ -828,11 +829,15 @@ export function SourceLicence({ source, name }: { source: string; name: string }
       {ls.map((l) => (
         <li key={l.entry + l.plan}>Licence: plan <b>{l.plan}</b> for {l.holder || <Mono>{l.holder_id}</Mono>}, expires {when(l.expires_at)} <Badge>{l.status}</Badge> <Badge>{l.visibility}</Badge></li>
       ))}
+      {keys.error != null && <li role="alert" className="text-danger">The licence keys could not be read: {errorText(keys.error)}</li>}
       {keys.data && (kids.length === 0 ? <li className="text-ink-muted">Its builds declare no licence key.</li>
         : <li>Licence keys its builds declare: {kids.map((k) => <span key={k.kid} className="mr-2"><Mono>{k.kid}</Mono> ({k.builds} {k.builds === 1 ? 'build' : 'builds'})</span>)}</li>)}
     </ul>
   )
 }
+
+/** A failed read's message, in a line. */
+export const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 /** A build's state: held until when, withdrawn and why, revoked. */
 function BuildState({ b }: { b: CatalogueBuild }) {
