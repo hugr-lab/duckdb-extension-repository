@@ -12,6 +12,8 @@ export interface NavItem {
   /** The section the item is in, within its group ("Organisation", "Audit"): a heading above each
    * run of items in the same section. */
   section?: string
+  /** A count beside the label (spec 0041: the decisions that wait); none for 0. */
+  badge?: number
 }
 
 /** A group's items in runs: each run of one section, with its heading; items without a section run

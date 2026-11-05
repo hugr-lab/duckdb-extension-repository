@@ -3,9 +3,13 @@ import { Link, useParams } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, SearchBox, Table, when } from '../components/ui'
 import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
+import { useHome } from '../lib/home'
 import { ApiError, seg, sourceSeg } from '../lib/http'
+import { type Cell, type HomeReads, cellOf } from '../lib/queue'
 import { bytesOf } from '../lib/upload'
 import { AddBuildButton } from './AddBuild'
+import { Reports } from './Reports'
+import { holdWords, type SourceRow } from './Sources'
 
 // The catalogue (spec 0033): every build that arrives in a tenant, mirrored or published, lands
 // there as a build of its source (an upstream, a publisher, the tenant), names side by side; a
@@ -18,6 +22,8 @@ export interface CatalogueEntry {
   versions: string[] // newest first
   rules: Record<string, string> // the channels whose rule takes the source, with its mode
   held?: string[]
+  /** spec 0041: each held version's end of hold */
+  held_until?: Record<string, string>
   revoked?: string[]
   withdrawn?: string[]
   /** a distributor's publisher's id: answered to a server administrator (spec 0033 phase B) */
@@ -208,8 +214,9 @@ function Versions({ e }: { e: CatalogueEntry }) {
     <span className="flex flex-wrap gap-1">
       {e.versions.slice(0, shownVersions).map((v) => {
         const s = versionState(e, v)
+        const until = e.held_until?.[v]
         return (
-          <span key={v} className={`chip ${chipTone[s]}`}>
+          <span key={v} className={`chip ${chipTone[s]}`} title={s === 'held' && until ? `held until ${when(until)}` : undefined}>
             <Mono>{v}</Mono>{s !== 'available' && <>&nbsp;{s}</>}
           </span>
         )
@@ -321,59 +328,184 @@ export function MetaDialog(props: {
   )
 }
 
-/** The tenant's catalogue: every (source, name), filtered by a name prefix and a source. The API
- * answers it whole, so the filters are applied here. */
+/** The tenant's home (spec 0041): every (source, name) of the catalogue against the tenant's signed
+ * channels of the default type, each cell what the channel's rule does with the entry; filtered by
+ * a name prefix and a source. The API answers it whole, so the filters are applied here. */
 export function Catalogue() {
-  const { client, api, base } = useTenant()
+  const { base } = useTenant()
+  const home = useHome()
   const [prefix, setPrefix] = useState('')
   const [source, setSource] = useState('')
-  const list = useLoad(() => client.get<{ entries: CatalogueEntry[] }>(`${api}/catalogue`), [api])
+  const [ruling, setRuling] = useState<{ e: CatalogueEntry; channel: string } | null>(null)
+  if (!home) return <Empty>The catalogue is its tenant administrators' view.</Empty>
+  const reads = home.reads
   // keyed by position too: two removed sources of one name answer the same label
-  const all = (list.data?.data.entries ?? []).map((e, i) => ({ ...e, key: `${e.source} ${e.name} ${i}` }))
+  const all = (reads?.entries ?? []).map((e, i) => ({ ...e, key: `${e.source} ${e.name} ${i}` }))
   const sources = [...new Set(all.map((e) => e.source))].sort()
   const rows = all.filter((e) => e.name.startsWith(prefix) && (!source || e.source === source))
+  const waiting = home.items.length
   return (
     <>
       <PageTitle title="Catalogue">
-        <span className="pb-1 text-ink-muted">Every build that arrived in the tenant, by its source. Channels take from it by their rules.</span>
-        <span className="ml-auto pb-1"><AddBuildButton onAdded={list.reload} /></span>
+        <span className="pb-1 text-ink-muted">Every build that arrived in the tenant, by its source, and what each channel takes of it.</span>
+        <span className="ml-auto pb-1"><AddBuildButton onAdded={home.reload} /></span>
       </PageTitle>
+      {waiting > 0 && (
+        <Note><Link to={`${base}/decisions`}>{waiting === 1 ? '1 decision waits' : `${waiting} decisions wait`}</Link>: new versions under manual
+          rules, holds ending, names no channel takes.</Note>
+      )}
       <div role="search" className="flex flex-wrap items-center gap-2">
         <SearchBox label="Find an extension in the catalogue" value={prefix} onChange={setPrefix} />
         <select aria-label="source" className="field py-1 text-[13px]" value={source} onChange={(e) => setSource(e.target.value)}>
           <option value="">Every source</option>
           {sources.map((s) => <option key={s}>{s}</option>)}
         </select>
-        <span className="ml-auto"><Button onClick={list.reload}>Refresh</Button></span>
+        <span className="ml-auto"><Button onClick={home.reload}>Refresh</Button></span>
       </div>
-      {list.error ? <ErrorBox error={list.error} /> : !list.data ? <Loading /> : rows.length === 0 ? (
+      {home.error ? <ErrorBox error={home.error} /> : !reads ? <Loading /> : rows.length === 0 ? (
         <Empty>{prefix || source ? 'Nothing matches.' : 'The catalogue is empty.'}</Empty>
       ) : (
-        <Table
-          rows={rows}
-          rowKey={(e) => e.key}
-          columns={[
-            ['Extension', (e) => (
-              <span className="flex items-start gap-2">
-                {removedSource(e.source) ? <EntryIcon path="" size={24} /> : <EntryIcon path={entryPath(api, e.source, e.name)} icon={e.icon} size={24} />}
-                <span className="flex flex-col">
-                  {removedSource(e.source)
-                    ? <span className="font-mono" title="a removed source's entries are not read by name; its releases stay where they are">{e.name}</span>
-                    : <Link className="font-mono font-medium no-underline" to={`${base}/catalogue/${seg(e.source)}/${seg(e.name)}`}>{e.name}</Link>}
-                  <EntrySummary summary={e.summary} />
-                </span>
-              </span>
-            )],
-            ['Source', (e) => <Mono>{e.source}</Mono>],
-            ['Versions', (e) => <Versions e={e} />],
-            ['Taken by', (e) => <Rules rules={e.rules} />],
-          ]}
-        />
+        <Matrix rows={rows} reads={reads} onRule={(e, channel) => setRuling({ e, channel })} />
       )}
       {rows.some((e) => removedSource(e.source)) && (
         <Note>A removed source's entries are listed without a page: they are not read by name, and their releases stay where they are.</Note>
       )}
+      <RuleDialog open={ruling !== null} channel={ruling?.channel ?? ''} name={ruling?.e.name ?? ''} source={ruling?.e.source ?? ''}
+        onClose={() => setRuling(null)} onSaved={home.reload} />
     </>
+  )
+}
+
+/** The matrix: a row per entry, a column per signed channel of the default type, its header the
+ * channel's follows and hold. */
+function Matrix({ rows, reads, onRule }: { rows: (CatalogueEntry & { key: string })[]; reads: HomeReads; onRule: (e: CatalogueEntry, channel: string) => void }) {
+  const { api, base, perms } = useTenant()
+  return (
+    <div className="overflow-x-auto rounded-md border border-line">
+      <table className="w-full border-collapse">
+        <thead className="bg-surface-soft">
+          <tr>
+            <th className="th pl-4">Extension</th>
+            <th className="th">Versions</th>
+            {reads.channels.map((c) => (
+              <th key={c.name} className="th">
+                <span className="flex flex-col gap-0.5">
+                  <Link className="font-mono no-underline" to={`${base}/channels/${seg(c.name)}`}>{c.name}</Link>
+                  <span className="text-[12px] font-normal normal-case tracking-normal text-ink-muted">
+                    {c.follows.length > 0 ? `follows ${c.follows.map((f) => f.source).join(', ')}` : 'follows nothing'} · hold {holdWords(c.hold)}
+                  </span>
+                </span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((e) => (
+            <tr key={e.key} className="border-t border-line hover:bg-row">
+              <td className="td pl-4">
+                <span className="flex items-start gap-2">
+                  {removedSource(e.source) ? <EntryIcon path="" size={24} /> : <EntryIcon path={entryPath(api, e.source, e.name)} icon={e.icon} size={24} />}
+                  <span className="flex flex-col">
+                    {removedSource(e.source)
+                      ? <span className="font-mono" title="a removed source's entries are not read by name; its releases stay where they are">{e.name}</span>
+                      : <Link className="font-mono font-medium no-underline" to={`${base}/catalogue/${seg(e.name)}`}>{e.name}</Link>}
+                    <span className="text-[12px]"><Mono>{e.source}</Mono></span>
+                    <EntrySummary summary={e.summary} />
+                  </span>
+                </span>
+              </td>
+              <td className="td"><Versions e={e} /></td>
+              {reads.channels.map((c) => (
+                <td key={c.name} className="td">
+                  <CellView cell={cellOf(e, c, reads.decisions)}
+                    onRule={!removedSource(e.source) && perms.channelAdmin(c.name) ? () => onRule(e, c.name) : undefined} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** A channel's cell for an entry: its rule's mode and current version, what waits and when its next
+ * placement is, a failed placement; another source's rule; a follow's skip; or a rule to add. */
+function CellView({ cell, onRule }: { cell: Cell; onRule?: () => void }) {
+  const add = onRule && <button type="button" className="text-[13px] text-brand-strong hover:underline" onClick={onRule}>+ Rule…</button>
+  switch (cell.kind) {
+    case 'rule':
+      return (
+        <span className="flex flex-col items-start gap-0.5">
+          <span className="flex items-center gap-1"><Badge>{modeWords(cell.mode)}</Badge>{cell.current && <Mono>{cell.current}</Mono>}</span>
+          {cell.waiting && <span className="chip bg-warning-soft text-warning">→ waits&nbsp;<Mono>{cell.waiting}</Mono></span>}
+          {cell.waitsUntil && <span className="text-[12px] text-ink-muted">next placement {when(cell.waitsUntil)}</span>}
+          {cell.outcome && <span className="max-w-[14rem] truncate text-[12px] text-danger" title={cell.outcome}>failed: {cell.outcome}</span>}
+        </span>
+      )
+    case 'other':
+      return <span className="text-[13px] text-ink-muted">serves it from <Mono>{cell.source}</Mono></span>
+    case 'skipped':
+      return <span className="flex flex-col items-start gap-0.5"><span className="text-[13px] text-warning">skipped: {cell.reason}</span>{add}</span>
+  }
+  return add ?? <span className="text-ink-muted">·</span>
+}
+
+/** A rule for a name in a channel, from a source (spec 0033), set from the catalogue's matrix or
+ * the queue: PUT …/sources/{name}. The channel is given, or chosen among channels. The tenant's own
+ * source is never automatic. */
+export function RuleDialog(props: {
+  open: boolean
+  channel: string
+  channels?: string[]
+  name: string
+  source: string
+  mode?: string
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { client, api } = useTenant()
+  const [mode, setMode] = useState('manual')
+  const [channel, setChannel] = useState('')
+  const [opened, setOpened] = useState(false)
+  const { busy, failure, act, setFailure } = useAction('The rule')
+  if (props.open !== opened) {
+    setOpened(props.open)
+    if (props.open) {
+      setMode(props.mode ?? (props.source === 'tenant' ? 'manual' : 'auto'))
+      setChannel(props.channel || (props.channels?.[0] ?? ''))
+      setFailure(null)
+    }
+  }
+  const save = () => {
+    if (!channel) return
+    act(() => client.put(`${api}/channels/${seg(channel)}/sources/${seg(props.name)}`, { body: { source: props.source, mode } })).then((ok) => {
+      if (ok) {
+        props.onClose()
+        props.onSaved()
+      }
+    })
+  }
+  return (
+    <Confirm open={props.open} title={`A rule for ${props.name}${props.channel ? ` in ${props.channel}` : ''}`} confirm="Set rule" disabled={busy || !channel}
+      onConfirm={save} onClose={props.onClose}>
+      <p>The channel serves <Mono>{props.name}</Mono> from <Mono>{props.source}</Mono>: <b>auto</b> takes each new version once its holds have passed
+        (the source's, and the channel's for automatic placements); <b>manual</b> takes the versions placed by hand.</p>
+      {!props.channel && (
+        <Field label="Channel">
+          <select className="field" value={channel} onChange={(e) => setChannel(e.target.value)}>
+            {(props.channels ?? []).map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label="Mode" hint="the tenant's own source is never automatic: it is everyone who may publish in the tenant">
+        <select className="field" value={mode} onChange={(e) => setMode(e.target.value)} data-autofocus>
+          <option value="auto" disabled={props.source === 'tenant'}>auto</option>
+          <option value="manual">manual</option>
+        </select>
+      </Field>
+      {failure != null && <ErrorBox error={failure} />}
+    </Confirm>
   )
 }
 
@@ -383,20 +515,146 @@ interface ChannelRow {
   package_type?: string
 }
 
-/** An entry: its versions with their builds, where each is placed; placing a version, withdrawing
- * a distributor's version (a server administrator), purging a build placed nowhere. */
-export function CatalogueEntryPage() {
-  const { source = '', name = '' } = useParams()
+/** An entry's page (spec 0041): a name with every source of it side by side, each channel's rule for
+ * it edited in place, and each source's versions with their builds (placing, withdrawing, purging),
+ * its licence; the name's reports. The route with a source names the same page. */
+export function CatalogueNamePage() {
+  const { name = '' } = useParams()
   const { client, api, base, perms } = useTenant()
-  const entry = useLoad(() => client.get<{ entries: CatalogueEntry[] }>(`${api}/catalogue?${new URLSearchParams({ source, name })}`), [api, source, name])
-  const path = entryPath(api, source, name)
-  const versions = useLoad(() => client.get<{ versions: CatalogueVersion[] }>(path), [path])
+  const home = useHome()
+  const entries = useLoad(() => client.get<{ entries: CatalogueEntry[] }>(`${api}/catalogue?${new URLSearchParams({ name })}`), [api, name])
   // the signed channels of the catalogue's type (the default) where the caller may place the name
   const channels = useLoad(() => client.get<{ channels: ChannelRow[] }>(`${api}/channels`), [api])
   const targets = (channels.data?.data.channels ?? []).filter((c) => c.kind === 'signed' && !c.package_type && perms.mayPromote(c.name, name)).map((c) => c.name)
+  const list = (entries.data?.data.entries ?? []).filter((e) => e.name === name)
+  const meta = list.find((e) => e.icon || e.summary) ?? list[0]
   const reload = () => {
-    entry.reload()
+    entries.reload()
+    home?.reload()
+  }
+  return (
+    <>
+      <PageTitle eyebrow={<Link to={`${base}/catalogue`} className="no-underline">Catalogue</Link>}
+        title={<span className="flex items-center gap-3">
+          {meta && !removedSource(meta.source) ? <EntryIcon path={entryPath(api, meta.source, name)} icon={meta.icon} size={64} /> : <EntryIcon path="" size={64} />}
+          <span className="font-mono">{name}</span></span>}>
+        {list.length > 1 && <span className="pb-1 text-ink-muted">from {list.length} sources</span>}
+      </PageTitle>
+      {meta?.summary && <p className="m-0"><EntrySummary summary={meta.summary} /></p>}
+      {entries.error != null && <ErrorBox error={entries.error} />}
+      {channels.error != null && <ErrorBox error={channels.error} />}
+      {home?.reads && list.length > 0 && <RulesCard name={name} entries={list} reads={home.reads} onSaved={reload} />}
+      {!entries.data ? (entries.error ? null : <Loading />) : list.length === 0 ? <Empty>No build of it in the catalogue.</Empty> : (
+        list.map((e, i) => (
+          removedSource(e.source)
+            ? <Note key={`${e.source} ${i}`}>From <Mono>{e.source}</Mono>: a removed source's entry is not read by name; its releases stay where they are.</Note>
+            : <SourceSection key={`${e.source} ${i}`} entry={e} many={list.length > 1} targets={targets} onChanged={reload} />
+        ))
+      )}
+      {list.length > 0 && <Reports ext={name} />}
+    </>
+  )
+}
+
+/** A channel's rule for the name being edited: its source and mode. */
+interface Draft {
+  source: string
+  mode: string
+}
+
+/** What a rule's draft changes, per channel: the PUT …/sources/{name} bodies, the unchanged left out. */
+export function ruleChanges(rules: Record<string, Pick<SourceRow, 'source' | 'mode'> | undefined>, drafts: Record<string, Draft>) {
+  const out: { channel: string; body: { source: string; mode?: string }; from: string; to: string }[] = []
+  for (const [channel, d] of Object.entries(drafts).sort()) {
+    const r = rules[channel]
+    if (!d.source || (r?.source === d.source && (r?.mode ?? '') === d.mode)) continue
+    const body: { source: string; mode?: string } = { source: d.source }
+    if (d.mode === 'auto' || d.mode === 'manual') body.mode = d.mode
+    out.push({ channel, body, from: r?.source ? `${r.source} ${modeWords(r.mode)}` : 'no rule', to: `${d.source} ${modeWords(body.mode ?? r?.mode)}` })
+  }
+  return out
+}
+
+/** Each channel's rule for a name, edited in place: the changes listed until Save sends one PUT per
+ * changed channel. */
+function RulesCard({ name, entries, reads, onSaved }: { name: string; entries: CatalogueEntry[]; reads: HomeReads; onSaved: () => void }) {
+  const { client, api, perms } = useTenant()
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({})
+  const { busy, failure, act } = useAction('A rule', onSaved)
+  const rules: Record<string, SourceRow | undefined> = {}
+  for (const c of reads.channels) rules[c.name] = c.sources.find((s) => s.name === name && s.source)
+  const draft = (c: string): Draft => drafts[c] ?? { source: rules[c]?.source ?? '', mode: rules[c]?.mode ?? '' }
+  const sources = [...new Set(entries.map((e) => e.source).filter((s) => !removedSource(s)))].sort()
+  const changes = ruleChanges(rules, drafts)
+  const save = () => {
+    act(async () => {
+      for (const ch of changes) await client.put(`${api}/channels/${seg(ch.channel)}/sources/${seg(name)}`, { body: ch.body })
+    }).then((ok) => {
+      if (ok) setDrafts({})
+      onSaved()
+    })
+  }
+  return (
+    <Card title="Rules" actions={<Button tone="brand" disabled={busy || changes.length === 0} onClick={save}>Save</Button>}>
+      <div className="flex flex-col gap-3">
+        <Table rows={reads.channels.map((c) => c.name)} rowKey={(c) => c} columns={[
+          ['Channel', (c) => <Mono>{c}</Mono>],
+          ['Now', (c) => {
+            const r = rules[c]
+            if (!r) return <span className="text-ink-muted">no rule</span>
+            return (
+              <span className="flex flex-wrap items-center gap-1">
+                <Mono>{r.source}</Mono><Badge>{modeWords(r.mode)}</Badge>{r.current && <Mono>{r.current}</Mono>}
+                {r.waiting && <span className="chip bg-warning-soft text-warning">→ waits&nbsp;<Mono>{r.waiting}</Mono></span>}
+              </span>
+            )
+          }],
+          ['Source', (c) => {
+            const d = draft(c)
+            const choices = [...new Set([...sources, ...(rules[c]?.source ? [rules[c]!.source] : [])])].sort()
+            return (
+              <select aria-label={`${c} takes it from`} className="field py-1 font-mono text-[13px]" value={d.source} disabled={!perms.channelAdmin(c)}
+                onChange={(e) => setDrafts({ ...drafts, [c]: { source: e.target.value, mode: e.target.value === 'tenant' && d.mode === 'auto' ? 'manual' : d.mode } })}>
+                {!rules[c] && <option value="">no rule</option>}
+                {choices.map((s) => <option key={s} value={s} disabled={removedSource(s)}>{s}</option>)}
+              </select>
+            )
+          }],
+          ['Mode', (c) => {
+            const d = draft(c)
+            return (
+              <select aria-label={`${c} rule's mode`} className="field py-1 text-[13px]" value={d.mode} disabled={!perms.channelAdmin(c) || !d.source}
+                onChange={(e) => setDrafts({ ...drafts, [c]: { ...d, mode: e.target.value } })}>
+                {d.mode !== 'auto' && d.mode !== 'manual' && <option value={d.mode}>{modeWords(d.mode)}</option>}
+                <option value="auto" disabled={d.source === 'tenant'}>auto</option>
+                <option value="manual">manual</option>
+              </select>
+            )
+          }],
+        ]} />
+        {changes.length > 0 && (
+          <div role="status" aria-label="unsaved changes" className="text-[13px]">
+            Not saved yet:
+            <ul className="m-0 pl-5">{changes.map((ch) => <li key={ch.channel}><Mono>{ch.channel}</Mono>: {ch.from} → {ch.to}</li>)}</ul>
+          </div>
+        )}
+        {failure != null && <ErrorBox error={failure} />}
+      </div>
+    </Card>
+  )
+}
+
+/** A source's builds of a name: its versions with their builds and where each is placed; placing a
+ * version, withdrawing a distributor's version (a server administrator), purging a build placed
+ * nowhere; its licence. */
+function SourceSection({ entry: e, many, targets, onChanged }: { entry: CatalogueEntry; many: boolean; targets: string[]; onChanged: () => void }) {
+  const { client, api, perms } = useTenant()
+  const { source, name } = e
+  const path = entryPath(api, source, name)
+  const versions = useLoad(() => client.get<{ versions: CatalogueVersion[] }>(path), [path])
+  const reload = () => {
     versions.reload()
+    onChanged()
   }
   const { busy, failure, act } = useAction('The entry', reload)
   const [placing, setPlacing] = useState<{ version: string; held: boolean } | null>(null)
@@ -404,19 +662,18 @@ export function CatalogueEntryPage() {
   const [reason, setReason] = useState('')
   const [purging, setPurging] = useState<{ b: CatalogueBuild; version: string } | null>(null)
   const [editing, setEditing] = useState(false)
-  const e = entry.data?.data.entries.find((x) => x.source === source && x.name === name)
   const done = (ok: boolean) => ok && reload()
+  const actions = (v: string) => (many ? `${source} ${v} actions` : `${v} actions`)
   return (
-    <>
-      <PageTitle eyebrow={<><Link to={`${base}/catalogue`} className="no-underline">Catalogue</Link> / <span className="font-mono">{source}</span></>}
-        title={<span className="flex items-center gap-3"><EntryIcon path={path} icon={e?.icon} size={64} /><span className="font-mono">{name}</span></span>}>
-        {e && <span className="flex items-center gap-2 pb-1 text-ink-muted">Taken by <Rules rules={e.rules} /></span>}
-        {mayEditMeta(e, perms.tenantAdmin) && <span className="pb-1"><Button disabled={busy} onClick={() => setEditing(true)}>Edit…</Button></span>}
-      </PageTitle>
-      {e?.summary && <p className="m-0"><EntrySummary summary={e.summary} /></p>}
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="m-0 text-[18px] font-bold leading-[26px]"><Mono>{source}</Mono></h2>
+        {e.distributor && <span className="text-[13px] text-ink-muted">{e.distributor}'s</span>}
+        <span className="flex items-center gap-2 text-ink-muted">Taken by <Rules rules={e.rules} /></span>
+        {mayEditMeta(e, perms.tenantAdmin) && <span className="ml-auto"><Button disabled={busy} onClick={() => setEditing(true)}>Edit…</Button></span>}
+      </div>
+      {perms.tenantAdmin && <SourceLicence source={source} name={name} />}
       {failure != null && <ErrorBox error={failure} />}
-      {entry.error != null && <ErrorBox error={entry.error} />}
-      {channels.error != null && <ErrorBox error={channels.error} />}
       {versions.error instanceof ApiError && versions.error.status === 404 ? <Empty>No build of it from this source in the catalogue.</Empty>
         : versions.error ? <ErrorBox error={versions.error} /> : !versions.data ? <Loading /> : versions.data.data.versions.length === 0 ? <Empty>No builds.</Empty> : (
         versions.data.data.versions.map((v) => {
@@ -425,9 +682,9 @@ export function CatalogueEntryPage() {
           return (
             <Card key={v.version} title={<span className="flex items-center gap-2"><span className="font-mono">{v.version}</span> <Badge>{st}</Badge></span>}
               actions={(
-                <span role="group" aria-label={`${v.version} actions`} className="flex gap-1.5">
+                <span role="group" aria-label={actions(v.version)} className="flex gap-1.5">
                   {st !== 'withdrawn' && targets.length > 0 && <Button disabled={busy} onClick={() => setPlacing({ version: v.version, held })}>Place…</Button>}
-                  {st !== 'withdrawn' && perms.server && e?.publisher_id && (
+                  {st !== 'withdrawn' && perms.server && e.publisher_id && (
                     <Button tone="danger-outline" disabled={busy} onClick={() => { setReason(''); setWithdrawing(v.version) }}>Withdraw…</Button>
                   )}
                 </span>
@@ -473,7 +730,7 @@ export function CatalogueEntryPage() {
           <input className="field" value={reason} onChange={(ev) => setReason(ev.target.value)} data-autofocus />
         </Field>
       </Confirm>
-      <MetaDialog open={editing} name={name} summary={e?.summary} icon={e?.icon} onClose={() => setEditing(false)}
+      <MetaDialog open={editing} name={name} summary={e.summary} icon={e.icon} onClose={() => setEditing(false)}
         onSave={(body) => {
           setEditing(false)
           act(() => client.put(`${path}/meta`, { body })).then(done)
@@ -489,7 +746,25 @@ export function CatalogueEntryPage() {
         <p>It was never released, so no one could have installed it: it is deleted, and its slot is free again. A mirror that brought it fetches
           it again at its next run.</p>
       </Confirm>
-    </>
+    </div>
+  )
+}
+
+/** A source's licence for a name (spec 0035: a licence belongs to a catalogue entry), read from the
+ * tenant's licences. */
+export function SourceLicence({ source, name }: { source: string; name: string }) {
+  const { client, api } = useTenant()
+  const list = useLoad(() => client.get<{ licenses: { name: string; entry: string; plan: string; holder?: string; holder_id: string; expires_at: string; status: string; visibility: string }[] }>(`${api}/licenses`), [api])
+  if (list.error) return <ErrorBox error={list.error} />
+  if (!list.data) return null
+  const ls = list.data.data.licenses.filter((l) => l.name === name && l.entry === source)
+  if (ls.length === 0) return <span className="text-[13px] text-ink-muted">No licence in this entry.</span>
+  return (
+    <ul className="m-0 list-none p-0 text-[13px]">
+      {ls.map((l) => (
+        <li key={l.entry + l.plan}>Licence: plan <b>{l.plan}</b> for {l.holder || <Mono>{l.holder_id}</Mono>}, expires {when(l.expires_at)} <Badge>{l.status}</Badge> <Badge>{l.visibility}</Badge></li>
+      ))}
+    </ul>
   )
 }
 

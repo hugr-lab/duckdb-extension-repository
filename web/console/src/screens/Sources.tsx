@@ -24,9 +24,13 @@ export interface SourceRow {
   newest?: string
   outcome?: string
   outcome_at?: string
+  /** spec 0041: the newest version the rule could take that the channel has not had */
+  waiting?: string
+  /** spec 0041: when a rule placing automatically places next, while it waits for a hold */
+  waits_until?: string
 }
 
-interface FollowRow {
+export interface FollowRow {
   source: string
   set_by: string
   set_at: string
@@ -126,7 +130,9 @@ export function Sources({ channel, kind }: { channel: string; kind?: string }) {
             ['Versions', (r) => (
               <span className="flex flex-wrap items-center gap-1">
                 {r.current ? <Mono>{r.current}</Mono> : r.source && <span className="text-ink-muted">none placed</span>}
-                {newer(r) && <span className="chip bg-warning-soft text-warning" title="the newest available in the catalogue">newest&nbsp;<Mono>{r.newest}</Mono></span>}
+                {r.waiting ? <span className="chip bg-warning-soft text-warning" title="the newest version the rule could take that the channel has not had">→ waits&nbsp;<Mono>{r.waiting}</Mono></span>
+                  : newer(r) && <span className="chip bg-surface-soft text-ink-muted" title="the newest available in the catalogue">newest&nbsp;<Mono>{r.newest}</Mono></span>}
+                {r.waits_until && <span className="text-[12px] text-ink-muted">next placement {when(r.waits_until)}</span>}
               </span>
             )],
             ['Last outcome', (r) => (r.outcome ? <span className="text-[13px]">{r.outcome} <span className="text-ink-muted">{when(r.outcome_at)}</span></span> : '')],
@@ -188,7 +194,7 @@ export function Sources({ channel, kind }: { channel: string; kind?: string }) {
         <p>Nothing serves <Mono>{clearing}</Mono> in <Mono>{channel}</Mono> until its next release lands, which sets the source
           again, whoever brings it, or a follow takes it. To serve a given source, change the rule instead.</p>
       </Confirm>
-      <PlaceDialog open={placing !== null} name={placing?.name ?? ''} source={placing?.source ?? ''} suggest={placing?.newest ?? placing?.current}
+      <PlaceDialog open={placing !== null} name={placing?.name ?? ''} source={placing?.source ?? ''} suggest={placing?.waiting ?? placing?.newest ?? placing?.current}
         channel={channel} held="unknown" onClose={() => setPlacing(null)}
         onPlace={(p) => {
           const r = placing!

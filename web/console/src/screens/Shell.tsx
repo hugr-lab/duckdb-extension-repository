@@ -94,6 +94,7 @@ function Sidebar({ scope, service }: { scope?: ReactNode; service?: { host: stri
               <NavLink key={it.to} to={it.to} end={it.end} className={link}>
                 <it.icon size={18} aria-hidden />
                 {it.label}
+                {!!it.badge && <span className="ml-auto rounded-full bg-warning px-2 text-[12px] font-bold leading-5 text-white" aria-label={`${it.badge} waiting`}>{it.badge}</span>}
               </NavLink>
             ))
             if (!run.section) return <div key={k} className="contents">{items}</div>
@@ -195,6 +196,7 @@ function EmbeddedFrame({ children }: { children: ReactNode }) {
             const items = run.items.map((it) => (
               <NavLink key={it.to} to={it.to} end={it.end} className={tab}>
                 {it.label}
+                {!!it.badge && <span className="ml-1.5 rounded-full bg-warning px-1.5 text-[12px] font-bold text-white" aria-label={`${it.badge} waiting`}>{it.badge}</span>}
               </NavLink>
             ))
             if (!run.section) return <span key={k} className="contents">{items}</span>

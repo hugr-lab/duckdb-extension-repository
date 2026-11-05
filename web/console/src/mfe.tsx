@@ -78,6 +78,7 @@ export function innerPath(basePath: string, hostPath: string, fallback: string):
 const titles: [RegExp, string][] = [
   [/^\/tenants\/[^/]+\/channels/, 'Channels'], [/^\/tenants\/[^/]+\/events/, 'Events'], [/^\/tenants\/[^/]+\/stats/, 'Statistics'],
   [/^\/tenants/, 'Tenants'], [/^\/events/, 'Events'], [/^\/channels/, 'Channels'], [/^\/stats/, 'Statistics'],
+  [/^\/catalogue/, 'Catalogue'], [/^\/decisions/, 'Needs a decision'], // spec 0041: a tenant administrator's home and queue
 ]
 
 // --- styles: constructed sheets in the shadow root, so a host's CSP needs no 'unsafe-inline' ---

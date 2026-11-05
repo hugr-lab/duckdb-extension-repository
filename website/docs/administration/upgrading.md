@@ -186,7 +186,8 @@ so the operator declares it:
 - **What changes.** New: `held_until` in the catalogue's list, `waiting` and `waits_until` on a
   channel's rules, `builds` on the blocks' reads, the event `source.waiting` (the placement pass,
   once per version waiting under a manual rule), the decision routes and their `decision.set` and
-  `decision.clear` events, and a channel's administrators reading their channel's events. Nothing
+  `decision.clear` events, and a channel's administrators reading their channel's events. A tenant
+  administrator's console opens on the catalogue's matrix, with the decision queue under it. Nothing
   served changes.
 - **After the upgrade.** The first look at each manual rule with a version waiting writes one
   `source.waiting`: a sink alerting on it sees a burst once.

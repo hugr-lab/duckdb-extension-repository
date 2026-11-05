@@ -6,11 +6,30 @@ import { seg } from '../lib/http'
 // Blocks (spec 0008; console phase 2b): bodies the tenant refuses, by hash. Blocking yanks their
 // releases in every channel; publication and upstream intake refuse them from then on.
 
+/** A catalogue build with a blocked body (spec 0041: what the body is). */
+export interface BlockedBuild {
+  source: string
+  name: string
+  version: string
+  platform: string
+  slot: string
+  package_type?: string
+}
+
 interface Block {
   body_hash: string
   reason: string
   created_at: string
   created_by: string
+  builds?: BlockedBuild[]
+}
+
+/** What a blocked body is, in words: its first build in the tenant's catalogue and how many more;
+ * nothing the tenant holds (blocked ahead of time, or collected since). */
+export function whatItIs(bs: BlockedBuild[] | undefined) {
+  if (!bs || bs.length === 0) return ''
+  const b = bs[0]
+  return `${b.name} ${b.version}, ${b.platform}, ${b.source}${bs.length > 1 ? ` (+${bs.length - 1})` : ''}`
 }
 
 export function Blocks() {
@@ -60,6 +79,8 @@ export function Blocks() {
       {list.error ? <ErrorBox error={list.error} /> : list.loading && !list.data ? <Loading /> : list.items.length === 0 ? <Empty>Nothing blocked.</Empty> : (
         <Table rows={list.items} rowKey={(b) => b.body_hash} columns={[
           ['Body hash', (b) => <Mono>{b.body_hash}</Mono>],
+          ['What it is', (b) => (whatItIs(b.builds) ? <span className="text-[13px]" title={(b.builds ?? []).map((x) => `${x.source} ${x.name} ${x.version} ${x.platform}`).join('\n')}>{whatItIs(b.builds)}</span>
+            : <span className="text-[13px] text-ink-muted">nothing in the catalogue</span>)],
           ['Reason', (b) => b.reason],
           ['Blocked', (b) => <span className="text-[13px] text-ink-muted">{when(b.created_at)} by {b.created_by}</span>],
           ['', (b) => <Button tone="outline" disabled={busy} onClick={() => setUnblocking(b.body_hash)}>Unblock…</Button>],

@@ -1,6 +1,6 @@
 # Spec 0041: The catalogue as the console's home, and the decision queue
 
-- **Status**: accepted (the owner's decisions of 2026-11-05); phase 1 (the API) implemented
+- **Status**: implemented (phase 1: the API; phase 2: the console)
 - **Date**: 2026-11-01
 - **Author**: vgsml, Claude
 
@@ -465,6 +465,35 @@ console.
   `subject/`).
 - **Docs.** `administration/upgrading.md` lists `0050_event_pruned` too, which spec 0040's change
   had left out of the `min_reader` table.
+
+### As built (phase 2: the console)
+
+- **The home's reads** (`web/console/src/lib/home.tsx`) are read once for a tenant administrator's
+  pages: the catalogue, the signed channels of the default type with each one's sources, follows and
+  hold, and every decision (paged). The matrix, the queue and the navigation's count share them, and
+  every action reads them again. The queue's groups are pure functions (`lib/queue.ts`) with the unit
+  tests.
+- **The home.** The standalone console opens a tenant administrator's (and a server
+  administrator's opened tenant) on **Catalogue**, with **Needs a decision** under it and its count;
+  anyone else's on **Channels**. The micro-frontend keeps its default route, `/channels`: it starts
+  before the caller's grants are read, and a host names the route it wants (`/catalogue`).
+- **Promote** in the queue names any channel holding the waiting version as an active or deprecated
+  release (by name), until spec 0043 gives the channels an order; it is offered only with `promote`
+  on the name in the target and `publish` in that channel, and **Place** only with `promote`.
+- **Purge** in the queue deletes the item's builds placed nowhere: of the held version for a hold,
+  of every version for a name in no channel, listed before the confirmation. **Make auto** and
+  **Make manual** are one `PUT …/sources/{name}`. "In no channel, or some channels only" counts the
+  signed channels of the default type.
+- **The entry's page** is `catalogue/{name}` (the old `catalogue/{source}/{name}` shows the same
+  page): the rules editor, then each source's section (its licence, from the tenant's licences, and
+  its versions), then the name's **Reports** (every body's: a report belongs to a body, and the page
+  shows them once). The **Report & licence** drawer in the queue shows the same two.
+- **A channel's administrator** who is not an auditor gets an **Events** tab on the channel's page,
+  reading `subject=channel:<c>`.
+- **Tests.** Unit tests of the matrix's cells, the queue's groups, Skip and Dismiss with Undo, the
+  rule editor's changes and the home by grants (`src/screens/home.test.tsx`); the console end to end
+  (`e2e/decisions.spec.ts`) on run.sh's fixture and a manual rule for the tenant's `atlas` in prod;
+  `console.spec.ts` waits for the channel's page after leaving the home.
 
 ## Follow-ups
 

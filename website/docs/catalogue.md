@@ -250,17 +250,21 @@ after its table.
 
 ## In the console
 
-- **Catalogue** (tenant administrators) lists every source and name with its icon and summary, its
-  versions, each marked held, revoked or withdrawn, and the channels whose rules take it, filtered by
-  a name prefix and a source. An entry's page shows its icon and summary, with **Edit…** (the
-  summary, a PNG file, or removing the icon) on the tenant's own sources, never on a distributor's
-  entry, and each version's builds: platform, DuckDB version or C API, state (held
-  until when, withdrawn and why, revoked), visibility and the channels it is placed in. **Place…**
+- **Catalogue** (tenant administrators: their home, spec 0041) is a matrix: every source and name
+  with its icon, summary and versions (each marked held, revoked or withdrawn), against the tenant's
+  signed channels, each cell the channel's rule, what waits under it, a failed placement, another
+  source's rule or a follow's skip, and **+ Rule…**; filtered by a name prefix and a source. **Needs
+  a decision** under it is the [queue](#know-what-waits), with its count. An entry's page is per
+  name, every source side by side: each channel's rule for it edited in place, then per source its
+  licence, **Edit…** (the summary, a PNG file, or removing the icon) on the tenant's own sources,
+  never on a distributor's entry, and each version's builds: platform, DuckDB version or C API,
+  state (held until when, withdrawn and why, revoked), visibility and the channels it is placed in. **Place…**
   places a version into a signed channel where the caller holds `promote` on the name (privately, not
   current, or early for a held version, a channel administrator's); **Purge…** deletes a build placed
   nowhere; a server administrator withdraws a distributor's version with **Withdraw…** and a reason.
 - A channel's **Sources** tab (its administrators) shows each name's source, the rule's mode, the
-  version the channel holds and the newest available one, and the placement pass's last outcome;
+  version the channel holds and what waits (`waiting`, and `waits_until` while a hold lasts), and the
+  placement pass's last outcome;
   **Change…** switches the source or the mode, **Place…** places a version by hand, **Clear…**
   removes the rule. Beside it are the channel's **hold** and its **Follows**, each with the names it
   skips and why, followed and unfollowed there.
