@@ -32,28 +32,46 @@ export function inOrder(names: string[], edges: OrderEdge[]): string[] {
 /** A channel's previous stage, '' for none. */
 export const previousOf = (edges: OrderEdge[], channel: string) => edges.find((e) => e.next === channel)?.channel ?? ''
 
-/** The edges of a chain of channels. */
-export const chainEdges = (chain: string[]): OrderEdge[] => chain.slice(1).map((next, i) => ({ channel: chain[i], next }))
+/** The order the dialog sends (the whole order): the next each listed channel names now ('' none),
+ * and the edges read of the channels it does not list, kept as they are. */
+export function orderBody(read: OrderEdge[], listed: string[], next: Record<string, string>): OrderEdge[] {
+  return [
+    ...read.filter((e) => !listed.includes(e.channel)),
+    ...listed.filter((c) => next[c]).map((c) => ({ channel: c, next: next[c] })),
+  ]
+}
 
 /** A release of a name in a channel as the channel's index answers it (GET …/channels/{c}/extensions/{name}):
- * the DuckDB versions its versioned path serves, those whose flat path it is current for, and for a
- * yanked or withdrawn one those it would serve. */
+ * its build's ABI and DuckDB version or C API, the DuckDB versions its versioned path serves, those
+ * whose flat path it is current for, and for a yanked or withdrawn one those it would serve. */
 export interface IndexRelease {
   version: string
   platform: string
   state: string
+  abi?: string
+  build_duckdb_version?: string
+  build_c_api?: string
   serves: { duckdb_version: string }[]
   current_for: string[]
   would_serve?: string[]
+  withdrawn?: boolean
   body_hash?: string
 }
 
 /** A release the channel purged (the index's purged member, for the name's administrators): its
- * version, on its slot's DuckDB version and platform. */
+ * version, platform and slot, and the DuckDB version the slot is ('' for a C API build's). */
 export interface PurgedRelease {
   version: string
-  duckdb_version: string
   platform: string
+  slot: string
+  duckdb_version: string
+}
+
+/** A release's slot, as the server computes a build's (store.Build.Slot): capi:<major> for a C API
+ * build, else its DuckDB version. */
+export function slotOf(r: Pick<IndexRelease, 'abi' | 'build_c_api' | 'build_duckdb_version'>) {
+  const major = /^v?(\d+)\./.exec(r.build_c_api ?? '')?.[1]
+  return r.abi === 'c_struct' && major !== undefined ? `capi:${Number(major)}` : r.build_duckdb_version ?? ''
 }
 
 /** A cell (a DuckDB version and a platform) and the version that waits there. */
@@ -63,18 +81,27 @@ export interface CellWait {
   version: string
 }
 
-/** What waits for a stage S of a name from its previous stage P (spec 0043), per cell: one of S's
+/** What waits for a stage S of a name from its previous stage P (spec 0043), per cell, as the
+ * placement pass finds a rule's waiting version (spec 0041, internal/release/place.go): one of S's
  * DuckDB versions on a platform where P's flat path serves a current (P's rows are those of the
- * source S's rule takes the name from), the cell waiting when that current is newer than every
- * version S's rows have or had there, in any state (active, deprecated, yanked, withdrawn, and the
- * releases it purged). S with no release of the name has had nothing anywhere. */
+ * source S's rule takes the name from), the cell waiting when that current is
+ * - of a version S does not hold (an active release, not withdrawn, on any cell): the pass
+ *   completes a held version by itself;
+ * - in a slot (its version, platform and slot) S never had, purged slots included;
+ * - newer than every version S's cell has or had, in any state (active, deprecated, yanked,
+ *   withdrawn, and the releases it purged).
+ * S with no release of the name has had nothing anywhere. */
 export function cellWaits(prev: IndexRelease[], stage: IndexRelease[], stageVersions: string[], purged: PurgedRelease[] = []): CellWait[] {
   const out: CellWait[] = []
+  const held = new Set(stage.filter((r) => r.state === 'active' && !r.withdrawn).map((r) => r.version))
   const platforms = [...new Set(prev.map((r) => r.platform))].sort()
   for (const duckdb of [...stageVersions].sort()) {
     for (const platform of platforms) {
       const cur = prev.find((r) => r.platform === platform && r.current_for.includes(duckdb))
-      if (!cur) continue
+      if (!cur || held.has(cur.version)) continue
+      const slot = slotOf(cur)
+      const same = (x: { version: string; platform: string }) => x.version === cur.version && x.platform === platform
+      if (stage.some((r) => same(r) && slotOf(r) === slot) || purged.some((p) => same(p) && p.slot === slot)) continue
       const had = [
         ...stage.filter((r) => r.platform === platform &&
           (r.serves.some((s) => s.duckdb_version === duckdb) || (r.would_serve ?? []).includes(duckdb))),

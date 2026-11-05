@@ -23,18 +23,19 @@ test('the pipeline: the order set, a version waiting for staging promoted after 
   await page.getByRole('link', { name: 'acme', exact: true }).click()
   await page.getByRole('navigation').getByRole('link', { name: 'Channels', exact: true }).click()
   // no order yet: the list, and Set the order…
-  await expect(page.getByRole('button', { name: 'Pipeline' })).toHaveCount(0)
+  await expect(page.getByRole('group', { name: 'Channels view' })).toHaveCount(0)
   await page.getByRole('button', { name: 'Set the order…' }).click()
   await dialog(page).getByLabel('next of nightly').selectOption('staging')
   await dialog(page).getByLabel('next of staging').selectOption('prod')
   await dialog(page).getByRole('button', { name: 'Save', exact: true }).click()
-  await page.getByRole('button', { name: 'Pipeline' }).click()
+  await page.getByRole('group', { name: 'Channels view' }).getByRole('button', { name: 'Pipeline' }).click()
   await expect(page.getByRole('group', { name: /^stage / })).toHaveText([/nightly/, /staging/, /prod/])
   await expect(page.getByText('2 versions wait for staging')).toBeVisible()
 
   // relay 1.0: its Report & licence panel, then Promote from nightly, filled in
-  const relay = page.getByRole('row').filter({ hasText: 'relay' }).filter({ has: page.getByRole('button', { name: 'Report & licence' }) })
-  await relay.getByRole('button', { name: 'Report & licence' }).click()
+  // (the chain's matrix: a row per name, a column per stage)
+  await expect(page.getByRole('row', { name: /^relay/ }).getByText('→ waits 1.0 from nightly')).toBeVisible()
+  await page.getByRole('button', { name: 'Report & licence of relay for staging' }).click()
   const panel = page.getByRole('region', { name: 'relay report and licence' })
   await expect(panel.getByText(/is nightly's current on v2.0.0 linux_amd64/)).toBeVisible()
   await expect(panel.getByText('No licence in this entry.')).toBeVisible()
@@ -47,8 +48,7 @@ test('the pipeline: the order set, a version waiting for staging promoted after 
   await expect(page.getByText('1 version waits for staging')).toBeVisible()
 
   // beacon 1.0 skipped, from the panel: nothing waits for staging any more
-  const beacon = page.getByRole('row').filter({ hasText: 'beacon' }).filter({ has: page.getByRole('button', { name: 'Report & licence' }) })
-  await beacon.getByRole('button', { name: 'Report & licence' }).click()
+  await page.getByRole('button', { name: 'Report & licence of beacon for staging' }).click()
   await page.getByRole('region', { name: 'beacon report and licence' }).getByRole('button', { name: 'Skip', exact: true }).click()
   await dialog(page).getByRole('button', { name: 'Skip', exact: true }).click()
   await expect(page.getByRole('status').getByText('beacon 1.0 skipped in staging')).toBeVisible()

@@ -38,15 +38,16 @@ export function Channels() {
         {perms.tenantAdmin && <span className="ml-auto"><Button tone="brand" onClick={() => setCreating(!creating)}>{creating ? 'Close' : 'New channel'}</Button></span>}
       </PageTitle>
       {creating && <NewChannel />}
-      {home && (
+      {/* only once the home's reads are there: an order dialog of no channels would send none */}
+      {home?.reads && (
         <div className="flex flex-wrap items-center gap-2">
           {ordered ? (
-            <Chips label="view" value={view} options={[['list', 'List'], ['pipeline', 'Pipeline']]}
+            <Chips label="Channels view" value={view} options={[['list', 'List'], ['pipeline', 'Pipeline']]}
               onChange={(v) => setParams(v === 'pipeline' ? { view: v } : {}, { replace: true })} />
           ) : <Button onClick={() => setOrdering(true)}>Set the order…</Button>}
         </div>
       )}
-      {home && <OrderDialog open={ordering} channels={(home.reads?.channels ?? []).map((c) => c.name)} onClose={() => setOrdering(false)} onSaved={home.reload} />}
+      {home?.reads && <OrderDialog open={ordering} channels={home.reads.channels.map((c) => c.name)} onClose={() => setOrdering(false)} onSaved={home.reload} />}
       {view === 'pipeline' ? <Pipeline onEdit={() => setOrdering(true)} /> : rows.length === 0 ? (
         <Empty>No channel you administer.</Empty>
       ) : (

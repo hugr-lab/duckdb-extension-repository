@@ -4,13 +4,16 @@ import { MemoryRouter } from 'react-router-dom'
 import { type Grant, Perms, TenantContext } from '../lib/context'
 import { HomeProvider } from '../lib/home'
 import { Client } from '../lib/http'
-import { type IndexRelease, cellWaits, chainEdges, chainsOf, inOrder, previousOf, stageWait } from '../lib/order'
+import { type IndexRelease, cellWaits, chainsOf, inOrder, orderBody, previousOf, slotOf, stageWait } from '../lib/order'
 import { type ChannelReads, type Decision, promoteFrom } from '../lib/queue'
 import { Channels } from './Channels'
+import { Decisions } from './Decisions'
+import { rulesByMode } from './Pipeline'
 
 // The channels' order and the pipeline (spec 0043): the stages from fixtures, what waits for a stage
-// per cell from its previous stage's current, a skip leaving a version out, Promote filled in from the
-// previous stage, and a channel administrator seeing the list only.
+// per cell from its previous stage's current (as the placement pass finds it), a skip leaving a
+// version out, the chain's matrix, Promote filled in from the previous stage, the order dialog, and a
+// channel administrator seeing the list only.
 
 beforeAll(() => {
   // jsdom has no modal dialogs: open and close as the attribute
@@ -29,9 +32,11 @@ afterEach(() => {
 })
 
 const rel = (version: string, platform: string, more: Partial<IndexRelease> = {}): IndexRelease =>
-  ({ version, platform, state: 'active', serves: [{ duckdb_version: 'v2.0.0' }], current_for: [], ...more })
+  ({ version, platform, state: 'active', abi: 'cpp', build_duckdb_version: 'v2.0.0', serves: [{ duckdb_version: 'v2.0.0' }], current_for: [], ...more })
 
 const skip = (d: Partial<Decision>): Decision => ({ id: 'd1', kind: 'skip', source: 'tenant', name: 'relay', decided_by: 'x', decided_at: '', etag: '"v1"', ...d })
+
+const openDialog = () => screen.getAllByRole('dialog', { hidden: true }).find((d) => d.hasAttribute('open'))!
 
 describe('the order', () => {
   const order = [{ channel: 'staging', next: 'prod' }, { channel: 'nightly', next: 'staging' }, { channel: 'dev', next: 'qa' }]
@@ -40,7 +45,11 @@ describe('the order', () => {
     expect(inOrder(['prod', 'beta', 'staging', 'nightly', 'alpha', 'qa'], order)).toEqual(['qa', 'nightly', 'staging', 'prod', 'alpha', 'beta'])
     expect(previousOf(order, 'prod')).toBe('staging')
     expect(previousOf(order, 'nightly')).toBe('')
-    expect(chainEdges(['nightly', 'staging', 'prod'])).toEqual([{ channel: 'nightly', next: 'staging' }, { channel: 'staging', next: 'prod' }])
+  })
+
+  it("keeps the edges of channels the dialog does not list (another type's, one it never read)", () => {
+    expect(orderBody(order, ['nightly', 'staging', 'prod'], { nightly: 'staging', staging: '' }))
+      .toEqual([{ channel: 'dev', next: 'qa' }, { channel: 'nightly', next: 'staging' }])
   })
 
   it('promotes from the previous stage first when it holds the version', () => {
@@ -48,6 +57,13 @@ describe('the order', () => {
     expect(promoteFrom(vs, '1.0', 'prod')).toBe('beta')
     expect(promoteFrom(vs, '1.0', 'prod', () => true, 'staging')).toBe('staging')
     expect(promoteFrom(vs, '1.0', 'prod', () => true, 'nightly')).toBe('beta') // the previous stage does not hold it
+  })
+
+  it('counts a stage\'s rules by mode, "as it lands" ones too', () => {
+    const ch: ChannelReads = { name: 'staging', hold: '0s', follows: [], sources: [{ name: 'a', source: 'tenant', mode: 'manual', available: {} },
+      { name: 'b', source: 'tenant', available: {} }, { name: 'c', source: '', available: {} }] }
+    expect(rulesByMode(ch)).toBe('1 as it lands, 1 manual')
+    expect(rulesByMode({ ...ch, sources: [] })).toBe('none')
   })
 })
 
@@ -62,11 +78,33 @@ describe('what waits for a stage', () => {
     // the stage had 1.1, yanked (it would serve the cell), and 1.2 deprecated: neither waits again
     const had = [rel('1.1', 'linux_amd64', { state: 'yanked', serves: [], would_serve: ['v2.0.0'] }), rel('1.2', 'osx_arm64', { state: 'deprecated' })]
     expect(cellWaits(nightly, had, ['v2.0.0'])).toEqual([])
-    // the stage purged 1.1 on linux_amd64 and 1.2 on another DuckDB version: 1.1 waits there no more
-    const purged = [{ version: '1.1', duckdb_version: 'v2.0.0', platform: 'linux_amd64' }, { version: '1.2', duckdb_version: 'v2.1.0', platform: 'osx_arm64' }]
+    // the stage purged 1.1 on linux_amd64 (a cell's), and 1.2 of another DuckDB version: 1.1 waits there no more
+    const purged = [{ version: '1.1', platform: 'linux_amd64', slot: 'v2.0.0', duckdb_version: 'v2.0.0' },
+      { version: '1.2', platform: 'osx_arm64', slot: 'v2.1.0', duckdb_version: 'v2.1.0' }]
     expect(cellWaits(nightly, [], ['v2.0.0'], purged)).toEqual([{ duckdb: 'v2.0.0', platform: 'osx_arm64', version: '1.2' }])
     // a cell of another DuckDB version is the stage's only when it serves it
     expect(cellWaits(nightly, [], ['v2.1.0'])).toEqual([])
+  })
+
+  it('a purged C API build is had in its slot: the same version never waits again there', () => {
+    const capi = (v: string, more: Partial<IndexRelease> = {}) => rel(v, 'linux_amd64', { abi: 'c_struct', build_duckdb_version: undefined, build_c_api: 'v1.2.0', ...more })
+    expect(slotOf(capi('2.0'))).toBe('capi:1')
+    expect(slotOf(rel('2.0', 'linux_amd64'))).toBe('v2.0.0')
+    const prev = [capi('2.0', { current_for: ['v2.0.0'] })]
+    expect(cellWaits(prev, [], ['v2.0.0']).map((c) => c.version)).toEqual(['2.0'])
+    const purged = [{ version: '2.0', platform: 'linux_amd64', slot: 'capi:1', duckdb_version: '' }]
+    expect(cellWaits(prev, [], ['v2.0.0'], purged)).toEqual([])
+    // another major's slot was never had
+    expect(cellWaits(prev, [], ['v2.0.0'], [{ ...purged[0], slot: 'capi:2' }]).map((c) => c.version)).toEqual(['2.0'])
+  })
+
+  it('a version the stage holds (an active release on any cell) never waits: the pass completes it', () => {
+    // 1.2 active on linux_amd64 (newer than nightly's 1.1 there): osx_arm64's 1.2 is the pass's to complete
+    const held = [rel('1.2', 'linux_amd64', { current_for: ['v2.0.0'] })]
+    expect(cellWaits(nightly, held, ['v2.0.0'])).toEqual([])
+    // a withdrawn or deprecated release holds it for no one: it still waits on the other platform
+    expect(cellWaits(nightly, [{ ...held[0], withdrawn: true }], ['v2.0.0']).map((c) => c.version)).toEqual(['1.2'])
+    expect(cellWaits(nightly, [{ ...held[0], state: 'deprecated' }], ['v2.0.0']).map((c) => c.version)).toEqual(['1.2'])
   })
 
   it('a stage with no release of the name waits wherever the previous stage has a current', () => {
@@ -85,48 +123,74 @@ describe('what waits for a stage', () => {
   })
 })
 
-type Call = { method: string; path: string; body?: unknown; headers: Record<string, string> }
+type Call = { method: string; path: string; search: string; body?: unknown; headers: Record<string, string> }
 
 const json = (body: unknown, status = 200, etag = '') =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...(etag ? { ETag: etag } : {}) } })
 
+interface Fake {
+  decisions?: Decision[]
+  stagingPurged?: unknown[]
+  /** the staging index of relay fails */
+  failIndex?: boolean
+  /** relay's build in nightly has no body hash */
+  noBody?: boolean
+  /** the order's PUT answers 412 once */
+  stale?: boolean
+}
+
 // nightly → staging → prod; relay 1.0 is nightly's current, staging's rule manual with no release of
-// it; beacon 2.0 is nightly's current too, staging's rule taking it from another source
-function api(decisions: Decision[] = [], stagingPurged: unknown[] = []) {
+// it (the server's waiting says 1.0 too); beacon 2.0 is nightly's current too, staging's rule taking
+// it from another source; the catalogue's relay 1.0 is placed in beta and nightly
+function api(f: Fake = {}) {
   const calls: Call[] = []
   const channels: ChannelReads[] = [
+    { name: 'beta', hold: '0s', follows: [], sources: [] },
     { name: 'nightly', hold: '0s', follows: [], sources: [{ name: 'relay', source: 'tenant', current: '1.0', available: {} },
       { name: 'beacon', source: 'tenant', current: '2.0', available: {} }] },
     { name: 'prod', hold: '0s', follows: [], sources: [] },
-    { name: 'staging', hold: '24h0m0s', follows: [], sources: [{ name: 'relay', source: 'tenant', mode: 'manual', available: {} },
-      { name: 'beacon', source: 'upstream:core', mode: 'auto', available: {} }] },
+    { name: 'staging', hold: '24h0m0s', follows: [], sources: [{ name: 'relay', source: 'tenant', mode: 'manual', waiting: '1.0', available: {} },
+      { name: 'beacon', source: 'upstream:core', mode: 'auto', available: {} }, { name: 'lantern', source: 'tenant', available: {} }] },
   ]
   let order = [{ channel: 'nightly', next: 'staging' }, { channel: 'staging', next: 'prod' }]
+  let etag = 1
+  let stale = f.stale ?? false
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
     const u = new URL(input)
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body
-    const c = { method: init?.method ?? 'GET', path: u.pathname.replace('/api/v1/tenants/acme', ''), body, headers: (init?.headers ?? {}) as Record<string, string> }
+    const c = { method: init?.method ?? 'GET', path: u.pathname.replace('/api/v1/tenants/acme', ''), search: u.search, body, headers: (init?.headers ?? {}) as Record<string, string> }
     calls.push(c)
     if (c.method === 'POST' && c.path.endsWith('/releases/promote')) return json({ releases: [] }, 201)
     if (c.method === 'PUT' && c.path === '/decisions') return json({ ...body, id: 'd9', etag: '"v1"' }, 201)
     if (c.method === 'PUT' && c.path === '/channel-order') {
+      if (stale) {
+        stale = false
+        etag++
+        return json({ status: 412, title: 'Precondition Failed' }, 412)
+      }
       order = body.order
-      return json({ order }, 200, '"o2"')
+      return json({ order }, 200, `"o${++etag}"`)
     }
     if (c.path === '/catalogue') return json({ entries: [] })
+    if (c.path === '/catalogue/tenant/extensions/relay') {
+      return json({ versions: [{ version: '1.0', builds: [{ placed: [{ channel: 'beta', state: 'active' }, { channel: 'nightly', state: 'active' }] }] }] })
+    }
     if (c.path === '/licenses') return json({ licenses: [] })
-    if (c.path === '/channel-order') return json({ order }, 200, '"o1"')
+    if (c.path === '/channel-order') return json({ order }, 200, `"o${etag}"`)
     if (c.path === '/channels') return json({ channels: channels.map((x) => ({ name: x.name, kind: 'signed' })) })
-    if (c.path === '/decisions') return json({ decisions })
+    if (c.path === '/decisions') return json({ decisions: f.decisions ?? [] })
     let m = /^\/channels\/([^/]+)\/(sources|follows|hold)$/.exec(c.path)
     const ch = channels.find((x) => x.name === m?.[1])
     if (m && ch) return json(m[2] === 'sources' ? { sources: ch.sources } : m[2] === 'follows' ? { follows: ch.follows } : { hold: ch.hold })
     if ((m = /^\/channels\/([^/]+)$/.exec(c.path))) return json({ name: m[1], duckdb_versions: [{ duckdb_version: 'v2.0.0' }] })
     if ((m = /^\/channels\/nightly\/extensions\/(relay|beacon)$/.exec(c.path))) {
       const v = m[1] === 'relay' ? '1.0' : '2.0'
-      return json({ releases: [{ version: v, platform: 'linux_amd64', state: 'active', serves: [{ duckdb_version: 'v2.0.0' }], current_for: ['v2.0.0'], body_hash: 'ab' }] })
+      return json({ releases: [{ version: v, platform: 'linux_amd64', state: 'active', abi: 'cpp', build_duckdb_version: 'v2.0.0',
+        serves: [{ duckdb_version: 'v2.0.0' }], current_for: ['v2.0.0'], body_hash: m[1] === 'relay' && !f.noBody ? 'ab' : undefined }], purged: [] })
     }
-    if (c.path === '/channels/staging/extensions/relay') return json({ releases: [], purged: stagingPurged })
+    if (c.path === '/channels/staging/extensions/relay') {
+      return f.failIndex ? json({ status: 503, title: 'Unavailable' }, 503) : json({ releases: [], purged: f.stagingPurged ?? [] })
+    }
     if (/^\/channels\/[^/]+\/extensions\/[^/]+$/.test(c.path)) return json({ releases: [] })
     if (c.path.endsWith('/attachments')) return json({ attachments: [] })
     return json({}, 404)
@@ -134,34 +198,47 @@ function api(decisions: Decision[] = [], stagingPurged: unknown[] = []) {
   return calls
 }
 
-function page(grants: Grant[] | 'server', withHome = true) {
+function page(grants: Grant[] | 'server', ui: 'channels' | 'decisions' | 'bare' = 'channels') {
   const client = new Client({ base: 'https://k.example/api/v1', prefix: '/tenants/', getToken: async () => 'tok' })
   const perms = grants === 'server' ? new Perms(true) : new Perms(false, grants)
   return render(
     <MemoryRouter initialEntries={['/t/acme/channels']}>
       <TenantContext.Provider value={{ client, tenant: 'acme', perms, api: '/tenants/acme', base: '/t/acme' }}>
-        {withHome ? <HomeProvider><Channels /></HomeProvider> : <Channels />}
+        {ui === 'bare' ? <Channels /> : <HomeProvider>{ui === 'decisions' ? <Decisions /> : <Channels />}</HomeProvider>}
       </TenantContext.Provider>
     </MemoryRouter>)
 }
 
+const pipeline = async () => fireEvent.click(within(await screen.findByRole('group', { name: 'Channels view' })).getByRole('button', { name: 'Pipeline' }))
+const relayPanel = async () => {
+  fireEvent.click(await screen.findByRole('button', { name: 'Report & licence of relay for staging' }))
+  return screen.getByRole('region', { name: 'relay report and licence' })
+}
+
 describe('the pipeline', () => {
-  it("draws the stages, what waits for staging, and promotes nightly's current with the Report & licence panel before it", async () => {
+  it("draws the stages and one matrix per chain, and promotes nightly's current after the Report & licence panel", async () => {
     const calls = api()
     page('server')
-    fireEvent.click(await screen.findByRole('button', { name: 'Pipeline' }))
+    await pipeline()
     const stages = await screen.findAllByRole('group', { name: /^stage / })
     expect(stages.map((s) => s.getAttribute('aria-label'))).toEqual(['stage nightly', 'stage staging', 'stage prod'])
-    expect(within(stages[1]).getByText(/rules: 1 auto, 1 manual/)).toBeTruthy()
+    expect(within(stages[1]).getByText(/rules: 1 as it lands, 1 auto, 1 manual/)).toBeTruthy()
     expect(within(stages[1]).getByText(/hold 24h/)).toBeTruthy()
-    expect(await screen.findByText('1 version waits for staging')).toBeTruthy()
+    expect(await within(stages[1]).findByText('1 version waits for staging')).toBeTruthy()
+    expect(within(stages[2]).getByText('Nothing waits for prod')).toBeTruthy()
+    // one row per name, a column per stage: relay's progress in one row
+    const relay = screen.getByRole('row', { name: /^relay/ })
+    expect(within(relay).getAllByRole('cell').map((c) => c.textContent?.replace(/ /g, ' '))).toEqual([
+      'relay', 'as it lands1.0', 'manual→ waits 1.0 from nightlyReport & licence', 'no rule'])
     // beacon: staging serves it from another source, which is no wait
-    expect(screen.getByText('upstream:core')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Report & licence' }))
-    const panel = screen.getByRole('region', { name: 'relay report and licence' })
+    expect(within(screen.getByRole('row', { name: /^beacon/ })).getByText('upstream:core')).toBeTruthy()
+    const panel = await relayPanel()
+    expect(document.activeElement).toBe(panel) // focus moves to the panel
     expect(within(panel).getByText(/is nightly's current on v2.0.0 linux_amd64/)).toBeTruthy()
+    expect(within(panel).getByRole('region', { name: 'reports of linux_amd64' })).toBeTruthy()
+    expect(within(panel).getByRole('link', { name: 'Every report of relay, on its page' }).getAttribute('href')).toBe('/t/acme/catalogue/relay')
     fireEvent.click(within(panel).getByRole('button', { name: 'Promote…' }))
-    const dialog = screen.getAllByRole('dialog', { hidden: true }).find((d) => d.hasAttribute('open'))!
+    const dialog = openDialog()
     expect(within(dialog).getByText('Promote relay from nightly')).toBeTruthy()
     expect((within(dialog).getByLabelText('To channel') as HTMLSelectElement).value).toBe('staging')
     expect((within(dialog).getByLabelText('Version') as HTMLInputElement).value).toBe('1.0')
@@ -172,62 +249,103 @@ describe('the pipeline', () => {
     expect(await screen.findByText('1.0 promoted to staging')).toBeTruthy()
   })
 
+  it("reads a version's reports by its bodies only, none without one, and Not now closes the panel", async () => {
+    let calls = api()
+    page('server')
+    await pipeline()
+    let panel = await relayPanel()
+    await waitFor(() => expect(calls.some((c) => c.path.endsWith('/attachments'))).toBe(true))
+    expect(calls.filter((c) => c.path.endsWith('/attachments')).map((c) => c.path + new URLSearchParams(c.search).get('body_hash'))).toEqual(['/extensions/relay/attachmentsab'])
+    fireEvent.click(within(panel).getByRole('button', { name: 'Not now' }))
+    expect(screen.queryByRole('region', { name: 'relay report and licence' })).toBeNull()
+    cleanup()
+    // no body known: no report read, never every report of the extension
+    calls = api({ noBody: true })
+    page('server')
+    await pipeline()
+    panel = await relayPanel()
+    await within(panel).findByText('No licence in this entry.')
+    expect(within(panel).queryByRole('region', { name: /^reports of / })).toBeNull()
+    expect(calls.some((c) => c.path.endsWith('/attachments'))).toBe(false)
+  })
+
   it('skips a waiting version under a manual rule, and a skipped version is left out of the count', async () => {
     const calls = api()
     page('server')
-    fireEvent.click(await screen.findByRole('button', { name: 'Pipeline' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Report & licence' }))
-    fireEvent.click(within(screen.getByRole('region', { name: 'relay report and licence' })).getByRole('button', { name: 'Skip' }))
-    const dialog = screen.getAllByRole('dialog', { hidden: true }).find((d) => d.hasAttribute('open'))!
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Skip' }))
+    await pipeline()
+    fireEvent.click(within(await relayPanel()).getByRole('button', { name: 'Skip' }))
+    fireEvent.click(within(openDialog()).getByRole('button', { name: 'Skip' }))
     await waitFor(() => expect(calls.some((c) => c.method === 'PUT')).toBe(true))
     expect(calls.find((c) => c.method === 'PUT')?.body).toEqual({ kind: 'skip', channel: 'staging', source: 'tenant', name: 'relay', version: '1.0' })
     cleanup()
-    api([skip({ channel: 'staging', version: '1.0' })])
+    api({ decisions: [skip({ channel: 'staging', version: '1.0' })] })
     page('server')
-    fireEvent.click(await screen.findByRole('button', { name: 'Pipeline' }))
+    await pipeline()
     expect(await screen.findByText('Nothing waits for staging')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Report & licence' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Report & licence of/ })).toBeNull()
   })
 
   it('counts a version the stage purged as had: it never waits again', async () => {
-    api([], [{ version: '1.0', duckdb_version: 'v2.0.0', platform: 'linux_amd64' }])
+    api({ stagingPurged: [{ version: '1.0', platform: 'linux_amd64', slot: 'v2.0.0', duckdb_version: 'v2.0.0' }] })
     page('server')
-    fireEvent.click(await screen.findByRole('button', { name: 'Pipeline' }))
+    await pipeline()
     expect(await screen.findByText('Nothing waits for staging')).toBeTruthy()
   })
 
-  it('offers no Promote without promote in the stage and publish in the previous one', async () => {
+  it('says it is reading what waits, and that it could not be read, never "Nothing waits"', async () => {
+    api({ failIndex: true })
+    page('server')
+    await pipeline()
+    expect(await screen.findAllByText('What waits could not be read')).toHaveLength(2)
+    expect(screen.queryByText(/^Nothing waits/)).toBeNull()
+    expect(screen.getByRole('alert')).toBeTruthy()
+  })
+
+  it('names the right a Promote lacks', async () => {
     api()
-    page([{ principal: 'p', verbs: ['admin'] }])
-    fireEvent.click(await screen.findByRole('button', { name: 'Pipeline' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Report & licence' }))
-    const panel = screen.getByRole('region', { name: 'relay report and licence' })
+    page([{ principal: 'p', verbs: ['admin'] }, { principal: 'p', verbs: ['publish'], channel: 'nightly' }])
+    await pipeline()
+    const panel = await relayPanel()
     expect(within(panel).queryByRole('button', { name: 'Promote…' })).toBeNull()
+    expect(within(panel).getByText('Promote needs promote on relay in staging, which you do not hold.')).toBeTruthy()
     expect(within(panel).getByRole('button', { name: 'Skip' })).toBeTruthy()
   })
 
-  it('sets the order as each channel names its next, at the ETag read', async () => {
-    const calls = api()
+  it('sets the order as each channel names its next, at the ETag read, and reads it again when it changed meanwhile', async () => {
+    const calls = api({ stale: true })
     page('server')
-    fireEvent.click(await screen.findByRole('button', { name: 'Pipeline' }))
+    await pipeline()
     fireEvent.click(await screen.findByRole('button', { name: 'Edit the order…' }))
-    const next = await screen.findByLabelText('next of staging')
-    fireEvent.change(next, { target: { value: '' } })
-    const dialog = screen.getAllByRole('dialog', { hidden: true }).find((d) => d.hasAttribute('open'))!
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(calls.some((c) => c.method === 'PUT' && c.path === '/channel-order')).toBe(true))
-    const put = calls.find((c) => c.method === 'PUT' && c.path === '/channel-order')!
-    expect(put.body).toEqual({ order: [{ channel: 'nightly', next: 'staging' }] })
-    expect(put.headers['If-Match']).toBe('"o1"')
+    fireEvent.change(await screen.findByLabelText('next of staging'), { target: { value: '' } })
+    fireEvent.click(within(openDialog()).getByRole('button', { name: 'Save' }))
+    // 412: said, and read again with the new ETag
+    expect(await screen.findByText(/The order changed meanwhile/)).toBeTruthy()
+    await waitFor(() => expect(calls.filter((c) => c.method === 'GET' && c.path === '/channel-order').length).toBeGreaterThanOrEqual(3))
+    fireEvent.change(await screen.findByLabelText('next of staging'), { target: { value: '' } })
+    fireEvent.click(within(openDialog()).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(calls.filter((c) => c.method === 'PUT' && c.path === '/channel-order').length).toBe(2))
+    const put = calls.filter((c) => c.method === 'PUT' && c.path === '/channel-order')
+    expect(put[0].headers['If-Match']).toBe('"o1"')
+    expect(put[1].headers['If-Match']).toBe('"o2"')
+    expect(put[1].body).toEqual({ order: [{ channel: 'nightly', next: 'staging' }] })
   })
 
   it("is a tenant administrator's: a channel's administrator sees the list of its channels only", async () => {
     api()
-    page([{ principal: 'p', verbs: ['admin'], channel: 'prod' }], false)
+    page([{ principal: 'p', verbs: ['admin'], channel: 'prod' }], 'bare')
     expect(await screen.findByRole('link', { name: 'prod' })).toBeTruthy()
     expect(screen.queryByRole('link', { name: 'staging' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Pipeline' })).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Channels view' })).toBeNull()
     expect(screen.queryByRole('button', { name: /order/ })).toBeNull()
+  })
+})
+
+describe('the queue with an order', () => {
+  it("promotes from the previous stage when it and another channel hold the version", async () => {
+    api()
+    page('server', 'decisions')
+    const group = await screen.findByRole('group', { name: 'relay staging actions' })
+    fireEvent.click(await within(group).findByRole('button', { name: 'Promote…' }))
+    expect(within(openDialog()).getByText('Promote relay 1.0 from nightly to staging?')).toBeTruthy() // beta comes first by name
   })
 })
