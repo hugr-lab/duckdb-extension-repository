@@ -1,6 +1,6 @@
 # Spec 0043: The channels' order, a pipeline from nightly to prod
 
-- **Status**: draft
+- **Status**: accepted (the owner's decisions of 2026-11-05)
 - **Date**: 2026-11-01
 - **Author**: vgsml, Claude
 
@@ -12,8 +12,8 @@ lets a tenant record that order: each channel may name its **next** channel. The
 order as a pipeline (the owner's mockup, Catalogue-Pipeline), offers **Promote** from a stage to the
 next with the Report & licence panel before it, and the decision queue (spec 0041) names the stage a
 waiting version comes from. kista does nothing else with the order: rules, follows, holds and
-promotion keep their meaning. Plan item K3, after K1 (spec 0041). The owner's open questions are at
-the end (Q-I, Q-J).
+promotion keep their meaning. Plan item K3, after K1 (spec 0041). The owner's decisions (2026-11-05,
+Q-I and Q-J) are at the end.
 
 ## Problem
 
@@ -30,12 +30,12 @@ the end (Q-I, Q-J).
 
 ### The order
 
-As recommended in Q-I, a **strict chain**:
+A **strict chain** (decision Q-I):
 
 - A signed channel may have one **next** channel: another signed channel of the same tenant and the
   same package type (spec 0034: a promotion stays within a type).
-- A channel is the next of at most one channel (at most one **previous**). Fan-in (`dev-a` and
-  `dev-b` both before `staging`) can be allowed later without a migration: it only drops this check.
+- A channel is the next of at most one channel (at most one **previous**): two channels never
+  share a next.
 - **No cycle**: following `next` from any channel never comes back to it.
 - A **passthrough channel** takes no place in the order (it serves DuckDB's core by its upstream,
   never by promotion).
@@ -75,7 +75,7 @@ channel_next   channel_id (pk, fk channels), next_channel_id (fk channels, uniqu
 
 - A table rather than a column on `channels`, so the reaper (spec 0019) deletes it by channel before
   `channels`, and no self-reference on `channels` complicates its deletion. The unique key on
-  `next_channel_id` is the chain's "at most one previous" (dropped if fan-in is allowed).
+  `next_channel_id` is the chain's "at most one previous".
 - **`min_reader` is raised to this migration**: the table references `channels`, and an older
   replica's tenant reaper does not know it and would fail deleting `channels` on PostgreSQL and SQL
   Server (as specs 0032 and 0037 found). The table joins `reapSteps` before `channels` and
@@ -86,7 +86,7 @@ channel_next   channel_id (pk, fk channels), next_channel_id (fk channels, uniqu
 Nothing on the server's paths: placement, promotion, holds, retention (spec 0042) and serving read
 no order. Promotion keeps its rights and its source named in each request (spec 0008: `promote` on
 the target, `publish` on the source channel), so the order grants nothing and a promotion between
-channels out of order stays allowed (Q-J).
+channels out of order stays allowed: the order is for display only (decision Q-J).
 
 **A stage waits** when, for a name both stages serve from the same source, the previous stage's
 current version (spec 0006: what its flat path serves) is newer than the stage's own; the version to
@@ -129,18 +129,15 @@ without an order sees the list only, with "Set the order…" for a tenant admini
   console end to end: set `nightly → staging → prod`, see a version wait for `staging`, open Report &
   licence, promote it, and Skip another.
 
-## Open questions
+## Decisions
 
-- **Q-I. The order's shape.**
-  - *Recommended*: a strict chain: each channel has at most one next and at most one previous.
-    Fan-in can be added later without a migration (the unique key on `next_channel_id` is dropped).
-  - *Alternative*: one next per channel, several channels allowed to share a next (`dev-a` and
-    `dev-b` before `staging`).
-- **Q-J. Should kista use the order?**
-  - *Recommended*: display only: the console's pipeline and its defaults.
-  - *Alternative 1*: a promotion without a source (`from` left out) promotes from the previous stage.
-  - *Alternative 2*: automatic promotion between stages (for example once the reports are in), a
-    follow-up spec.
+The owner's decisions of 2026-11-05, which the text above follows:
+
+- **Q-I. The order's shape.** A strict chain: each channel has at most one next and at most one
+  previous. Ruled out: several channels sharing a next (fan-in), and named pipelines.
+- **Q-J. What kista does with the order.** Display only: the console's pipeline and its defaults
+  (the source of the Promote dialog). Ruled out: a promotion defaulting to the previous stage on the
+  server, and automatic promotion between stages.
 
 ## Alternatives considered
 
@@ -162,5 +159,3 @@ pipeline), `api.md`, `administration/commands.md`, `observability.md` (`channel.
 ## Follow-ups
 
 - The order in the bootstrap (spec 0024): a tenant section listing its channels' order.
-- Promotion defaulting to the previous stage, and automatic promotion between stages (Q-J).
-- Fan-in, if the owner chooses it (Q-I).

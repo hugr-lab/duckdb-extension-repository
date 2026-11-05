@@ -1,6 +1,6 @@
 # Spec 0042: Version retention in channels
 
-- **Status**: draft
+- **Status**: accepted (the owner's decisions of 2026-11-05)
 - **Date**: 2026-11-01
 - **Author**: vgsml, Claude
 
@@ -14,8 +14,8 @@ the others: a retired release is not served, and an administrator can **restore*
 **grace** after which the pass purges it as an administrator's purge would (spec 0016). `retired` is
 a new release state, because a yank is final. An administrator can also retire a whole DuckDB line
 that is no longer built. A purged release's build then goes to the collector after `gc.grace`, unless
-something else holds its body. Plan item K2; the owner's mockup's Retention screen. The owner's open
-questions are at the end (Q-E to Q-H).
+something else holds its body. Plan item K2; the owner's mockup's Retention screen. The owner's
+decisions (2026-11-05, Q-E to Q-H) are at the end.
 
 ## Problem
 
@@ -51,7 +51,8 @@ questions are at the end (Q-E to Q-H).
 - **The tenant's default** (`PUT …/tenants/{t}/retention`), for every signed channel without its
   own; **a channel's own** (`PUT …/channels/{c}/retention`): per field, its value, `"default"` (the
   tenant's), or for `keep`, `"none"` (no retention in that channel, whatever the tenant's default).
-  A tenant without a default and a channel without its own keep everything, as today (Q-H).
+  A tenant without a default and a channel without its own keep everything, as today: kista has
+  no retention by default (decision Q-H).
 - **Each field in force on its own**: a channel may set `keep` and take the tenant's `grace`. The
   answer's `in_force` gives each field its value and its `from` (`channel` or `tenant`). **A field
   with no value anywhere means no rule in force**: the pass retires and purges nothing in that
@@ -62,16 +63,17 @@ questions are at the end (Q-E to Q-H).
 ### What the pass retires
 
 For each (source, name) with releases in the channel, each line separately: the versions in the
-line, ordered newest first by the version's **first release in the line** (`MIN(created_at)` of its
-releases serving the line; Q-H); the kept ones as above; the rest are **retirable in the line**. A
-release is **retired** when it is retirable in every line it serves (Q-G):
+line, ordered newest first by the version's **first release in the line** (`MIN(created_at)` of
+its releases serving the line; decision Q-H); the kept ones as above; the rest are **retirable in
+the line**. A release is **retired** when it is retirable in every line it serves: one state per
+release (decision Q-G):
 
 - a `c_struct` build serving `v1.5.2` and `v2.0.0` stays while either line keeps its version, so
   `v2.0.0` nodes can still install it by version while `v1.5.2` keeps it;
 - a release serving no line of the channel (its DuckDB version was removed from the channel) is left
   alone: it serves nothing and keeps nothing; retiring it is the line act below;
-- yanked releases (Q-H), withdrawn entries' releases (spec 0033: never purged) and releases already
-  retired are not counted and not touched;
+- yanked releases (the pass never purges them, decision Q-H), withdrawn entries' releases (spec
+  0033: never purged) and releases already retired are not counted and not touched;
 - each source is counted on its own: the releases of a source the rule no longer selects stay
   stored and unserved (spec 0031), and keep their current and newest N, so a switch back serves them
   at once.
@@ -89,6 +91,12 @@ it stays as it was (not `landed`), and `KeepLanded` acts on landed builds only. 
 0016) deletes the build after `gc.grace` unless another release references it, then the body row
 unless another build (another release's, or a landed catalogue build) references the body, then the
 stream a grace later.
+
+**What a node sees after the purge** (decision Q-F). A purged release leaves the index (spec 0016),
+and a node reads its absence as a yank: after the grace, a node reading the index sees the version
+gone from the channel, as after a yank. kista records no cause for the purge and gives such a slot no
+status of its own. A version a node must keep finding is pinned (below), which keeps it from
+retirement and from the purge.
 
 ### Pins
 
@@ -299,13 +307,17 @@ pipeline (spec 0043) shows each channel's `in_force`.
   newest N, retiring them at the next pass and purging them after the grace. Mitigations: the current
   versions are never retired; pins keep what nodes need; the grace leaves time to restore; each pass
   that changes something writes `retention.run`, and each retirement `release.retire`, which the
-  tenant's administrators and sinks see; and, if the owner takes Q-E, recently downloaded versions
-  are kept.
+  tenant's administrators and sinks see.
 - **Never the current.** The current versions of every line are computed in the full view and the
   public view, and re-checked under the channel lock before each retirement: a node installing with
   the flat path finds what it found before the pass. A pin is honoured the same way. One exception
   is an administrator's own act: with `keep: 1`, yanking the current version leaves the flat path
-  empty in that line until a restore or a new release, since the version before it was retired (Q-H).
+  empty in that line until a restore or a new release, since the version before it was retired:
+  `keep: N` counts the current among the N (decision Q-H).
+- **Versions in use are not tracked** (decision Q-E). The rule ignores downloads: a version nodes
+  still install by version is retired like any other once it falls out of the kept set. A consumer
+  (duckdb-acl's spec 093) need not pin versions and can install the newest (`FORCE INSTALL`); an
+  operator who needs a fixed version pins it. The plan carries no download data.
 - **Restorable, then final.** A retirement is undone by a restore during the grace; a purge is final
   (spec 0016) and keeps the slot taken, so the version can never come back with another body.
 - **No existence leak.** DuckDB's answer for a retired release is the same missing answer as for any
@@ -353,39 +365,28 @@ pipeline (spec 0043) shows each channel's `in_force`.
   retired, the flat `INSTALL x FROM repo` still installs the current version, the versioned install
   works again after a restore, and after a purge (the pass with a grace of `0`) it fails for good.
 
-## Open questions
+## Decisions
 
-- **Q-E. Versions still in use.** duckdb-acl's spec 093 installs extensions by version, so a node may
-  run a version the rule would retire.
-  - *Recommended*: keep versions downloaded within `retention.keep_downloaded_within` (configuration,
-    off by default), and show each version's last download in the plan (the statistics already
-    answer `last_download_day` per release).
-  - *Alternative 1*: only show the last download in the plan; the rule ignores it.
-  - *Alternative 2*: retire as the rule says, but never purge a version downloaded recently.
-- **Q-F. A retired-then-purged release looks like a yank to nodes.** Spec 0016: a purged release
-  leaves the index, and a node reads its absence as a yank.
-  - *Recommended*: record why a slot was purged (`purged_slots.cause`: `yanked` or `retired`), and
-    keep a retired-then-purged slot in the index with a status of its own ("gone from this channel,
-    not revoked"); amend specs 0007 and 0016.
-  - *Alternative 1*: no automatic purge: the pass retires only, and purging stays an administrator's
-    act.
-  - *Alternative 2*: accept it: nodes treat such a version as yanked.
-- **Q-G. A `c_struct` release serving several lines**, which the mockup shows as "retired in v2.0.0,
-  kept in v1.5.2".
-  - *Recommended*: one state per release, retired only when no line keeps it. As a consequence,
-    `v2.0.0` nodes keep installing it by version while `v1.5.2` keeps it.
-  - *Alternative*: a retirement per (release, line), as the mockup shows: feasible but costlier (a
-    per-line state read by every resolution, and one release answering differently by DuckDB version).
-- **Q-H. To confirm, as the spec now stands:**
-  - no retention unless a tenant or a channel sets a rule (alternative: a server-wide default in
-    `kista.yaml`, under the tenant's);
-  - the pass does not purge yanked releases, whose purge stays an administrator's (spec 0016, the
-    owner's choice of 2026-10-09) (alternative: purge them a grace after their yank);
-  - "newest" is the order of the versions' first release in the line, which works for commit-hash
-    versions (alternative: spec 0006's version order, as the placement pass uses);
-  - `keep: N` counts the current version among the N, so with `keep: 1` a yank of the current leaves
-    the line's flat path empty until a restore or a new release (alternative: N versions besides the
-    current, so `keep: 1` keeps one fallback).
+The owner's decisions of 2026-11-05, which the text above follows:
+
+- **Q-E. Versions still in use.** No downloads guard: the rule ignores downloads, and the plan
+  carries no last-download data. A consumer (duckdb-acl) does not have to pin versions and can
+  install the newest (`FORCE INSTALL`); an operator who needs a fixed version uses a retention pin.
+  Ruled out: `retention.keep_downloaded_within`, the plan showing last downloads, and a purge held
+  back for recently downloaded versions.
+- **Q-F. A slot purged after retirement reads as a yank to nodes.** Accepted as it is: after the
+  grace, a node reading the index sees the version gone, as after a yank; a pin keeps a version.
+  Ruled out: `purged_slots.cause` with an index status of its own (and the amendments of specs 0007
+  and 0016 it needed), and retiring without an automatic purge.
+- **Q-G. A `c_struct` release serving several lines.** One state per release: it is retired only
+  when no line keeps it, so in the mockup's case `v2.0.0` nodes keep installing it by version while
+  `v1.5.2` keeps it. Ruled out: a retirement per (release, line).
+- **Q-H.** No retention by default (ruled out: a server-wide default in `kista.yaml`); the pass
+  never purges yanked releases, whose purge stays an administrator's (spec 0016) (ruled out:
+  purging them a grace after their yank); "newest" is by the version's first release in the line
+  (ruled out: spec 0006's version order); `keep: N` counts the current among the N, so with `keep:
+  1` a yank of the current leaves the line's flat path empty until a restore or a new release (ruled
+  out: N versions besides the current).
 
 ## Alternatives considered
 

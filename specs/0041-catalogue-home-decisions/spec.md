@@ -1,6 +1,6 @@
 # Spec 0041: The catalogue as the console's home, and the decision queue
 
-- **Status**: draft
+- **Status**: accepted (the owner's decisions of 2026-11-05)
 - **Date**: 2026-11-01
 - **Author**: vgsml, Claude
 
@@ -18,7 +18,7 @@ server pieces the owner's mockup (2026-10-26) asks for:
 - **decisions** (Skip and Dismiss), kept in kista and the same for every administrator;
 - a block that says what its body is.
 
-Plan item K1. The owner's open questions are listed at the end (Q-A to Q-D).
+Plan item K1. The owner's decisions (2026-11-05, Q-A to Q-D) are listed at the end.
 
 ## Problem
 
@@ -59,9 +59,9 @@ Two items in the mockup's notes need nothing new:
 | Screen (mockup artboard) | From this spec | UI only, on today's API |
 | --- | --- | --- |
 | **Main** (the catalogue matrix) | `held_until` in `GET …/catalogue`; `waiting` and `waits_until` in each channel's `GET …/sources` | the matrix from `GET …/catalogue` and each signed channel's `GET …/sources` and `GET …/follows`; `+ Rule…` and `Set rule…` (`PUT …/sources/{name}`); the "decisions wait" banner (counted as the queue below) |
-| **Catalogue-Entry** (one page per name, its sources side by side) | `waiting` and `waits_until` | each channel's rule set in place (`PUT …/sources/{name}`, `PUT …/follows/{source}`); Place, Promote and Clear; licences per entry (`GET …/licenses?source=`, `…/license-keys?source=`, spec 0035); reports per build (`GET …/extensions/{ext}/attachments?body_hash=`, spec 0011); downloads (`GET …/stats/downloads?extension=&channel=`). The "Take only versions matching" field waits for version constraints (Q-D) and is not shown. |
-| **Decisions** (the queue) | decisions (Skip, Dismiss, Undo); `waiting`, `waits_until`, `held_until`; the `source.waiting` event behind "Tell me of these…" (Q-A) | the groups, computed below; Promote (K4's dialog; spec 0043 names the previous stage), Place, Make auto or manual (`PUT …/sources/{name}`), Place early (`…/releases/place` with `early`), Purge (`DELETE …/catalogue/builds/{id}`), Open the block; the Report & licence drawer (specs 0035 and 0011) |
-| **Decisions-Rule** (set a rule from the queue) | the notify checkbox only if the owner takes a per-rule setting (Q-A) | the dialog and its `PUT …/sources/{name}`; "What happens" computed from the source's and the channel's holds |
+| **Catalogue-Entry** (one page per name, its sources side by side) | `waiting` and `waits_until` | each channel's rule set in place (`PUT …/sources/{name}`, `PUT …/follows/{source}`); Place, Promote and Clear; licences per entry (`GET …/licenses?source=`, `…/license-keys?source=`, spec 0035); reports per build (`GET …/extensions/{ext}/attachments?body_hash=`, spec 0011); downloads (`GET …/stats/downloads?extension=&channel=`). The "Take only versions matching" field waits for version constraints, deferred to a spec of their own (decision Q-D), and is not shown. |
+| **Decisions** (the queue) | decisions (Skip, Dismiss, Undo); `waiting`, `waits_until`, `held_until`; the `source.waiting` event, which "Tell me of these…" explains (decision Q-A) | the groups, computed below; Promote (K4's dialog; spec 0043 names the previous stage), Place, Make auto or manual (`PUT …/sources/{name}`), Place early (`…/releases/place` with `early`), Purge (`DELETE …/catalogue/builds/{id}`), Open the block; the Report & licence drawer (specs 0035 and 0011) |
+| **Decisions-Rule** (set a rule from the queue) | none: the mockup's notify checkbox is dropped (decision Q-A) | the dialog and its `PUT …/sources/{name}`; "What happens" computed from the source's and the channel's holds |
 | **Org-Blocks** | `builds` in the block answers | Block…, Unblock (`POST`, `DELETE …/blocks`) |
 | **Org-Events** | none | the family chips send spec 0040's `kind` list |
 
@@ -78,9 +78,9 @@ distributors' publishers' entries only). So:
 - **A tenant administrator** (and a server administrator in an opened tenant): the console's home is
   **Catalogue** (the matrix), with **Needs a decision** under it in the navigation and its count.
 - **A channel's administrator who is not a tenant administrator**: the home stays **Channels**, as
-  today; their channels' Sources tabs show `waiting` and `waits_until`. Whether they also get a
-  queue, and which part of it, is Q-B; as recommended there, the queue and decisions are tenant
-  administrators' only.
+  today; their channels' Sources tabs show `waiting` and `waits_until`, and they read their
+  channels' decisions and events. The queue and writing decisions are tenant administrators' only
+  (decision Q-B).
 - **An auditor** (`audit`, spec 0040) reads the decisions; the console has no auditor's view (spec
   0040's follow-up), so this is for the API.
 
@@ -165,12 +165,29 @@ cost per channel is the look's.
 - **Not for the `tenant` source.** The pass never looks at its rules (spec 0033: `tenant` is never
   automatic). Its waiting versions are in the sources answer and the queue, but no event tells of
   them.
-- **Who reads it** and how anyone is told: Q-A. A self-hosted kista emails no one.
+- **How anyone is told** (decision Q-A): kista keeps no notification settings and delivers
+  nothing itself; a self-hosted kista emails no one. The event is read by the tenant's
+  administrators and auditors, by a channel's administrators for their channel (below), and by the
+  operator's sinks (spec 0010), through which an organisation alerts; Enterest tells its customers
+  from the events (a follow-up on its side). In the console, the navigation's "Needs a decision"
+  count is the signal, and "Tell me of these…" explains where the event goes.
+
+### A channel's administrators read their channel's events
+
+Spec 0040's readers of `GET …/events` and `…/events/{id}` (the tenant's auditors and
+administrators) gain a channel's administrators, for their channel only: a caller holding `admin` on
+a channel, without `audit` on the tenant, must send `subject=channel:<c>/` (or a longer prefix of
+it) naming a channel it administers, and reads the events whose subject is under it (the rules',
+releases', placements', `source.waiting`, `decision.*` of the channel). Any other read by such a
+caller is `404`, as today; `GET …/events/{id}` answers it an event under one of its channels only.
+The API rule admits the caller by the path's tenant; the service checks the subject prefix against
+the caller's channels (defence in depth, as spec 0040's `readTenant`). Nothing else of spec 0040
+changes (the `kind` list, the settled tail, `pruned_through`, the actor forms).
 
 ### Decisions
 
 A **decision** is an administrator's answer to a queue item, kept in kista so every administrator
-sees the same queue. As recommended in Q-C:
+sees the same queue. A dismissal is keyed to the situation (decision Q-C):
 
 | Kind | Scope | Keyed to | The item comes back when |
 | --- | --- | --- | --- |
@@ -193,15 +210,14 @@ sees the same queue. As recommended in Q-C:
     administrators, for their channel (spec 0040's pattern: a channel's administrators read their
     own channel; tenant administrators and auditors read all).
   - `PUT /api/v1/tenants/{t}/decisions` with `{"kind": "skip"|"dismiss", "channel"?: …, "source":
-    …, "name": …, "version"?: …, "situation"?: …, "type"?: …}`: the tenant's administrators (Q-B).
+    …, "name": …, "version"?: …, "situation"?: …, "type"?: …}`: the tenant's administrators only
+    (decision Q-B).
     It writes or replaces the decision of (scope, kind, source, name) and answers it (`200`; `201`
     when new).
   - `DELETE /api/v1/tenants/{t}/decisions/{id}` with `If-Match` (the ETag): the tenant's
     administrators (Undo). A stale ETag is `412`: another administrator changed the decision since.
-  - Should the owner give channel administrators a queue (Q-B's alternative), `PUT` and `DELETE`
-    also come under `…/channels/{c}/decisions` for the channel's administrators.
-- **Ids are checked against their scope**: an id of another tenant, and on a channel's route an id
-  of another channel or of the tenant's scope, answers `404`, the same bytes as an unknown id.
+- **Ids are checked against their scope**: an id of another tenant answers `404`, the same bytes
+  as an unknown id; a channel's read answers only that channel's decisions.
 - **Checks** (shape and existence, `400` or `404` as the catalogue's routes answer): the source is
   one of the tenant's live sources, and the name has entries of it in the catalogue, of the
   channel's package type; a skip's version is one of them, in a signed channel; a dismissal's
@@ -281,6 +297,9 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
   read them through the catalogue; nothing of another tenant sharing the body in a storage domain.
 - **The event** carries versions and a source label, facts the sources answer shows; it is the
   tenant's.
+- **A channel's administrators' events** are those under their channel's subject only, checked by
+  the API rule and again by the service; the tenant's other events (identity, grants, other
+  channels, refusals with `route:` subjects) stay its auditors' and administrators'.
 - **Fail closed**: a tell that fails is tried again and never shown as a failed placement; a
   decision that fails to write leaves the item in the queue.
 
@@ -307,6 +326,10 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
   scope `404`; `If-Match` on `DELETE` (`412` when stale); the checks (`400`, `404`); paging;
   `decision.set`, `decision.clear` and `source.waiting` in the events registry, `SubjectForm` and
   `TestCoverage`; `held_until`, `waiting`, `waits_until`; `builds` in the block answers.
+- **Channel administrators' events**: a channel administrator reads `subject=channel:<c>/` of its
+  channel and `…/events/{id}` of an event under it; `404` without the subject, with another channel's,
+  with a prefix that is not a channel's (`channel:`), and for an event of another channel; an auditor
+  and a tenant administrator unchanged.
 - **CLI**: `catalogue list`'s `HELD`, `block list`'s `WHAT`.
 - **Console**: unit tests of the matrix and the queue's groups from fixtures (a skip hides a version
   until a newer one, a dismissal until its situation changes, Promote offered only where a channel
@@ -316,45 +339,27 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
   administrator, Undo, a dismissal of the follow's skip, a block showing what it is.
 - No DuckDB end to end changes: nothing served changes.
 
-## Open questions
+## Decisions
 
-- **Q-A. How is an administrator told of a waiting version?** The mockup has "Tell me of these…" on
-  the queue and "Tell staging's administrators when a new version of it waits" in the rule dialog.
-  - *Recommended*: kista writes `source.waiting` for every manual rule and keeps no notification
-    settings. A channel's administrators may read their own channel's events (`GET …/events` with
-    `subject=channel:<c>/`, a widening of spec 0040's readers to that subject prefix); the
-    navigation's count is the in-console signal; delivery to people is the operator's sinks (spec
-    0010) or Enterest's. A self-hosted kista emails no one. The rule dialog's checkbox is dropped.
-  - *Alternative 1*: a per-rule `notify` flag (`channel_sources.notify`), the event written only for
-    rules an administrator asked about.
-  - *Alternative 2*: kista delivers, by per-tenant webhooks (a URL, the kinds, a signing secret;
-    egress-checked, retried): a spec of its own.
-  - *Alternative 3*: per-administrator subscriptions (principal, kinds, channels) kept in kista for a
-    deliverer to read; kista knows no mail addresses, so a deliverer is still needed.
-  - Enterest-side follow-ups, whichever is chosen: Enterest's tenant watch (its spec 0012) ignores
-    `system:` events, so it must take `source.waiting` explicitly to tell its customers; and its
-    provisioning, if it sets retention (spec 0042), needs `retention.set` in its `kista_acts`.
-- **Q-B. A channel administrator's queue.**
-  - *Recommended*: the queue and decisions are tenant administrators' only; no decision is written
-    on a channel's route. A channel administrator works from the channel's Sources tab (`waiting`,
-    `waits_until`, outcomes), and reads its channel's decisions.
-  - *Alternative*: channel administrators get a partial queue for their channels (new versions,
-    follow skips, failed placements; not "Holds ending" for names no rule takes, nor "In no channel",
-    which need the catalogue's reads), and write their channels' decisions on `…/channels/{c}/
-    decisions`.
-- **Q-C. What a dismissal is keyed to.**
-  - *Recommended*: a follow skip's dismissal is keyed to the skip's reason, and an "In no channel" or
-    "taken by some channels only" dismissal to the set of channels taking the name; the item comes
-    back when the situation changes. A Skip of a new version stays keyed to the version.
-  - *Alternative*: every decision keyed to the newest version at the time, so a dismissed item comes
-    back with every new release of the name.
-- **Q-D. Version constraints in a rule** (`auto` within `1.x`; the entry page's "Take only versions
-  matching").
-  - *Recommended*: deferred to a spec of its own after K1. They change the placement pass (what
-    `auto` and a follow's rules take, `waiting`, the due work) and need a grammar for versions that are
-    not semver (DuckDB's core extensions use commit hashes); the field stays hidden until then.
-  - *Alternative*: a minimal form here: a version prefix per rule (`"take": "1."`), `auto` and
-    `waiting` taking only versions starting with it.
+The owner's decisions of 2026-11-05, which the text above follows:
+
+- **Q-A. How an administrator is told of a waiting version.** kista writes `source.waiting` for every
+  manual rule and keeps no notification settings; a channel's administrators read their own
+  channel's events (`subject=channel:<c>/`, a widening of spec 0040's readers); the navigation's
+  count is the in-console signal; delivery to people is the operator's sinks or Enterest's. A
+  self-hosted kista emails no one; the rule dialog's checkbox is dropped. Ruled out: a per-rule
+  `notify` flag, webhooks delivered by kista, and per-administrator subscriptions kept in kista.
+- **Q-B. A channel administrator's queue.** The queue and decisions are tenant administrators'
+  only: no decision is written on a channel's route. A channel administrator works from its
+  channels' Sources tabs and reads its channels' decisions and events. Ruled out: a partial queue
+  for channel administrators, and their writing decisions.
+- **Q-C. What a dismissal is keyed to.** The situation: a follow skip's dismissal to the skip's
+  reason, an "In no channel" or "taken by some channels only" dismissal to the set of channels
+  taking the name; a Skip of a new version stays keyed to the version. Ruled out: every decision
+  keyed to the newest version, so a dismissed item came back with every release.
+- **Q-D. Version constraints in a rule.** Deferred to a spec of their own after K1; the entry page's
+  "Take only versions matching" field stays hidden until then. Ruled out: a version-prefix filter in
+  this spec.
 
 ## Alternatives considered
 
@@ -381,12 +386,15 @@ One PR, `0041-catalogue-home`, or two if the console part is large: first the AP
 `waiting` and `waits_until`, `source.waiting`, decisions, blocks' `builds`, the migration), then the
 console. The website: `catalogue.md` (`held_until`, `waiting`, the waiting event), `console.md` (the
 home, the queue, decisions), `api.md` (the routes), `observability.md` (`source.waiting`,
-`decision.*`), `administration/upgrading.md` (the migration's `min_reader`).
+`decision.*`, a channel's administrators reading their channel's events), `access.md` (the same),
+`administration/upgrading.md` (the migration's `min_reader`).
 
 ## Follow-ups
 
-- Version constraints in a rule (Q-D).
-- Delivery of notifications by kista, if the owner chooses it (Q-A).
+- Version constraints in a rule: a spec of their own (decision Q-D).
+- Enterest's side (decision Q-A): its tenant watch (its spec 0012) ignores `system:` events, so it
+  takes `source.waiting` explicitly to tell its customers; its provisioning, if it sets retention
+  (spec 0042), needs `retention.set` in its `kista_acts`.
 - A tenant-wide read of every channel's rules with `current`, `waiting` and the outcome, if the
   matrix's one read per channel becomes slow for tenants with many channels.
 - The queue for other package types (spec 0034) in the console.
