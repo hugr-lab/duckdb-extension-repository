@@ -61,6 +61,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   tenant distributor-hold <name> [<duration>]     the minimum hold for distributors' publishers (spec 0037): their
                                                   entries are held at least this long (24h, 2d; 0 for none;
                                                   one day by default); without a duration, printed
+  tenant retention <name> [-keep N|none] [-grace d|none]
+                                                  the tenant's default retention (spec 0042) for its signed channels
+                                                  without their own; none clears the field (no retention by default)
   tenant delete <name> -confirm <name>            a tenant suspended for tenants.min_suspended (spec 0019)
   tenant reap <name> [-force]                     remove a deleting tenant's rows here, after the settle period;
                                                   -force: now, when no kista serve or other command runs
@@ -134,6 +137,20 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
                                                   only): without channels, prints it; with them, sets that
                                                   chain of the type (the whole order); -clear clears it
   channel list <tenant>
+  channel retention <tenant>/<channel> [-keep N|default|none] [-grace d|default]
+                                                  the channel's retention (spec 0042): the newest N versions of each
+                                                  name per DuckDB version kept, the others retired and purged after
+                                                  the grace; default: the tenant's, none: no retention here;
+                                                  prints the rule, the rule in force and the pins
+  channel retention-plan <tenant>/<channel>       what the next retention pass would retire and purge
+  channel pin <tenant>/<channel> <name> <version> [-duckdb-version v] -reason <text>
+                                                  keep a version (in one DuckDB version, or every one) whatever the rule
+  channel unpin <tenant>/<channel> <pin-id>
+  channel retire-line <tenant>/<channel> <duckdb-version> [-name n]
+                                                  retire what only that DuckDB version keeps, current and pinned
+                                                  versions included (the version need not be served any more)
+  retention run [<tenant>[/<channel>]] [-apply]  the retention pass now: a dry run printing each channel's plan
+                                                  unless -apply
   key check -signer <ref>                         open a key, check it, sign a probe; stores nothing
   key add <tenant>/<channel> -signer <ref> [-active]
   key list <tenant>/<channel>
@@ -409,13 +426,25 @@ func (a *adminCmd) dispatch(ctx context.Context, args []string) error {
 	case "bootstrap":
 		return a.bootstrap(ctx, args[1:])
 	case "tenant":
+		if sub == "retention" { // spec 0042
+			return a.tenantRetention(ctx, args[2:])
+		}
 		return a.tenant(ctx, sub, args[min(2, len(args)):])
 	case "version":
 		return a.version(ctx, sub, args[min(2, len(args)):])
 	case "reserved":
 		return a.reserved(ctx, sub, args[min(2, len(args)):])
 	case "channel":
+		switch sub { // spec 0042
+		case "retention", "retention-plan", "pin", "unpin", "retire-line":
+			return a.channelRetention(ctx, sub, args[2:])
+		}
 		return a.channel(ctx, sub, args[min(2, len(args)):])
+	case "retention":
+		if sub != "run" {
+			return errUsage
+		}
+		return a.retentionRun(ctx, args[2:])
 	case "key":
 		return a.key(ctx, sub, args[min(2, len(args)):])
 	case "release":

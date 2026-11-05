@@ -37,6 +37,7 @@ type Ceilings struct {
 	MaxHold               time.Duration
 	PublisherKeyLifetime  time.Duration
 	IssuerTokenLifetime   time.Duration // the most an issuer's max_token_lifetime may be
+	RetentionGrace        time.Duration // the longest grace a tenant or a channel's retention may set (spec 0042)
 }
 
 // DefaultCeilings are the ceilings a configuration that sets none has.
@@ -48,6 +49,7 @@ func DefaultCeilings() Ceilings {
 		Attachments: 100000, AttachmentHeads: 20, UpstreamEntries: 1000, EntryVersions: 100,
 		UpstreamKeys: 10, UpstreamCells: 20000, TenantCells: 100000, DiscoveredNames: 1000,
 		MaxHold: 90 * 24 * time.Hour, PublisherKeyLifetime: 366 * 24 * time.Hour, IssuerTokenLifetime: 7 * 24 * time.Hour,
+		RetentionGrace: 90 * 24 * time.Hour,
 	}
 }
 
@@ -67,8 +69,8 @@ func (c Ceilings) Check() error {
 			return fmt.Errorf("%w: limits.ceilings.%s must be at least 1", ErrInvalid, f.name)
 		}
 	}
-	if c.MaxHold < time.Second || c.PublisherKeyLifetime < time.Second || c.IssuerTokenLifetime < time.Minute {
-		return fmt.Errorf("%w: limits.ceilings: max_hold and publisher_key_lifetime are at least 1s, issuer_token_lifetime at least 1m", ErrInvalid)
+	if c.MaxHold < time.Second || c.PublisherKeyLifetime < time.Second || c.IssuerTokenLifetime < time.Minute || c.RetentionGrace < time.Second {
+		return fmt.Errorf("%w: limits.ceilings: max_hold, publisher_key_lifetime and retention_grace are at least 1s, issuer_token_lifetime at least 1m", ErrInvalid)
 	}
 	return nil
 }
@@ -109,7 +111,7 @@ func SetCeilings(c Ceilings) {
 	MaxTenantAttachments, MaxAttachmentHeads = c.Attachments, c.AttachmentHeads
 	MaxUpstreamEntries, MaxEntryVersions, MaxUpstreamKeys = c.UpstreamEntries, c.EntryVersions, c.UpstreamKeys
 	MaxUpstreamCells, MaxTenantCells, MaxDiscoveredNames = c.UpstreamCells, c.TenantCells, c.DiscoveredNames
-	MaxHold, MaxKeyLifetime, MaxIssuerTokenLifetime = c.MaxHold, c.PublisherKeyLifetime, c.IssuerTokenLifetime
+	MaxHold, MaxKeyLifetime, MaxIssuerTokenLifetime, MaxRetentionGrace = c.MaxHold, c.PublisherKeyLifetime, c.IssuerTokenLifetime, c.RetentionGrace
 }
 
 // CurrentCeilings are the ceilings in force.
@@ -123,6 +125,6 @@ func CurrentCeilings() Ceilings {
 		AttachmentHeads: MaxAttachmentHeads, UpstreamEntries: MaxUpstreamEntries,
 		EntryVersions: MaxEntryVersions, UpstreamKeys: MaxUpstreamKeys, UpstreamCells: MaxUpstreamCells,
 		TenantCells: MaxTenantCells, DiscoveredNames: MaxDiscoveredNames, MaxHold: MaxHold,
-		PublisherKeyLifetime: MaxKeyLifetime, IssuerTokenLifetime: MaxIssuerTokenLifetime,
+		PublisherKeyLifetime: MaxKeyLifetime, IssuerTokenLifetime: MaxIssuerTokenLifetime, RetentionGrace: MaxRetentionGrace,
 	}
 }

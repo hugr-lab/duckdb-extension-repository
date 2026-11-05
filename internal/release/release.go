@@ -152,10 +152,15 @@ type Service struct {
 	// not declared done).
 	PurgeOff bool
 
+	// RetentionInterval is the scheduled retention pass's interval (spec 0042: retention.interval; 0:
+	// none), what a channel's next run is reckoned from.
+	RetentionInterval time.Duration
+
 	afterBuild       func(store.Build)     // tests: between finding the Build and inserting the release
 	beforeResign     func([]store.Release) // tests: between reading a re-sign batch and inserting it
 	beforeMetaCommit func()                // tests: between a metadata write's checks (and upload) and its transaction
 	beforeTell       func() error          // tests: before a tell's transaction (spec 0041); an error fails the tell
+	beforeRetire     func()                // tests: between the retention pass's look and a retirement's transaction
 }
 
 // CredentialOf is the private upstream credential a release came through (its provenance's
@@ -1334,6 +1339,18 @@ func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, nam
 			return fmt.Errorf("%w: only a yanked or retired release is purged; yank it first", ErrState)
 		}
 		if err := tx.PurgeRelease(ctx, c); err != nil {
+			return err
+		}
+		// spec 0042: the version's pins left without a release in their line go
+		capis, err := tx.ChannelCAPIs(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		pins, err := tx.ChannelPins(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		if err := dropPins(ctx, tx, ch.ID, c.Name, c.PackageVersion, capis, pins); err != nil {
 			return err
 		}
 		out = c

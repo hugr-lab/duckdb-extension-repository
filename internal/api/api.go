@@ -793,6 +793,18 @@ func init() {
 		// spec 0033 phase A2: a channel's hold (its administrators')
 		{"tenants/{t}/channels/{c}/hold", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).channelHold),
 			http.MethodPut: mb(pathAdmin, (*Handler).setChannelHold)}},
+		// spec 0042: retention: a tenant's default rule (its administrators; auditors read it), a channel's
+		// own, its plan and pins (the channel's administrators; the tenant's auditors read them), the line act
+		{"tenants/{t}/retention", map[string]rule{http.MethodGet: audited((*Handler).tenantRetention),
+			http.MethodPut: mb(pathAdmin, (*Handler).setTenantRetention)}},
+		{"tenants/{t}/channels/{c}/retention", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: decisionReaders, manage: true,
+			handle: (*Handler).channelRetention}, http.MethodPut: mb(pathAdmin, (*Handler).setChannelRetention)}},
+		{"tenants/{t}/channels/{c}/retention/plan", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: decisionReaders, manage: true,
+			handle: (*Handler).retentionPlan}}},
+		{"tenants/{t}/channels/{c}/retention/pins", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: decisionReaders, manage: true,
+			handle: (*Handler).listPins}, http.MethodPost: mb(pathAdmin, (*Handler).addPin)}},
+		{"tenants/{t}/channels/{c}/retention/pins/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).removePin)}},
+		{"tenants/{t}/channels/{c}/retention/lines", map[string]rule{http.MethodPost: mb(pathAdmin, (*Handler).retireLine)}},
 		{"tenants/{t}/channels/{c}/keys", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).keyView),
 			http.MethodPost: mb(serverAdmin, (*Handler).addKey)}},
 		{"tenants/{t}/channels/{c}/keys/events", map[string]rule{http.MethodGet: m(pathAdmin, (*Handler).keyEvents)}},
