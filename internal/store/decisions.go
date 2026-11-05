@@ -45,6 +45,9 @@ func scanDecision(r interface{ Scan(...any) error }) (Decision, error) {
 	return d, err
 }
 
+// afterDecisionRead runs between SetDecision's read and its write; for tests only.
+var afterDecisionRead func(*Tx)
+
 // DecisionLock is the lock a tenant's decisions are written under.
 func DecisionLock(tenantID string) string { return "kista/decisions/" + tenantID }
 
@@ -67,6 +70,9 @@ func (t *Tx) SetDecision(ctx context.Context, d *Decision) (before Decision, ok 
 	default:
 		ok = true
 	}
+	if afterDecisionRead != nil {
+		afterDecisionRead(t)
+	}
 	d.DecidedAt = t.Now()
 	var ch, v, sit any
 	if d.ChannelID != "" {
@@ -79,9 +85,11 @@ func (t *Tx) SetDecision(ctx context.Context, d *Decision) (before Decision, ok 
 		sit = d.Situation
 	}
 	if ok {
+		// at the row version read: a decision deleted meanwhile (its source removed, its entry's last
+		// build collected) is not answered as written
 		d.ID, d.Version = before.ID, before.Version+1
-		_, err = t.exec(ctx, `UPDATE decisions SET package_version = ?, situation = ?, version = ?, decided_by = ?, decided_at = ? WHERE id = ?`,
-			v, sit, d.Version, d.DecidedBy, t.s.d.timeArg(d.DecidedAt), d.ID)
+		err = t.cas(ctx, `UPDATE decisions SET package_version = ?, situation = ?, version = ?, decided_by = ?, decided_at = ? WHERE id = ? AND version = ?`,
+			[]any{v, sit, d.Version, d.DecidedBy, t.s.d.timeArg(d.DecidedAt), d.ID, before.Version}, func() {})
 		return before, true, err
 	}
 	d.ID, d.Version = NewID(), 1
@@ -89,6 +97,14 @@ func (t *Tx) SetDecision(ctx context.Context, d *Decision) (before Decision, ok 
 decided_by, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, d.ID, d.TenantID, d.PackageType, ch, d.Kind, d.Source, d.Name, v, sit,
 		d.Version, d.DecidedBy, t.s.d.timeArg(d.DecidedAt))
 	return Decision{}, false, t.s.mapErr(err, "decision")
+}
+
+// EntryVersions are the versions of a (source, name) of a tenant's type in the catalogue, read in
+// a decision's transaction (spec 0041: a decision is written only while its entry is there); none:
+// the entry is gone.
+func (t *Tx) EntryVersions(ctx context.Context, tenantID, packageType, source, name string) ([]string, error) {
+	return t.strings(ctx, `SELECT DISTINCT package_version FROM builds WHERE tenant_id = ? AND package_type = ? AND source = ? AND name = ?`,
+		tenantID, packageType, source, name)
 }
 
 // GetDecision reads a tenant's decision by id (ErrNotFound for one of another tenant).

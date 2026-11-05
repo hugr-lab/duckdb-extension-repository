@@ -137,6 +137,27 @@ func TestDecisions(t *testing.T) {
 		}
 		inTx(t, s, func(tx *store.Tx) error { _, err := tx.DeleteDecision(ctx, tn.ID, skip.ID, 2); return err })
 
+		// a decision deleted between a replacement's read and its write (its source removed, its
+		// entry's last build collected) is not answered as written
+		restore := store.SetAfterDecisionRead(func(_ *store.Tx, exec func(string, ...any) error) {
+			if err := exec("DELETE FROM decisions WHERE id = ?", tenant.ID); err != nil {
+				t.Fatal(err)
+			}
+		})
+		err = s.InTx(ctx, store.DecisionLock(tn.ID), func(tx *store.Tx) error {
+			d := store.Decision{TenantID: tn.ID, PackageType: "duckdb_extension", Kind: store.DecisionDismiss, Source: pub, Name: "acl",
+				Situation: `["prod","staging"]`, DecidedBy: "os:1:t"}
+			_, _, err := tx.SetDecision(ctx, &d)
+			return err
+		})
+		restore()
+		if !errors.Is(err, store.ErrConflict) {
+			t.Fatalf("a replacement of a decision deleted meanwhile: %v", err)
+		}
+		if n, err := store.CountRaw(ctx, s, "decisions", "id = ?", tenant.ID); err != nil || n != 1 {
+			t.Fatalf("the replaced decision rolled back with it: %d %v", n, err)
+		}
+
 		// the collector's last build of (publisher, geo) takes geo's decisions; acl's stay
 		b := cppBuild(tn, "geo", "1.0", "a")
 		b.Source = pub

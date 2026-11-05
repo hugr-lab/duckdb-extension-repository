@@ -93,17 +93,6 @@ func (s *Service) SetDecision(ctx context.Context, a authz.Actor, tenant string,
 		return DecisionView{}, false, err
 	}
 	d.Source = src
-	vers, err := s.Store.SourceVersions(ctx, t.ID, d.PackageType)
-	if err != nil {
-		return DecisionView{}, false, err
-	}
-	vs, ok := vers[[2]string{src, in.Name}]
-	if !ok {
-		return DecisionView{}, false, fmt.Errorf("%w: no entry of %s from %s in the catalogue", store.ErrNotFound, in.Name, in.Source)
-	}
-	if d.Kind == store.DecisionSkip && !slices.Contains(vs, in.Version) {
-		return DecisionView{}, false, fmt.Errorf("%w: no entry of %s %s from %s in the catalogue", store.ErrNotFound, in.Name, in.Version, in.Source)
-	}
 	var before store.Decision
 	var had bool
 	err = s.Store.InTx(ctx, store.DecisionLock(t.ID), func(tx *store.Tx) error {
@@ -120,6 +109,13 @@ func (s *Service) SetDecision(ctx context.Context, a authz.Actor, tenant string,
 			return err
 		} else if strings.HasSuffix(label, "(removed)") {
 			return fmt.Errorf("%w: %q was removed", store.ErrInvalid, in.Source)
+		}
+		// the entry, read in the transaction: a decision is written only while it is there (its last
+		// build collected or purged takes its decisions with it)
+		if vs, err := tx.EntryVersions(ctx, t.ID, d.PackageType, src, in.Name); err != nil {
+			return err
+		} else if len(vs) == 0 || d.Kind == store.DecisionSkip && !slices.Contains(vs, in.Version) {
+			return fmt.Errorf("%w: no entry of %s %s from %s in the catalogue", store.ErrNotFound, in.Name, in.Version, in.Source)
 		}
 		if before, had, err = tx.SetDecision(ctx, &d); err != nil {
 			return err

@@ -25,5 +25,5 @@ CREATE UNIQUE INDEX ux_decisions_channel ON decisions (channel_id, kind, source,
 -- +statement
 CREATE UNIQUE INDEX ux_decisions_tenant ON decisions (tenant_id, package_type, kind, source, name) WHERE channel_id IS NULL
 -- +statement
--- the collector's and a source's deletes
-CREATE INDEX ix_decisions_entry ON decisions (tenant_id, package_type, source, name)
+-- a source's delete (WHERE source = ?), and the deletes of a (source, name)'s once its last build goes
+CREATE INDEX ix_decisions_entry ON decisions (source, tenant_id, package_type, name)
