@@ -374,6 +374,18 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "channel", "create", "acme/staging", "-kind", "signed")
 	run(0, "channel", "versions", "acme/staging", "-add", "v2.0.0")
 	run(0, "key", "add", "acme/staging", "-signer", "file:c.pem", "-active")
+	// spec 0043: the channels' order, set as a chain, printed, refused, cleared
+	run(0, "channel", "order", "acme", "staging", "prod")
+	if got := run(0, "channel", "order", "acme"); !strings.HasPrefix(got, "staging -> prod\n") {
+		t.Fatalf("channel order: %q", got)
+	}
+	run(1, "channel", "order", "acme", "prod", "staging", "prod")   // a chain through a channel twice
+	run(2, "channel", "order", "acme", "prod")                      // one channel is no chain
+	run(2, "channel", "order", "acme", "staging", "prod", "-clear") // a chain or -clear
+	run(0, "channel", "order", "acme", "-clear")
+	if got := run(0, "channel", "order", "acme"); strings.Contains(got, "->") {
+		t.Fatalf("a cleared order: %q", got)
+	}
 	run(1, "release", "add", "acme/staging", file, "-name", "tresor", "-unchecked")                   // blocked (a fresh slot)
 	run(1, "release", "promote", "acme/staging", "-name", "tresor", "-from", "prod", "-release", rid) // unchecked and yanked
 	// spec 0016 phase 2: a yanked release purged; its slot stays taken

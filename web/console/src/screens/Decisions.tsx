@@ -5,6 +5,7 @@ import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { useHome } from '../lib/home'
 import { ApiError, seg } from '../lib/http'
+import { previousOf } from '../lib/order'
 import { type Decision, type HomeReads, type Item, decisionBody, groups, itemKey, promoteFrom } from '../lib/queue'
 import { type CatalogueBuild, PlaceDialog, RuleDialog, SourceLicence, compareVersions, entryPath, modeWords, placeBody, purgeable } from './Catalogue'
 import { promoteBody } from './Promote'
@@ -176,7 +177,8 @@ function ItemActions({ item: i, reads, busy, onDecide, onChanged }: { item: Item
 }
 
 /** Taking a waiting version: Promote from a channel that holds it (an active or deprecated release),
- * else Place from the catalogue; neither without promote on the name there. */
+ * the previous stage first (spec 0043), else Place from the catalogue; neither without promote on the
+ * name there. */
 function Take({ item: i }: { item: Extract<Item, { group: 'manual' }> }) {
   const { client, api, perms } = useTenant()
   const home = useHome()
@@ -186,7 +188,8 @@ function Take({ item: i }: { item: Extract<Item, { group: 'manual' }> }) {
   const [open, setOpen] = useState<'promote' | 'place' | ''>('')
   const { busy, failure, act } = useAction('The placement', home?.reload)
   if (!may || !versions.data) return null
-  const from = promoteFrom(versions.data.versions, i.waiting, i.channel, (c) => perms.mayPublish(c, i.name))
+  // spec 0043: the previous stage first, when it holds the version
+  const from = promoteFrom(versions.data.versions, i.waiting, i.channel, (c) => perms.mayPublish(c, i.name), previousOf(home?.reads?.order ?? [], i.channel))
   const promote = from !== ''
   const done = (ok: boolean) => ok && home?.reload()
   return (

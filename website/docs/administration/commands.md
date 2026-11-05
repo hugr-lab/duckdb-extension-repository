@@ -310,6 +310,7 @@ See [Tenants and channels](tenants-and-channels.md) and
 | `channel follow <tenant>/<channel> [<source>]` | follows a whole source ([spec 0033](../upstreams.md#the-catalogue-and-a-channels-rules)): its names the channel has no rule for are taken automatically; without a source, lists the follows | `SOURCE`, `SET BY`, `SET AT`, `SKIPPED` (each name with its reason) |
 | `channel unfollow <tenant>/<channel> <source>` | stops following it; what it placed stays, its rules keep the versions they hold | |
 | `channel hold <tenant>/<channel> [<duration>]` | the channel's [hold](../upstreams.md#holds): an automatic placement waits until an entry's arrival plus it (`24h`, `2d`; `0` for none); without a duration, shows it | the hold |
+| `channel order <tenant> [-type <package type>] [<channel> <channel>... \| -clear]` | [the channels' order](tenants-and-channels.md#the-channels-order) (spec 0043, for the console's display only): with two channels or more, sets that chain as the whole order of the type (the default without `-type`); `-clear` clears it; without either, prints it | one chain per line: `nightly -> staging -> prod` |
 | `channel list <tenant>` | `NAME`, `KIND`, `VERSION`, `CREATED` (`VERSION` is the channel's change counter) | |
 | `wellknown <tenant>/<channel>` | the channel's `.well-known/duckdb-extension-repo.json` as served | JSON |
 

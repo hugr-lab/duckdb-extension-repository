@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -368,6 +369,31 @@ func (t *Tx) SlotCandidates(ctx context.Context, channelID, source, name, extVer
 		out = append(out, c)
 	}
 	return out, purged.Err()
+}
+
+// PurgedSlot is a purged release's slot (spec 0016 phase 2): its version, platform, slot and ABI.
+type PurgedSlot struct {
+	PackageVersion, Platform, Slot, ABI string
+}
+
+// PurgedSlots reads a channel's purged slots of a name from a source (and those purged before slots
+// had a source, spec 0033), by version, platform and slot: what a channel had of the name and no
+// longer holds (spec 0043: the pipeline counts them as had).
+func (s *Store) PurgedSlots(ctx context.Context, channelID, source, name string) ([]PurgedSlot, error) {
+	var out []PurgedSlot
+	err := s.eachRow(ctx, "SELECT package_version, platform, slot, abi FROM purged_slots WHERE channel_id = ? AND source IN (?, '*') AND name = ?",
+		[]any{channelID, source, name}, func(sc func(...any) error) error {
+			var p PurgedSlot
+			if err := sc(&p.PackageVersion, &p.Platform, &p.Slot, &p.ABI); err != nil {
+				return err
+			}
+			out = append(out, p)
+			return nil
+		})
+	slices.SortFunc(out, func(a, b PurgedSlot) int {
+		return strings.Compare(a.PackageVersion+"\x00"+a.Platform+"\x00"+a.Slot, b.PackageVersion+"\x00"+b.Platform+"\x00"+b.Slot)
+	})
+	return out, err
 }
 
 // PurgeRelease deletes a release and its signatures, keeping its slot taken in purged_slots (spec

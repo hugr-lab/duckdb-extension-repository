@@ -2,6 +2,7 @@ package api
 
 import (
 	"cmp"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -503,8 +504,54 @@ func (h *Handler) extension(w http.ResponseWriter, r *http.Request, c caller, p 
 		h.fail(w, err)
 		return
 	}
+	out := map[string]any{"name": name, "releases": nonNil(rows)}
+	if rs.admin {
+		// spec 0043: what the channel had of the name and purged, for its administrators (the
+		// pipeline counts it as had)
+		purged, err := h.purgedOf(r.Context(), snap, name, version, platform)
+		if err != nil {
+			h.fail(w, err)
+			return
+		}
+		out["purged"] = purged
+	}
 	// an unknown name, or one outside the view, is no rows: the same answer
-	answer(w, r, map[string]any{"name": name, "releases": nonNil(rows)}, c.anonymous())
+	answer(w, r, out, c.anonymous())
+}
+
+type purgedOut struct {
+	Version  string `json:"version"`
+	Platform string `json:"platform"`
+	Slot     string `json:"slot"`
+	// DuckDBVersion is the DuckDB version the slot is ("" for a C API build's, capi:<major>)
+	DuckDBVersion string `json:"duckdb_version"`
+}
+
+// purgedOf is the channel's purged releases of a name from its selected source (spec 0016 phase 2:
+// their slots stay taken), each with its slot and, but for a C API build's, the DuckDB version the
+// slot is: what the placement pass counts as had (a slot that had the version, any cell that had a
+// version); optionally of one DuckDB version (a C API build's whatever it is) and platform.
+func (h *Handler) purgedOf(ctx context.Context, snap *release.Snapshot, name, version, platform string) ([]purgedOut, error) {
+	out := []purgedOut{}
+	source := snap.Selected[name]
+	if source == "" || h.o.Store == nil {
+		return out, nil
+	}
+	slots, err := h.o.Store.PurgedSlots(ctx, snap.Channel.ID, source, name)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range slots {
+		o := purgedOut{Version: p.PackageVersion, Platform: p.Platform, Slot: p.Slot}
+		if p.ABI != store.ABICStruct {
+			o.DuckDBVersion = p.Slot
+		}
+		if version != "" && (p.Platform != platform || o.DuckDBVersion != "" && o.DuckDBVersion != version) {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out, nil
 }
 
 // item answers the node agent's question for name@version on a DuckDB version and platform:

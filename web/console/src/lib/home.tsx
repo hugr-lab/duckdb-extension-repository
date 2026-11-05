@@ -6,6 +6,7 @@ import type { CatalogueEntry } from '../screens/Catalogue'
 import type { FollowRow, SourceRow } from '../screens/Sources'
 import { useLoad, useTenant } from './context'
 import { type Client, seg } from './http'
+import { type OrderEdge, inOrder } from './order'
 import { type ChannelReads, type Decision, type HomeReads, type Item, queue } from './queue'
 
 interface ChannelRow {
@@ -29,14 +30,17 @@ export async function allDecisions(client: Client, api: string): Promise<Decisio
 }
 
 /** The home's reads: the signed channels of the default package type (other types through the API,
- * as the Catalogue section does), one read of each's rules, follows and hold. */
+ * as the Catalogue section does), one read of each's rules, follows and hold, and the channels'
+ * order (spec 0043), whose sequence the channels are listed in. */
 export async function readHome(client: Client, api: string): Promise<HomeReads> {
-  const [cat, chs, decisions] = await Promise.all([
+  const [cat, chs, decisions, order] = await Promise.all([
     client.get<{ entries: CatalogueEntry[] }>(`${api}/catalogue`),
     client.get<{ channels: ChannelRow[] }>(`${api}/channels`),
     allDecisions(client, api),
+    client.get<{ order: OrderEdge[] }>(`${api}/channel-order`),
   ])
-  const signed = chs.data.channels.filter((c) => c.kind === 'signed' && !c.package_type).map((c) => c.name).sort()
+  // spec 0043: the columns in the order's sequence, then the others by name
+  const signed = inOrder(chs.data.channels.filter((c) => c.kind === 'signed' && !c.package_type).map((c) => c.name), order.data.order)
   const channels = await Promise.all(signed.map(async (name): Promise<ChannelReads> => {
     const path = `${api}/channels/${seg(name)}`
     const [sources, fs, hold] = await Promise.all([
@@ -46,7 +50,7 @@ export async function readHome(client: Client, api: string): Promise<HomeReads> 
     ])
     return { name, hold: hold.data.hold, follows: fs.data.follows, sources: sources.data.sources }
   }))
-  return { entries: cat.data.entries, channels, decisions }
+  return { entries: cat.data.entries, channels, decisions, order: order.data.order }
 }
 
 export interface Home {

@@ -103,6 +103,10 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/n.
 "$work/fixture" "$work/atlas11.duckdb_extension" 1.1 l atlas
 # spec 0041: tiles, enterest-ci's, which nightly's follow takes and places once its day's hold ends
 "$work/fixture" "$work/tiles10.duckdb_extension" 1.0 m tiles
+# spec 0043: relay and beacon 1.0, the tenant's, in nightly; staging's manual rules take them
+"$work/fixture" "$work/relay10.duckdb_extension" 1.0 o relay
+"$work/fixture" "$work/beacon10.duckdb_extension" 1.0 p beacon
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/st.pem" 2>/dev/null  # staging's
 # K4: a build a server administrator adds to the catalogue from the console, its footer read there
 "$work/fixture" "$work/k4_tool.duckdb_extension" 0.4 j k4_tool
 # spec 0036: geo_tools' icon (its distributor's publisher's), and one tom gives maps in the console
@@ -207,6 +211,17 @@ k catalogue add acme "$work/maps11.duckdb_extension" -name maps
 k catalogue add acme "$work/atlas10.duckdb_extension" -name atlas
 k catalogue add acme "$work/atlas11.duckdb_extension" -name atlas
 k channel source acme/prod atlas -set tenant -mode manual
+# spec 0043: staging, which the pipeline's test puts between nightly and prod; relay and beacon 1.0
+# placed into nightly, and staging's manual rules for them with nothing yet: both wait for staging
+k channel create acme/staging -kind signed
+k channel versions acme/staging -add v2.0.0
+k key add acme/staging -signer file:st.pem -active
+k catalogue add acme "$work/relay10.duckdb_extension" -name relay
+k catalogue add acme "$work/beacon10.duckdb_extension" -name beacon
+k release place acme/nightly -name relay -source tenant -version 1.0
+k release place acme/nightly -name beacon -source tenant -version 1.0
+k channel source acme/staging relay -set tenant -mode manual
+k channel source acme/staging beacon -set tenant -mode manual
 serve() {
 	"$work/kista" serve -config "$work/kista.yaml" >>"$work/kista.log" 2>&1 &
 	serve_pid=$!

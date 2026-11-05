@@ -72,6 +72,7 @@ are all the kinds in `internal/audit`:
 | | `signer.source.weak` | `source:<name>` | `source`, `kind`, `protection` |
 | Channels and keys | `channel.create` | `channel:<channel>` | `name`, `kind` |
 | | `channel.versions` | `channel:<channel>` | `added`, `removed` |
+| | `channel.order` | `tenant:<name>` | `before`, `after` (the edges, `[{"channel", "next"}]`), `package_type` (omitted for the default): [the channels' order](administration/tenants-and-channels.md#the-channels-order) changed (spec 0043; a `PUT` that changes nothing writes none) |
 | | `key.add` | `channel:<channel>/key:<id>` | `key`, `fingerprint`, `scheme`, `state`, `protection` |
 | | `key.activate`, `key.retire` | `channel:<channel>/key:<id>` | `key`, `fingerprint`, `from`, `forced` |
 | | `key.resign` | `channel:<channel>/key:<id>` | `key`, `fingerprint`, `signatures` |
@@ -177,7 +178,7 @@ Notes on some kinds:
   (`system:audit`, `system:retention`).
 - **`package_type`** (spec 0034): the events that name a package without a channel, and a channel's
   creation, carry the package type when it is not the default (`duckdb_extension`; for a grant
-  without a name, `*`): `channel.create`, `grant.add`, `grant.remove`, `extension_group.members`,
+  without a name, `*`): `channel.create`, `channel.order`, `grant.add`, `grant.remove`, `extension_group.members`,
   `reserved.add`, `reserved.remove`,
   `catalogue.arrival`, `catalogue.purge`, `license.import`, `license.change`, `license.remove` and
   `license.public_warning`.
