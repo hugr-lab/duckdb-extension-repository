@@ -131,11 +131,10 @@ func (t *Tx) SetRetentionChecked(ctx context.Context, channelID string, at time.
 	return err
 }
 
-// RetentionChannel is a signed channel of an active tenant, as the retention pass lists them: its
-// rule and its tenant's, and when the pass last looked at it.
+// RetentionChannel is a signed channel of an active tenant, as the retention pass lists them, with
+// when the pass last looked at it.
 type RetentionChannel struct {
 	ChannelID, Channel, TenantID, Tenant string
-	Rule, TenantRule                     RetentionRule
 	CheckedAt                            time.Time
 }
 
@@ -144,16 +143,13 @@ type RetentionChannel struct {
 // tenant's set), by tenant and channel name.
 func (s *Store) RetentionChannels(ctx context.Context) ([]RetentionChannel, error) {
 	var out []RetentionChannel
-	err := s.eachRow(ctx, `SELECT c.id, c.name, t.id, t.name, c.retention_keep, c.retention_grace_seconds, t.retention_keep,
-t.retention_grace_seconds, c.retention_checked_at FROM channels c JOIN tenants t ON t.id = c.tenant_id
+	err := s.eachRow(ctx, `SELECT c.id, c.name, t.id, t.name, c.retention_checked_at FROM channels c JOIN tenants t ON t.id = c.tenant_id
 WHERE c.kind = ? AND t.state = ? AND t.deleting_at IS NULL AND (c.retention_keep > 0 OR c.retention_keep IS NULL AND t.retention_keep IS NOT NULL)
 ORDER BY t.name, c.name`, []any{ChannelSigned, TenantActive}, func(sc func(...any) error) error {
 		var x RetentionChannel
-		var ck, cg, tk, tg sql.NullInt64
-		if err := sc(&x.ChannelID, &x.Channel, &x.TenantID, &x.Tenant, &ck, &cg, &tk, &tg, scanTime{&x.CheckedAt}); err != nil {
+		if err := sc(&x.ChannelID, &x.Channel, &x.TenantID, &x.Tenant, scanTime{&x.CheckedAt}); err != nil {
 			return err
 		}
-		x.Rule, x.TenantRule = scanRule(ck, cg), scanRule(tk, tg)
 		out = append(out, x)
 		return nil
 	})

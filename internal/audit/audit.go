@@ -215,8 +215,8 @@ var catalogue = map[Kind][]string{
 	"retention.unpin": {"id", "version", "duckdb_version", "reason"},
 	"retention.line":  {"duckdb_version", "name", "retired", "kept", "withdrawn", "pins_removed"},
 	"retention.run":   {"retired", "purged", "failed"},
-	// a purge: an administrator's, or the retention pass's (spec 0042: reason retention)
-	"release.purge":     {"release", "name", "version", "platform", "slot", "body_hash", "reason"},
+	// a purge: an administrator's, or the retention pass's (spec 0042: reason retention), and the pins it removed
+	"release.purge":     {"release", "name", "version", "platform", "slot", "body_hash", "reason", "pins_removed"},
 	"block.add":         {"body_hash", "reason"},
 	"block.remove":      {"body_hash"},
 	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "fetch", "visibility", "keys", "platforms", "extensions", "credential", "revocations"},

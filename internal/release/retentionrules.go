@@ -49,10 +49,14 @@ func RuleFields(r store.RetentionRule) map[string]any {
 // field with no value is null), the fields missing, and capped when the ceiling caps the grace.
 func InForceFields(r RuleInForce) map[string]any {
 	missing := r.Missing()
-	if missing == nil {
+	if missing == nil || r.Passthrough {
 		missing = []string{}
 	}
 	out := map[string]any{"keep": nil, "grace": nil, "missing": missing}
+	if r.Passthrough {
+		out["passthrough"] = true
+		return out
+	}
 	switch {
 	case r.None:
 		out["keep"] = map[string]any{"value": "none", "from": r.KeepFrom}
@@ -154,6 +158,9 @@ func (s *Service) channelRetention(ctx context.Context, ch store.Channel) (Chann
 	tn, err := s.Store.TenantRetention(ctx, ch.TenantID)
 	if err != nil {
 		return ChannelRetention{}, err
+	}
+	if ch.Kind != store.ChannelSigned { // spec 0042: a passthrough channel takes no retention
+		return ChannelRetention{Rule: own, InForce: RuleInForce{Passthrough: true}, CheckedAt: checked}, nil
 	}
 	out := ChannelRetention{Rule: own, InForce: InForce(own, tn), CheckedAt: checked}
 	if s.RetentionInterval > 0 && !checked.IsZero() {
@@ -714,6 +721,9 @@ func (r *Retainer) channel(ctx context.Context, channelID string, due bool) (Ret
 	}
 	renew := func(ctx context.Context) error {
 		if ok, err := r.Service.Store.RenewLease(ctx, lease, r.Holder, 2*time.Minute); err != nil || !ok {
+			if ctx.Err() != nil {
+				return ctx.Err() // stopped, not lost
+			}
 			return errRetentionLease
 		}
 		return nil

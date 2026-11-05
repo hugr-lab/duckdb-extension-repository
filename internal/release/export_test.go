@@ -46,6 +46,24 @@ func LookAndTell(ctx context.Context, s *Service, r store.DueRule) error {
 // UsageErr is a room check's error as an intake answers it (spec 0038).
 var UsageErr = usageErr
 
+// ByVersion is the pass's grouping of its retirements, (source, name, version) each, by (name,
+// version): what one transaction and one release.retire take.
+func ByVersion(items [][3]string) [][]string {
+	var its []retireItem
+	for _, x := range items {
+		its = append(its, retireItem{source: x[0], name: x[1], version: x[2]})
+	}
+	var out [][]string
+	for _, g := range byVersion(its) {
+		var keys []string
+		for _, it := range g {
+			keys = append(keys, it.source+"/"+it.name+"@"+it.version)
+		}
+		out = append(out, keys)
+	}
+	return out
+}
+
 // SetBeforeRetire sets a hook run between the retention pass's look and each retirement's
 // transaction (spec 0042).
 func SetBeforeRetire(s *Service, f func()) { s.beforeRetire = f }

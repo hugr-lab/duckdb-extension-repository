@@ -37,6 +37,8 @@ type RuleInForce struct {
 	Grace     time.Duration
 	GraceFrom string
 	Capped    bool
+	// Passthrough is a passthrough channel's: it takes no retention, whatever the tenant's default.
+	Passthrough bool
 }
 
 // Active reports whether a rule is in force: a keep (not none) and a grace, each from somewhere.
@@ -403,10 +405,10 @@ func (s *Service) RetainChannel(ctx context.Context, channelID string, renew fun
 		return res, err // fail closed: nothing retired in the channel
 	}
 	res.NoRule, res.PurgeOff = !lk.rule.Active(), s.PurgeOff
-	var stopped error // the lease lost: what was done is still summed up, the look not recorded
+	var stopped error // the lease lost or the context ended: what was done is still summed up, the look not recorded
 	if lk.rule.Active() {
 	retire:
-		for _, it := range lk.retire {
+		for _, its := range byVersion(lk.retire) {
 			if renew != nil {
 				if stopped = renew(ctx); stopped != nil {
 					break retire
@@ -415,9 +417,12 @@ func (s *Service) RetainChannel(ctx context.Context, channelID string, renew fun
 			if s.beforeRetire != nil {
 				s.beforeRetire()
 			}
-			n, err := s.retireVersion(ctx, ch, it)
+			n, err := s.retireVersion(ctx, ch, its)
 			if err != nil {
-				res.fail(it.name+" "+it.version, err)
+				if stopped = ctx.Err(); stopped != nil {
+					break retire // stopped, not failed
+				}
+				res.fail(its[0].name+" "+its[0].version, err)
 				continue
 			}
 			res.Retired += n
@@ -436,6 +441,9 @@ func (s *Service) RetainChannel(ctx context.Context, channelID string, renew fun
 			}
 			done, err := s.purgeRetired(ctx, ch, it.release)
 			if err != nil {
+				if stopped = ctx.Err(); stopped != nil {
+					break // stopped, not failed
+				}
 				res.fail("release "+it.release.ID, err)
 				continue
 			}
@@ -444,9 +452,10 @@ func (s *Service) RetainChannel(ctx context.Context, channelID string, renew fun
 			}
 		}
 	}
-	err = s.Store.InTenantTx(context.WithoutCancel(ctx), ch.TenantID, nil, func(tx *store.Tx) error {
+	wctx := context.WithoutCancel(ctx) // a pass stopped by its context still sums up what it did
+	err = s.Store.InTenantTx(wctx, ch.TenantID, nil, func(tx *store.Tx) error {
 		if res.Retired+res.Purged+res.Failed > 0 {
-			if err := tx.Event(ctx, ch.TenantID, retainer.String(), "retention.run", "channel:"+ch.Name,
+			if err := tx.Event(wctx, ch.TenantID, retainer.String(), "retention.run", "channel:"+ch.Name,
 				map[string]any{"retired": res.Retired, "purged": res.Purged, "failed": res.Failed}); err != nil {
 				return err
 			}
@@ -454,7 +463,7 @@ func (s *Service) RetainChannel(ctx context.Context, channelID string, renew fun
 		if stopped != nil {
 			return nil
 		}
-		return tx.SetRetentionChecked(ctx, ch.ID, start)
+		return tx.SetRetentionChecked(wctx, ch.ID, start)
 	})
 	return res, cmp.Or(stopped, err)
 }
@@ -469,11 +478,30 @@ func ruleTx(ctx context.Context, tx *store.Tx, ch store.Channel) (RuleInForce, e
 	return InForce(own, tn), err
 }
 
-// retireVersion retires a look's (name, version) under the channel lock: only its releases that are
-// as the look read them and still retirable there, with the rule, releases, lines and pins as they
-// are now. It answers how many it retired.
-func (s *Service) retireVersion(ctx context.Context, ch store.Channel, it retireItem) (int, error) {
+// byVersion groups a look's retirements by (name, version), every source's together, in the look's
+// order: one transaction and one release.retire each.
+func byVersion(items []retireItem) [][]retireItem {
+	var out [][]retireItem
+	at := map[[2]string]int{}
+	for _, it := range items {
+		k := [2]string{it.name, it.version}
+		if i, ok := at[k]; ok {
+			out[i] = append(out[i], it)
+			continue
+		}
+		at[k] = len(out)
+		out = append(out, []retireItem{it})
+	}
+	return out
+}
+
+// retireVersion retires a look's (name, version), of each source the look found it retirable in,
+// under the channel lock: only its releases that are as the look read them and still retirable
+// there, with the rule, releases, lines and pins as they are now; one release.retire for them all. It
+// answers how many it retired.
+func (s *Service) retireVersion(ctx context.Context, ch store.Channel, its []retireItem) (int, error) {
 	n := 0
+	name, version := its[0].name, its[0].version
 	err := s.Store.InTenantTx(ctx, ch.TenantID, []string{lockKey(ch.ID)}, func(tx *store.Tx) error {
 		n = 0
 		rule, err := ruleTx(ctx, tx, ch)
@@ -484,37 +512,39 @@ func (s *Service) retireVersion(ctx context.Context, ch store.Channel, it retire
 		if err != nil {
 			return err
 		}
-		rels, err := tx.SourceReleases(ctx, ch.ID, it.source, it.name)
-		if err != nil {
-			return err
-		}
 		pins, err := tx.ChannelPins(ctx, ch.ID)
 		if err != nil {
 			return err
 		}
-		var group []*store.Candidate
-		for i := range rels {
-			if rels[i].State != store.ReleasePurged {
-				group = append(group, &rels[i])
-			}
-		}
-		g := computeGroup(group, capis, pins, rule.Keep, false)
-		looked := map[string]int64{}
-		for _, r := range it.releases {
-			looked[r.ID] = r.Version
-		}
 		var ids, lines []string
-		for _, c := range g.retire {
-			if v, ok := looked[c.ID]; !ok || v != c.Version || c.PackageVersion != it.version {
-				continue // not in the look, or changed since (restored, made current, deprecated)
-			}
-			if err := tx.RetireRelease(ctx, &c.Release, retainer.String()); err != nil {
+		for _, it := range its {
+			rels, err := tx.SourceReleases(ctx, ch.ID, it.source, it.name)
+			if err != nil {
 				return err
 			}
-			ids = append(ids, c.ID)
-			for _, l := range g.lines[c.ID] {
-				if !slices.Contains(lines, l) {
-					lines = append(lines, l)
+			var group []*store.Candidate
+			for i := range rels {
+				if rels[i].State != store.ReleasePurged {
+					group = append(group, &rels[i])
+				}
+			}
+			g := computeGroup(group, capis, pins, rule.Keep, false)
+			looked := map[string]int64{}
+			for _, r := range it.releases {
+				looked[r.ID] = r.Version
+			}
+			for _, c := range g.retire {
+				if v, ok := looked[c.ID]; !ok || v != c.Version || c.PackageVersion != version {
+					continue // not in the look, or changed since (restored, made current, deprecated)
+				}
+				if err := tx.RetireRelease(ctx, &c.Release, retainer.String()); err != nil {
+					return err
+				}
+				ids = append(ids, c.ID)
+				for _, l := range g.lines[c.ID] {
+					if !slices.Contains(lines, l) {
+						lines = append(lines, l)
+					}
 				}
 			}
 		}
@@ -523,7 +553,7 @@ func (s *Service) retireVersion(ctx context.Context, ch store.Channel, it retire
 		}
 		slices.SortFunc(lines, CompareVersions)
 		n = len(ids)
-		if err := retireEvent(ctx, tx, ch, retainer.String(), it.name, it.version, ids, lines, "retention"); err != nil {
+		if err := retireEvent(ctx, tx, ch, retainer.String(), name, version, ids, lines, "retention"); err != nil {
 			return err
 		}
 		return tx.BumpReleaseVersion(ctx, ch.ID)
@@ -578,12 +608,13 @@ func (s *Service) purgeRetired(ctx context.Context, ch store.Channel, looked sto
 		if err := tx.PurgeRelease(ctx, c); err != nil {
 			return err
 		}
-		if err := dropPins(ctx, tx, ch.ID, c.Name, c.PackageVersion, pl, pins); err != nil {
+		dropped, err := dropPins(ctx, tx, ch.ID, c.Name, c.PackageVersion, pl, pins)
+		if err != nil {
 			return err
 		}
-		if err := tx.Event(ctx, ch.TenantID, retainer.String(), "release.purge", releaseSubject(ch, c.Release),
-			map[string]any{"release": c.ID, "name": c.Name, "version": c.PackageVersion, "platform": c.Platform, "slot": c.Slot,
-				"body_hash": c.BodyHash, "reason": "retention"}); err != nil {
+		f := purgeFields(c, dropped)
+		f["reason"] = "retention"
+		if err := tx.Event(ctx, ch.TenantID, retainer.String(), "release.purge", releaseSubject(ch, c.Release), f); err != nil {
 			return err
 		}
 		done = true
@@ -595,7 +626,8 @@ func (s *Service) purgeRetired(ctx context.Context, ch store.Channel, looked sto
 // dropPins removes, after a purge of a release of (name, version), the version's pins left without a
 // release in their line (a pin for every line: in the channel), so pins stay bounded by what the
 // channel holds; its lines are pinLines', so a line the channel no longer serves counts by its maxima.
-func dropPins(ctx context.Context, tx *store.Tx, channelID, name, version string, capis map[string][]store.CAPI, pins []store.RetentionPin) error {
+// It answers the pins it removed (release.purge's pins_removed).
+func dropPins(ctx context.Context, tx *store.Tx, channelID, name, version string, capis map[string][]store.CAPI, pins []store.RetentionPin) ([]string, error) {
 	var mine []store.RetentionPin
 	for _, p := range pins {
 		if p.Name == name && p.PackageVersion == version {
@@ -603,11 +635,11 @@ func dropPins(ctx context.Context, tx *store.Tx, channelID, name, version string
 		}
 	}
 	if len(mine) == 0 {
-		return nil
+		return nil, nil
 	}
 	left, err := tx.VersionReleases(ctx, channelID, name, version)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var gone []string
 	for _, p := range mine {
@@ -618,7 +650,17 @@ func dropPins(ctx context.Context, tx *store.Tx, channelID, name, version string
 			gone = append(gone, p.ID)
 		}
 	}
-	return tx.DeletePins(ctx, channelID, gone)
+	return gone, tx.DeletePins(ctx, channelID, gone)
+}
+
+// purgeFields are release.purge's data: the release, and the pins the purge removed, when any.
+func purgeFields(c store.Candidate, dropped []string) map[string]any {
+	f := map[string]any{"release": c.ID, "name": c.Name, "version": c.PackageVersion, "platform": c.Platform, "slot": c.Slot,
+		"body_hash": c.BodyHash}
+	if len(dropped) > 0 {
+		f["pins_removed"] = dropped
+	}
+	return f
 }
 
 var errNoRetention = fmt.Errorf("%w: a passthrough channel serves DuckDB's core builds as its upstream has them: it takes no retention", store.ErrInvalid)

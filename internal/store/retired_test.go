@@ -131,20 +131,34 @@ func TestRetentionRows(t *testing.T) {
 		at := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
 		inTx(t, s, func(tx *store.Tx) error { return tx.SetRetentionChecked(ctx, staging.ID, at) })
 		chs, err := s.RetentionChannels(ctx)
-		if err != nil || len(chs) != 1 || chs[0].ChannelID != staging.ID || chs[0].Tenant != "acme" || !chs[0].CheckedAt.Equal(at) ||
-			*chs[0].TenantRule.Keep != 3 || chs[0].Rule.Keep != nil {
+		if err != nil || len(chs) != 1 || chs[0].ChannelID != staging.ID || chs[0].Tenant != "acme" || !chs[0].CheckedAt.Equal(at) {
 			t.Fatalf("retention channels: %+v %v", chs, err)
 		}
-		inTx(t, s, func(tx *store.Tx) error {
-			cur, err := tx.GetTenant(ctx, tn.Name)
-			if err != nil {
-				return err
-			}
-			return tx.SetTenantState(ctx, &cur, store.TenantSuspended)
-		})
+		state := func(st string) {
+			inTx(t, s, func(tx *store.Tx) error {
+				cur, err := tx.GetTenant(ctx, tn.Name)
+				if err != nil {
+					return err
+				}
+				return tx.SetTenantState(ctx, &cur, st)
+			})
+		}
+		state(store.TenantSuspended)
 		if chs, err := s.RetentionChannels(ctx); err != nil || len(chs) != 0 {
 			t.Fatalf("a suspended tenant's: %+v %v", chs, err)
 		}
+		// a deleting tenant's channels are skipped too
+		state(store.TenantActive)
+		if err := store.ExecRaw(ctx, s, "UPDATE tenants SET deleting_at = ? WHERE id = ?", store.TimeArg(s, at), tn.ID); err != nil {
+			t.Fatal(err)
+		}
+		if chs, err := s.RetentionChannels(ctx); err != nil || len(chs) != 0 {
+			t.Fatalf("a deleting tenant's: %+v %v", chs, err)
+		}
+		if err := store.ExecRaw(ctx, s, "UPDATE tenants SET deleting_at = NULL WHERE id = ?", tn.ID); err != nil {
+			t.Fatal(err)
+		}
+		state(store.TenantSuspended)
 
 		// pins: one per (name, version, line); a page after a key; deleted by id within the channel
 		pin := func(name, version, line string) store.RetentionPin {

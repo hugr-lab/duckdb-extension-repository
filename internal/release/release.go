@@ -1354,13 +1354,12 @@ func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, nam
 		if err != nil {
 			return err
 		}
-		if err := dropPins(ctx, tx, ch.ID, c.Name, c.PackageVersion, pl, pins); err != nil {
+		dropped, err := dropPins(ctx, tx, ch.ID, c.Name, c.PackageVersion, pl, pins)
+		if err != nil {
 			return err
 		}
 		out = c
-		if err := tx.Event(ctx, ch.TenantID, a.String(), "release.purge", releaseSubject(ch, c.Release),
-			map[string]any{"release": c.ID, "name": c.Name, "version": c.PackageVersion, "platform": c.Platform, "slot": c.Slot,
-				"body_hash": c.BodyHash}); err != nil {
+		if err := tx.Event(ctx, ch.TenantID, a.String(), "release.purge", releaseSubject(ch, c.Release), purgeFields(c, dropped)); err != nil {
 			return err
 		}
 		return tx.BumpReleaseVersion(ctx, ch.ID)

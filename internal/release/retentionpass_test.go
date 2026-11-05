@@ -226,6 +226,18 @@ func TestRetentionPassRecheck(t *testing.T) {
 		if _, err := en.ten.SetTenantState(ctx, admin, "acme", store.TenantActive, 0); err != nil {
 			t.Fatal(err)
 		}
+		// a deleting tenant's too
+		tn, _ := en.st.GetTenant(ctx, "acme")
+		if err := store.ExecRaw(ctx, en.st, "UPDATE tenants SET deleting_at = ? WHERE id = ?", store.TimeArg(en.st, clk.now), tn.ID); err != nil {
+			t.Fatal(err)
+		}
+		r.Once(ctx, true)
+		if err := store.ExecRaw(ctx, en.st, "UPDATE tenants SET deleting_at = NULL WHERE id = ?", tn.ID); err != nil {
+			t.Fatal(err)
+		}
+		if got := en.states(t, "prod", "tresor"); got != "1.0:active 1.1:active 1.2:retired 1.3:active" {
+			t.Fatalf("a deleting tenant's channel: %s", got)
+		}
 		r.Once(ctx, false)
 		if got := en.states(t, "prod", "tresor"); got != "1.0:active 1.1:active 1.3:active" {
 			t.Fatalf("due: %s", got)
@@ -303,6 +315,10 @@ func TestRetentionPins(t *testing.T) {
 		if ps, err := en.rel.Pins(ctx, admin, "acme", "prod", "", "", 10); err != nil || len(ps) != 0 {
 			t.Fatalf("pins after the purge: %+v %v", ps, err)
 		}
+		if evs := en.events(t, "release.purge"); len(evs) != 1 || !strings.Contains(evs[0].Data, `"pins_removed":[`) ||
+			!strings.Contains(evs[0].Data, p1.ID) || !strings.Contains(evs[0].Data, all.ID) {
+			t.Fatalf("release.purge names the pins it removed: %+v", evs)
+		}
 		// an auditor reads, writes nothing; a stranger reads nothing
 		if _, err := en.rel.Pins(ctx, authz.Actor{Kind: authz.ActorPrincipal, ID: "x"}, "acme", "prod", "", "", 10); !errors.Is(err, authz.ErrDenied) {
 			t.Fatalf("a stranger: %v", err)
@@ -352,6 +368,10 @@ func TestRetireLine(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		pinOther, _, err := en.rel.Pin(ctx, admin, "acme", "prod", store.RetentionPin{Name: "tresor", PackageVersion: "1.0", DuckDBVersion: "v2.0.0", Reason: "main"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, err := en.rel.RetireLine(ctx, admin, "acme", "mirror", "v1.5.2", ""); !errors.Is(err, store.ErrInvalid) {
 			t.Fatalf("a passthrough channel: %v", err)
 		}
@@ -366,8 +386,9 @@ func TestRetireLine(t *testing.T) {
 			!slices.Equal(res.Kept[0].Lines, []string{"v2.0.0"}) || res.PinsRemoved != 1 || res.Withdrawn != 0 {
 			t.Fatalf("retire-line v1.5.2 tresor: %+v", res)
 		}
-		if ps, _ := en.rel.Pins(ctx, admin, "acme", "prod", "", "", 10); len(ps) != 1 || ps[0].ID != pinAll.ID {
-			t.Fatalf("the line's pin removed, the every-line pin kept: %+v (removed %s)", ps, pinLine.ID)
+		// the line's pin removed; the every-line pin and another line's kept
+		if ps, _ := en.rel.Pins(ctx, admin, "acme", "prod", "", "", 10); len(ps) != 2 || ps[0].ID != pinAll.ID || ps[1].ID != pinOther.ID {
+			t.Fatalf("the pins after the line act: %+v (removed %s)", ps, pinLine.ID)
 		}
 		if evs := en.events(t, "retention.line"); len(evs) != 1 || !strings.Contains(evs[0].Data, `"retired":1`) ||
 			!strings.Contains(evs[0].Data, `"name":"tresor"`) || !strings.Contains(evs[0].Data, `"pins_removed":1`) {
@@ -543,6 +564,54 @@ func TestRetentionPinsAndLease(t *testing.T) {
 		}
 		if _, checked, _ := en.st.ChannelRetention(ctx, mustChannel(t, en, "prod").ID); before.IsZero() || !checked.Equal(before) {
 			t.Fatalf("an unfinished look recorded: %v, before %v", checked, before)
+		}
+	})
+}
+
+// Spec 0042 review: one release.retire per (name, version) per channel, every source's releases of
+// it together, in the look's order.
+func TestRetireByVersion(t *testing.T) {
+	got := release.ByVersion([][3]string{{"tenant", "geo", "1.0"}, {"tenant", "geo", "1.1"}, {"upstream:u", "geo", "1.0"}, {"tenant", "acl", "1.0"}})
+	want := [][]string{{"tenant/geo@1.0", "upstream:u/geo@1.0"}, {"tenant/geo@1.1"}, {"tenant/acl@1.0"}}
+	if len(got) != len(want) {
+		t.Fatalf("groups: %v", got)
+	}
+	for i := range want {
+		if !slices.Equal(got[i], want[i]) {
+			t.Fatalf("groups: %v, want %v", got, want)
+		}
+	}
+}
+
+// Spec 0042 review: a pass whose context ends answers the context's error, not a lost lease, and still
+// sums up what it did in a transaction of its own.
+func TestRetentionPassCanceled(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		en.clock()
+		for i, v := range []string{"1.0", "1.1", "1.2"} {
+			if _, _, err := en.add(t, ext(t, 1000, uint64(i+1), cpp(v)), release.AddOptions{Unchecked: true, Name: "tresor"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := en.rel.SetChannelRetention(ctx, admin, "acme", "prod", rule(1, time.Hour), ""); err != nil {
+			t.Fatal(err)
+		}
+		cctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		calls := 0
+		release.SetBeforeRetire(en.rel, func() {
+			if calls++; calls == 2 {
+				cancel() // the second retirement runs canceled; the renew after it stops the pass
+			}
+		})
+		defer release.SetBeforeRetire(en.rel, nil)
+		r := &release.Retainer{Service: en.rel, Holder: "a", Interval: time.Hour, Log: slog.New(slog.DiscardHandler)}
+		_, held, err := r.Channel(cctx, mustChannel(t, en, "prod").ID)
+		if !held || !errors.Is(err, context.Canceled) {
+			t.Fatalf("a canceled pass: %v %v", held, err)
+		}
+		if evs := en.events(t, "retention.run"); len(evs) != 1 || !strings.Contains(evs[0].Data, `"retired":1`) {
+			t.Fatalf("the summary: %+v", evs)
 		}
 	})
 }
