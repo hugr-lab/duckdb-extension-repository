@@ -205,7 +205,18 @@ var catalogue = map[Kind][]string{
 	"release.current":   {"release", "name", "version", "platform"},
 	"release.public":    {"release", "name", "version", "platform"},
 	"release.private":   {"release", "name", "version", "platform"},
-	"release.purge":     {"release", "name", "version", "platform", "slot", "body_hash"},
+	"release.restore":   {"release", "name", "version", "platform"}, // spec 0042: a retired release restored
+	// spec 0042: a version's releases retired in a channel, by the retention pass or the line act
+	"release.retire": {"version", "releases", "lines", "by"},
+	// spec 0042: retention rules (a tenant's default or a channel's own: before, after, the channel's
+	// in force), pins, the line act, and a pass that changed something or failed in a channel
+	"retention.set":   {"before", "after", "in_force"},
+	"retention.pin":   {"id", "version", "duckdb_version", "reason"},
+	"retention.unpin": {"id", "version", "duckdb_version", "reason"},
+	"retention.line":  {"duckdb_version", "name", "retired", "kept", "withdrawn", "pins_removed"},
+	"retention.run":   {"retired", "purged", "failed"},
+	// a purge: an administrator's, or the retention pass's (spec 0042: reason retention), and the pins it removed
+	"release.purge":     {"release", "name", "version", "platform", "slot", "body_hash", "reason", "pins_removed"},
 	"block.add":         {"body_hash", "reason"},
 	"block.remove":      {"body_hash"},
 	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "fetch", "visibility", "keys", "platforms", "extensions", "credential", "revocations"},
@@ -290,8 +301,13 @@ type KindInfo struct {
 func SubjectForm(k Kind) string {
 	const release = "channel:<channel>/ext:<name>/release:<id>"
 	switch k {
-	case "release.promote", "release.place", "extension.use", "source.set", "source.clear", "license.public_warning", "source.waiting":
+	case "release.promote", "release.place", "extension.use", "source.set", "source.clear", "license.public_warning", "source.waiting",
+		"release.retire", "retention.pin", "retention.unpin":
 		return "channel:<channel>/ext:<name>"
+	case "retention.set": // spec 0042: the tenant's default, or a channel's own
+		return "tenant:<name> or channel:<channel>"
+	case "retention.line", "retention.run":
+		return "channel:<channel>"
 	case "channel.order": // spec 0043: the order spans the tenant's channels
 		return "tenant:<name>"
 	case "decision.set", "decision.clear": // spec 0041: a channel's decision, or the tenant's

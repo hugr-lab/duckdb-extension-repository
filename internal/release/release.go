@@ -46,6 +46,9 @@ var (
 	// ErrUsage is a catalogue's use that could not be read for an intake's room (spec 0038): the
 	// intake is refused as an error, never as the file's fault (an upstream's cell is failed).
 	ErrUsage = errors.New("release: the catalogue's use could not be read")
+	// ErrRetired is an insert into the slot of a retired release (spec 0042): an administrator restores
+	// it instead.
+	ErrRetired = errors.New("release: retired")
 )
 
 // channelType is a channel's package type for the lookups that come before authorization (spec
@@ -149,10 +152,15 @@ type Service struct {
 	// not declared done).
 	PurgeOff bool
 
+	// RetentionInterval is the scheduled retention pass's interval (spec 0042: retention.interval; 0:
+	// none), what a channel's next run is reckoned from.
+	RetentionInterval time.Duration
+
 	afterBuild       func(store.Build)     // tests: between finding the Build and inserting the release
 	beforeResign     func([]store.Release) // tests: between reading a re-sign batch and inserting it
 	beforeMetaCommit func()                // tests: between a metadata write's checks (and upload) and its transaction
 	beforeTell       func() error          // tests: before a tell's transaction (spec 0041); an error fails the tell
+	beforeRetire     func()                // tests: between the retention pass's look and a retirement's transaction
 }
 
 // CredentialOf is the private upstream credential a release came through (its provenance's
@@ -506,7 +514,8 @@ func purgedNote(c store.Candidate) string {
 }
 
 // checkSlot finds the release in its slot. The same body with the same choices is the existing
-// release; another body, other choices, or mixing c_struct with cpp builds are refused.
+// release; another body, other choices, or mixing c_struct with cpp builds are refused, and so is
+// any body for a retired release's slot (spec 0042: it is restored, never arrives again).
 func checkSlot(cands []store.Candidate, it item) (*store.Release, error) {
 	b := it.b
 	for _, c := range cands {
@@ -519,6 +528,10 @@ func checkSlot(cands []store.Candidate, it item) (*store.Release, error) {
 		}
 		if c.State == store.ReleasePurged {
 			return nil, fmt.Errorf("%w: %s %s %s %s was purged; a fix is a new version", ErrSlot, b.Name, b.PackageVersion, b.Platform, c.Slot)
+		}
+		if c.State == store.ReleaseRetired {
+			return nil, fmt.Errorf("%w: %s %s %s %s is retired in this channel; restore it (release %s)",
+				ErrRetired, b.Name, b.PackageVersion, b.Platform, c.Slot, c.ID)
 		}
 		if c.BodyHash != b.BodyHash {
 			return nil, fmt.Errorf("%w (%s %s %s %s)", ErrSlot, b.Name, b.PackageVersion, b.Platform, c.Slot)
@@ -1069,6 +1082,8 @@ const (
 	MakeCurrent Change = "current"
 	SetPublic   Change = "public"
 	SetPrivate  Change = "private"
+	// Restore returns a retired release to the state it came from (spec 0042).
+	Restore Change = "restore"
 )
 
 // Apply changes one release of a channel. With a name, the release must be of that extension (an
@@ -1094,9 +1109,9 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 			return store.ErrConflict
 		}
 		refuse := func() error { return fmt.Errorf("%w: %q is not allowed on a %s release", ErrState, c, r.State) }
-		if c == Activate || c == MakeCurrent || c == SetPublic {
-			// spec 0033 phase B: a withdrawn entry's release is never made active, current or public again
-			// (read with a row lock its withdrawal's update waits for)
+		if c == Activate || c == MakeCurrent || c == SetPublic || c == Restore {
+			// spec 0033 phase B: a withdrawn entry's release is never made active, current or public again,
+			// nor restored (spec 0042) (read with a row lock its withdrawal's update waits for)
 			if withdrawn, err := tx.BuildWithdrawn(ctx, r.BuildID); err != nil {
 				return err
 			} else if withdrawn {
@@ -1147,6 +1162,14 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 			}
 			tx.SetWarningAct("release.public") // spec 0035 phase 2
 			err = tx.SetReleaseVisibility(ctx, &r, string(c), actor)
+		case Restore:
+			if ch.Kind == store.ChannelPassthrough { // spec 0042: a passthrough channel takes no retention (400)
+				return errNoRetention
+			}
+			if r.State != store.ReleaseRetired {
+				return refuse()
+			}
+			err = tx.RestoreRelease(ctx, &r, actor)
 		default:
 			return fmt.Errorf("%w: unknown change %q", store.ErrInvalid, c)
 		}
@@ -1155,7 +1178,7 @@ func (s *Service) Apply(ctx context.Context, a authz.Actor, tenant, channel, nam
 		}
 		out = r
 		kind := map[Change]audit.Kind{Yank: "release.yank", Deprecate: "release.deprecate", Activate: "release.activate",
-			MakeCurrent: "release.current", SetPublic: "release.public", SetPrivate: "release.private"}[c]
+			MakeCurrent: "release.current", SetPublic: "release.public", SetPrivate: "release.private", Restore: "release.restore"}[c]
 		if err := tx.Event(ctx, ch.TenantID, a.String(), kind, releaseSubject(ch, r),
 			map[string]any{"release": r.ID, "name": r.Name, "version": r.PackageVersion, "platform": r.Platform}); err != nil {
 			return err
@@ -1283,10 +1306,11 @@ func (s *Service) land(ctx context.Context, sp *blob.Spool, it *item, event func
 	}
 }
 
-// Purge deletes a yanked release of a channel for good (spec 0016 phase 2): its signatures go, its
-// slot stays taken (never refilled, its sequence number never given again), and its Build loses the
-// reference, so the storage collector removes the body later. With a name, the release must be of
-// that extension; a non-zero expected version must be the release's. It returns what was purged.
+// Purge deletes a yanked or retired release of a channel for good (spec 0016 phase 2, spec 0042): its
+// signatures go, its slot stays taken (never refilled, its sequence number never given again), and
+// its Build loses the reference, so the storage collector removes the body later. With a name, the
+// release must be of that extension; a non-zero expected version must be the release's. It returns
+// what was purged.
 func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, name, id string, expected int64) (store.Candidate, error) {
 	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel, Package: name}); err != nil {
 		return store.Candidate{}, err
@@ -1311,16 +1335,31 @@ func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, nam
 		if expected != 0 && c.Version != expected {
 			return store.ErrConflict
 		}
-		if c.State != store.ReleaseYanked {
-			return fmt.Errorf("%w: only a yanked release is purged; yank it first", ErrState)
+		if c.State != store.ReleaseYanked && c.State != store.ReleaseRetired {
+			return fmt.Errorf("%w: only a yanked or retired release is purged; yank it first", ErrState)
 		}
 		if err := tx.PurgeRelease(ctx, c); err != nil {
 			return err
 		}
+		// spec 0042: the version's pins left without a release in their line go
+		capis, err := tx.ChannelCAPIs(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		pins, err := tx.ChannelPins(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		pl, err := pinLines(capis, pins, func(v string) ([]store.CAPI, error) { return tx.DuckDBVersionCAPIs(ctx, v) })
+		if err != nil {
+			return err
+		}
+		dropped, err := dropPins(ctx, tx, ch.ID, c.Name, c.PackageVersion, pl, pins)
+		if err != nil {
+			return err
+		}
 		out = c
-		if err := tx.Event(ctx, ch.TenantID, a.String(), "release.purge", releaseSubject(ch, c.Release),
-			map[string]any{"release": c.ID, "name": c.Name, "version": c.PackageVersion, "platform": c.Platform, "slot": c.Slot,
-				"body_hash": c.BodyHash}); err != nil {
+		if err := tx.Event(ctx, ch.TenantID, a.String(), "release.purge", releaseSubject(ch, c.Release), purgeFields(c, dropped)); err != nil {
 			return err
 		}
 		return tx.BumpReleaseVersion(ctx, ch.ID)

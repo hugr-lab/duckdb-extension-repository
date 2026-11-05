@@ -374,6 +374,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	}
 	// a purge before every replica keeps purged slots could see its slot refilled (spec 0016)
 	rel.PurgeOff = cfg.GCSettings().Interval == 0
+	rel.RetentionInterval = cfg.Retention.IntervalOrDefault() // spec 0042: a channel's next run
 	at := &attachment.Service{Store: s, Authz: az, MaxSize: cfg.Attachments.MaxSize, Keys: ks, PublicURL: cfg.Serve.PublicURL}
 	feeds := &attachment.Feeds{Store: s, Authz: az, Attachments: at, Fetch: eg, Credentials: creds,
 		Interval: cfg.Attachments.FeedIntervalOrDefault(), Log: slog.Default(), TempDir: filepath.Join(cfg.SpoolDir(), "feeds")}

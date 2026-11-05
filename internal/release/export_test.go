@@ -2,6 +2,7 @@ package release
 
 import (
 	"context"
+	"slices"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -44,3 +45,48 @@ func LookAndTell(ctx context.Context, s *Service, r store.DueRule) error {
 
 // UsageErr is a room check's error as an intake answers it (spec 0038).
 var UsageErr = usageErr
+
+// ByVersion is the pass's grouping of its retirements, (source, name, version) each, by (name,
+// version): what one transaction and one release.retire take.
+func ByVersion(items [][3]string) [][]string {
+	var its []retireItem
+	for _, x := range items {
+		its = append(its, retireItem{source: x[0], name: x[1], version: x[2]})
+	}
+	var out [][]string
+	for _, g := range byVersion(its) {
+		var keys []string
+		for _, it := range g {
+			keys = append(keys, it.source+"/"+it.name+"@"+it.version)
+		}
+		out = append(out, keys)
+	}
+	return out
+}
+
+// SetBeforeRetire sets a hook run between the retention pass's look and each retirement's
+// transaction (spec 0042).
+func SetBeforeRetire(s *Service, f func()) { s.beforeRetire = f }
+
+// Retire is the retention computation over a channel's releases (spec 0042): the ids it retires,
+// each (source, name, line)'s kept versions (key source/name@line), and the releases another line
+// keeps (by id).
+func Retire(rels []store.Candidate, capis map[string][]store.CAPI, pins []store.RetentionPin, keep int) ([]string, map[string][]string, map[string][]string) {
+	keys, by := groups(rels)
+	var retired []string
+	kept, keptBy := map[string][]string{}, map[string][]string{}
+	for _, k := range keys {
+		g := computeGroup(by[k], capis, pins, keep, false)
+		for _, c := range g.retire {
+			retired = append(retired, c.ID)
+		}
+		for l, vs := range g.kept {
+			kept[k[0]+"/"+k[1]+"@"+l] = vs
+		}
+		for id, ls := range g.keptBy {
+			keptBy[id] = ls
+		}
+	}
+	slices.Sort(retired)
+	return retired, kept, keptBy
+}

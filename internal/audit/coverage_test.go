@@ -105,7 +105,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"Add":       {"release.add", "release.publish", "shadow.add", "source.set", "license.public_warning"},
 		"Promote":   {"release.promote", "shadow.add", "source.set", "license.public_warning"},
 		"SetSource": {"source.set", "license.public_warning"}, "ClearSource": {"source.clear"}, "Sources": nil, "Source": nil, "Apply": {"release.yank",
-			"release.deprecate", "release.activate", "release.current", "release.public", "release.private", "license.public_warning"},
+			"release.deprecate", "release.activate", "release.current", "release.public", "release.private", "release.restore", "license.public_warning"},
 		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set", "license.public_warning"}, "Resign": {"key.resign"},
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "BlockBuilds": nil, "DuckDBCore": nil,
 		// spec 0041: the decisions on the decision queue
@@ -120,6 +120,10 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetEntryMeta": {"catalogue.meta"}, "EntryMeta": nil, "EntryIcon": nil, "MayWriteEntryMeta": nil, // spec 0036
 		// spec 0039: an upstream's block, yank and lift write their events in the upstream service's act
 		"UpstreamBlocks": nil, "UpstreamYank": nil, "LiftUpstream": nil,
+		// spec 0042: retention
+		"TenantRetention": nil, "SetTenantRetention": {"retention.set"}, "ChannelRetention": nil, "SetChannelRetention": {"retention.set"},
+		"RetentionPlan": nil, "Pins": nil, "Pin": {"retention.pin"}, "Unpin": {"retention.unpin"},
+		"RetireLine": {"retention.line", "release.retire"}, "RetainChannel": {"release.retire", "release.purge", "retention.run"},
 	},
 	"upstream.Service": {
 		"Add": {"upstream.add"}, "Remove": {"upstream.remove", "license.remove"}, "Set": {"upstream.change"}, "PutEntry": {"upstream.change"},
@@ -594,10 +598,26 @@ func TestCoverage(t *testing.T) {
 		return err
 	}), "source.set")
 	en.expect("release.Service.ClearSource", do(func() error { return en.rel.ClearSource(rctx, admin, "acme", "prod", "parquet") }), "source.clear")
-	for _, c := range []release.Change{release.SetPrivate, release.SetPublic, release.MakeCurrent, release.Deprecate, release.Activate, release.Yank} {
+	for _, c := range []release.Change{release.SetPrivate, release.SetPublic, release.MakeCurrent, release.Deprecate, release.Activate,
+		release.Restore, release.Yank} {
 		kind := map[release.Change]audit.Kind{release.SetPrivate: "release.private", release.SetPublic: "release.public",
 			release.MakeCurrent: "release.current", release.Deprecate: "release.deprecate", release.Activate: "release.activate",
-			release.Yank: "release.yank"}[c]
+			release.Restore: "release.restore", release.Yank: "release.yank"}[c]
+		if c == release.Restore { // spec 0042: retired as the retention pass does (its events are the pass's)
+			ch, err := st.GetChannel(ctx, "acme", "staging")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.InTx(ctx, "", func(tx *store.Tx) error {
+				r, err := tx.GetRelease(ctx, ch.ID, relID)
+				if err != nil {
+					return err
+				}
+				return tx.RetireRelease(ctx, &r, "system:release-retention")
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		en.expect("release.Service.Apply", do(func() error {
 			_, err := en.rel.Apply(rctx, admin, "acme", "staging", "tresor", relID, c, 0)
 			return err
@@ -611,6 +631,51 @@ func TestCoverage(t *testing.T) {
 	h, _, _ := extfile.HashBody(bytes.NewReader(body[:len(body)-extfile.SignatureSize]), 1<<30)
 	en.expect("release.Service.Block", do(func() error { _, _, err := en.rel.Block(rctx, admin, "acme", h.String(), "CVE"); return err }), "block.add")
 	en.expect("release.Service.Unblock", do(func() error { return en.rel.Unblock(rctx, admin, "acme", h.String()) }), "block.remove")
+	// spec 0042: retention: the tenant's default and a channel's own, a pin and its removal, the pass
+	// (retiring, then purging past a grace of 0), the line act, and the reads
+	for i, v := range []string{"1.0", "2.0", "3.0"} {
+		kinds := []audit.Kind{"release.add"}
+		if i == 0 {
+			kinds = append(kinds, "source.set")
+		}
+		en.expect("release.Service.Add", do(func() error {
+			_, _, err := en.rel.Add(rctx, admin, "acme", "prod", bytes.NewReader(ext(t, nil, "geo", v)), release.AddOptions{Name: "geo"})
+			return err
+		}), kinds...)
+	}
+	one, zero := 1, time.Duration(0)
+	en.expect("release.Service.SetTenantRetention", do(func() error {
+		_, err := en.rel.SetTenantRetention(rctx, admin, "acme", store.RetentionRule{Keep: &one}, "")
+		return err
+	}), "retention.set")
+	en.expect("release.Service.SetChannelRetention", do(func() error {
+		_, err := en.rel.SetChannelRetention(rctx, admin, "acme", "prod", store.RetentionRule{Grace: &zero}, "")
+		return err
+	}), "retention.set")
+	var pin store.RetentionPin
+	en.expect("release.Service.Pin", do(func() error {
+		var err error
+		pin, _, err = en.rel.Pin(rctx, admin, "acme", "prod", store.RetentionPin{Name: "geo", PackageVersion: "1.0", Reason: "LTS"})
+		return err
+	}), "retention.pin")
+	en.expect("release.Service.Unpin", do(func() error { return en.rel.Unpin(rctx, admin, "acme", "prod", pin.ID) }), "retention.unpin")
+	en.expect("release.Service.TenantRetention", do(func() error { _, err := en.rel.TenantRetention(rctx, admin, "acme"); return err }))
+	en.expect("release.Service.ChannelRetention", do(func() error { _, err := en.rel.ChannelRetention(rctx, admin, "acme", "prod"); return err }))
+	en.expect("release.Service.RetentionPlan", do(func() error { _, err := en.rel.RetentionPlan(rctx, admin, "acme", "prod", "", 0); return err }))
+	en.expect("release.Service.Pins", do(func() error { _, err := en.rel.Pins(rctx, admin, "acme", "prod", "", "", 10); return err }))
+	geoCh, _ := st.GetChannel(ctx, "acme", "prod")
+	en.expect("release.Service.RetainChannel", do(func() error { _, err := en.rel.RetainChannel(rctx, geoCh.ID, nil); return err }),
+		"release.retire", "release.retire", "release.retire", "retention.run") // acl 1.0, geo 1.0 and 2.0
+	en.expect("release.Service.RetainChannel", do(func() error { _, err := en.rel.RetainChannel(rctx, geoCh.ID, nil); return err }),
+		"release.purge", "release.purge", "release.purge", "retention.run") // past a grace of 0
+	en.expect("release.Service.SetChannelRetention", do(func() error {
+		_, err := en.rel.SetChannelRetention(rctx, admin, "acme", "prod", store.RetentionRule{Keep: new(int)}, "") // none: the pass does nothing
+		return err
+	}), "retention.set")
+	en.expect("release.Service.RetireLine", do(func() error {
+		_, err := en.rel.RetireLine(rctx, admin, "acme", "prod", "v2.0.0", "geo")
+		return err
+	}), "release.retire", "retention.line")
 	// key rotation: activate, re-sign (the serving key moves), retire the old one
 	en.ks.MinTrusted, en.ks.MinDemoted = 0, 0
 	en.expect("keys.Service.Activate", do(func() error { _, err := en.ks.Activate(rctx, admin, "acme", "prod", keyIDs[1], 0, false); return err }), "key.activate")

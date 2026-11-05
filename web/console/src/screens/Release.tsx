@@ -3,13 +3,14 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, ErrorBox, Loading, Mono, PageTitle, when } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
 import { ApiError, seg } from '../lib/http'
+import { restoreWords } from '../lib/retention'
 import { Reports } from './Reports'
 import type { Release as R } from './types'
 
-type Change = 'yank' | 'deprecate' | 'activate' | 'current' | 'public' | 'private' | 'purge'
+type Change = 'yank' | 'deprecate' | 'activate' | 'current' | 'public' | 'private' | 'restore' | 'purge'
 
 /** Which changes a release in a state allows (the API decides; this only offers them). */
-function changes(r: R): Change[] {
+export function changes(r: R): Change[] {
   switch (r.state) {
     case 'active':
       return ['current', r.visibility === 'public' ? 'private' : 'public', 'deprecate', 'yank']
@@ -17,6 +18,8 @@ function changes(r: R): Change[] {
       return ['activate', r.visibility === 'public' ? 'private' : 'public', 'yank']
     case 'yanked':
       return ['purge']
+    case 'retired': // spec 0042: back to its state before, or gone for good
+      return r.withdrawn ? ['yank', 'purge'] : ['restore', 'yank', 'purge']
   }
   return []
 }
@@ -28,6 +31,8 @@ const explain: Record<Change, string> = {
   current: 'The release becomes current: served on the flat path for its DuckDB versions and platform.',
   public: 'Anyone may install the release.',
   private: 'Only callers granted install may install the release.',
+  restore:
+    `The retired release returns to the state it had, keeping its sequence number: it is current again only if nothing newer is. ${restoreWords}`,
   purge:
     'The release and its signatures are deleted for good. Its slot stays taken: this version, platform and build can never be released again in this channel, with this body or another.',
 }
@@ -75,6 +80,10 @@ export function Release() {
     ['Changed', r.state_changed_at ? `${when(r.state_changed_at)}${r.state_changed_by ? ` by ${r.state_changed_by}` : ''}` : ''],
   ]
   if (r.shadows) facts.push(['Shadows', r.shadows])
+  if (r.state === 'retired' && r.retired_at) {
+    // spec 0042: served nowhere; the channel's retention purges it after its grace unless restored
+    facts.push(['Retired', `${when(r.retired_at)}, from ${r.retired_from ?? ''}`])
+  }
   return (
     <>
       <PageTitle

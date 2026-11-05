@@ -55,6 +55,7 @@ type Ceilings struct {
 	MaxHold               *time.Duration `yaml:"max_hold"`
 	PublisherKeyLifetime  *time.Duration `yaml:"publisher_key_lifetime"`
 	IssuerTokenLifetime   *time.Duration `yaml:"issuer_token_lifetime"`
+	RetentionGrace        *time.Duration `yaml:"retention_grace"` // spec 0042
 	// The ceilings on the server's own settings (SettingCeilings).
 	EventsRetention          *time.Duration `yaml:"events_retention"`
 	EventsRetentionWithSinks *time.Duration `yaml:"events_retention_with_sinks"`
@@ -150,7 +151,8 @@ func (c Ceilings) fields(out *store.Ceilings) ([]ceilingCount, []ceilingDuration
 			{"tenant_cells", &out.TenantCells, c.TenantCells}, {"discovered_names", &out.DiscoveredNames, c.DiscoveredNames}},
 		[]ceilingDuration{{"max_hold", &out.MaxHold, c.MaxHold},
 			{"publisher_key_lifetime", &out.PublisherKeyLifetime, c.PublisherKeyLifetime},
-			{"issuer_token_lifetime", &out.IssuerTokenLifetime, c.IssuerTokenLifetime}}
+			{"issuer_token_lifetime", &out.IssuerTokenLifetime, c.IssuerTokenLifetime},
+			{"retention_grace", &out.RetentionGrace, c.RetentionGrace}}
 }
 
 // Settings are the ceilings in force: each one set, else its default.

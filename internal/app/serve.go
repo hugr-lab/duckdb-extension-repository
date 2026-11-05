@@ -328,6 +328,10 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	placer := &release.Placer{Service: svc.Releases, Holder: host + "/" + store.NewID(), Log: log}
 	wg.Add(1)
 	go func() { defer wg.Done(); placer.Run(bg) }()
+	// the retention pass (spec 0042): the channels' rules retire old versions and purge them after a grace
+	retainer := &release.Retainer{Service: svc.Releases, Holder: host + "/" + store.NewID(), Interval: cfg.Retention.IntervalOrDefault(), Log: log}
+	wg.Add(1)
+	go func() { defer wg.Done(); retainer.Run(bg) }()
 	// deleting tenants (spec 0019): their rows in batches, then their tombstones
 	reaper := &tenantsvc.Reaper{Store: st, Holder: host + "/" + store.NewID(), Log: log}
 	wg.Add(4)

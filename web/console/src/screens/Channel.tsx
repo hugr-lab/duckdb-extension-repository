@@ -9,15 +9,18 @@ import { Events } from './Events'
 import { PromoteButton } from './Promote'
 import { Reports } from './Reports'
 import { Sources } from './Sources'
+import { Retention } from './Retention'
+import type { ChannelVersion } from '../lib/retention'
 import type { Release } from './types'
 
 // DuckDB's platforms (spec 0006's grammar names more; these are the ones DuckDB builds).
 export const platforms = ['linux_amd64', 'linux_arm64', 'linux_amd64_musl', 'linux_arm64_musl', 'osx_amd64', 'osx_arm64',
   'windows_amd64', 'windows_arm64', 'wasm_eh', 'wasm_mvp', 'wasm_threads']
 
-export const releaseStates: ['' | 'active' | 'deprecated' | 'yanked', string][] = [['', 'All'], ['active', 'Active'], ['deprecated', 'Deprecated'], ['yanked', 'Yanked']]
+export const releaseStates: ['' | 'active' | 'deprecated' | 'yanked' | 'retired', string][] = [['', 'All'], ['active', 'Active'], ['deprecated', 'Deprecated'],
+  ['yanked', 'Yanked'], ['retired', 'Retired']]
 
-type Tab = 'extensions' | 'releases' | 'sources' | 'keys' | 'events'
+type Tab = 'extensions' | 'releases' | 'sources' | 'retention' | 'keys' | 'events'
 
 /** The serving plane's kinds (audit.ServingKinds): a channel's administrators never read them (spec 0041). */
 export const servingKinds = ['install', 'extension.use', 'usage.receive']
@@ -29,10 +32,12 @@ export function Channel() {
   const { client, api, perms, base } = useTenant()
   const admin = perms.channelAdmin(c)
   const [picked, setTab] = useState<{ c: string; tab: Tab }>({ c, tab: 'extensions' })
-  const detail = useLoad(() => client.get<{ kind: string; duckdb_versions?: { duckdb_version: string }[] }>(`${api}/channels/${seg(c)}`), [api, c])
+  const detail = useLoad(() => client.get<{ kind: string; duckdb_versions?: ChannelVersion[] }>(`${api}/channels/${seg(c)}`), [api, c])
   const versions = detail.data?.data.duckdb_versions?.map((v) => v.duckdb_version) ?? []
   // spec 0041: a channel's administrator who does not audit the tenant reads its channel's events here
-  const tabs: [Tab, string][] = admin ? [['extensions', 'Extensions'], ['releases', 'All releases'], ['sources', 'Sources'], ['keys', 'Keys'],
+  // spec 0042: a signed channel's retention
+  const tabs: [Tab, string][] = admin ? [['extensions', 'Extensions'], ['releases', 'All releases'], ['sources', 'Sources'],
+    ...(detail.data?.data.kind === 'signed' ? [['retention', 'Retention'] as [Tab, string]] : []), ['keys', 'Keys'],
     ...(perms.canAudit ? [] : [['events', 'Events'] as [Tab, string]])] : [['extensions', 'Extensions']]
   // a tab chosen in another channel, or one this caller is not offered here, is not kept
   const tab = picked.c === c && tabs.some(([t]) => t === picked.tab) ? picked.tab : 'extensions'
@@ -44,7 +49,8 @@ export function Channel() {
       </PageTitle>
       {admin && detail.data && <ChannelVersions key={c} channel={c} versions={versions} onChanged={detail.reload} />}
       {tabs.length > 1 && <Chips label="channel sections" value={tab} options={tabs} onChange={(t) => setTab({ c, tab: t })} />}
-      {tab === 'events' ? <Events key={c} client={client} path={`${api}/events`} title="Events" subject={`channel:${c}`} hidden={servingKinds} /> : tab === 'keys' ? <Keys channel={c} /> : tab === 'releases' ? <Releases channel={c} /> : tab === 'sources' ? <Sources channel={c} kind={detail.data?.data.kind} /> : !admin ? <Mine channel={c} /> :
+      {tab === 'events' ? <Events key={c} client={client} path={`${api}/events`} title="Events" subject={`channel:${c}`} hidden={servingKinds} /> : tab === 'keys' ? <Keys channel={c} /> :
+        tab === 'retention' ? <Retention key={c} channel={c} versions={detail.data?.data.duckdb_versions ?? []} /> : tab === 'releases' ? <Releases channel={c} /> : tab === 'sources' ? <Sources channel={c} kind={detail.data?.data.kind} /> : !admin ? <Mine channel={c} /> :
         detail.error ? <ErrorBox error={detail.error} /> : !detail.data ? <Loading /> : <Extensions channel={c} versions={versions} />}
     </>
   )

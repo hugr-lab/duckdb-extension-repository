@@ -74,6 +74,8 @@ type Config struct {
 	Reserved Reserved `yaml:"reserved" kista:"fileonly"`
 	// Catalogue bounds what a source holds in a tenant's catalogue (spec 0033).
 	Catalogue Catalogue `yaml:"catalogue" kista:"fileonly"`
+	// Retention schedules the channels' version retention pass (spec 0042).
+	Retention Retention `yaml:"retention" kista:"fileonly"`
 	// Limits are a tenant's default limits (spec 0038), a backstop: a tenant's own values replace them.
 	Limits Limits `yaml:"limits" kista:"fileonly"`
 	// Source is where the configuration was read from: a file's path, env:NAME, or "" (the
@@ -729,6 +731,7 @@ func (c Config) Validate() error {
 	validateStatistics(bad, c)
 	validateTelemetry(bad, c)
 	validateGC(bad, c)
+	validateRetention(bad, c)
 	validateCatalogue(bad, c)
 	validateLimits(bad, c)
 	validateReserved(bad, c)

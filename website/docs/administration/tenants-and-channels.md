@@ -310,6 +310,67 @@ name becomes a **shadow**: the tenant's passthrough channels stop serving DuckDB
 autoloading never silently picks DuckDB's build over the replacement. List and remove shadows with
 `ka shadow list acme` and `ka shadow remove acme httpfs`. See [Upstreams](../upstreams.md).
 
+### Retention
+
+Without retention a channel keeps every release it ever made. A **retention rule** keeps the
+newest N versions of each name per DuckDB version the channel serves (a **line**), and the
+retention pass **retires** the others: a retired release is served nowhere, and an extension
+administrator can **restore** it until it is purged (the grace ends, unless a pin keeps it or
+purging is off; a restore holds until the next pass unless the rule or a pin keeps it): the pass
+purges it as an [administrator's purge](../storage.md) does (its slot stays taken). kista has **no retention by
+default**.
+
+```bash
+ka tenant retention acme -keep 3 -grace 720h        # the tenant's default, for its signed channels
+ka channel retention acme/prod -keep 10             # prod's own keep, the tenant's grace
+ka channel retention acme/nightly -keep none        # no retention in nightly, whatever the default
+ka channel retention acme/prod -keep default        # the tenant's again; prints the rule in force
+ka channel retention-plan acme/prod                 # what the next pass would retire and purge
+ka channel pin acme/prod tresor 1.4.2 -duckdb-version v1.5.2 -reason "LTS nodes run it"
+ka channel unpin acme/prod <pin-id>
+ka channel retire-line acme/prod v1.5.2             # what only that DuckDB version keeps
+ka retention run acme/prod -apply                   # the pass now (a dry run without -apply)
+ka release restore acme/prod <release-id>
+```
+
+- **What is kept** in each line: its **current** versions (what the plain path serves on each
+  platform, to callers who see private releases and to those who see public ones only, and each
+  other source's current, so a switch of the name's source finds it), its **newest N** versions,
+  ordered by when a version first arrived in the line (not by version number; a version's
+  platforms count once), and the versions **pinned** for it. `keep: N` counts the current versions
+  among the N. A release is retired only when no line it serves keeps it: a C API build serving
+  `v1.5.2` and `v2.0.0` stays while either line keeps its version. Yanked releases, withdrawn
+  entries' releases and releases serving no DuckDB version of the channel are not counted and never
+  touched by the pass.
+- **The rule's fields** are in force each on its own: a channel may set `keep` and take the tenant's
+  `grace`. A field with no value anywhere means no rule: the pass retires and purges nothing there.
+  The grace is at most `limits.ceilings.retention_grace` (default `2160h`), checked where it changes;
+  a lowered ceiling caps a stored grace. A passthrough channel takes no rule, pin or line act.
+- **Pins** keep a version in one DuckDB version, or in every one, whatever the rule: an active one
+  from retirement, a retired one from the pass's purge (not from an administrator's; a pin does not
+  restore it). A purge of a version's
+  last release in a pinned line removes the pin (a DuckDB version the channel no longer serves
+  counts by its own C API maxima). A **restore** holds only until the next pass: one the rule still
+  does not keep is retired again then unless a pin keeps it, so pin what must stay. Pinning is a
+  channel administrator's act: an extension administrator can restore a release but not pin it.
+- **The pass** runs every `retention.interval` (default `24h`, `0` for none) over the signed
+  channels of active tenants, one replica at a time per channel. Each retirement and purge is its
+  own short transaction, re-checked under the channel's lock: a release made current, pinned or
+  restored meanwhile is left. Purging waits for `gc.interval` to be set (as an administrator's
+  purge does).
+- **Retiring a line** (`retire-line`, or the console's "Retire the line…") retires every active or
+  deprecated release serving that DuckDB version that no other line keeps, current and pinned
+  versions included, and removes the line's pins. The version need not be served by the channel any
+  more: a C API build is matched by the version's own C API maxima.
+- **What a node sees.** A retired version installs from no path (the channel's missing answer, the
+  same bytes as for a version that never existed); the index answers its status `retired`. After the
+  grace, a purged version is gone from the index, as after a yank. A node that must keep finding a
+  fixed version needs a pin; the rule ignores downloads.
+- **Pushing versions out.** A publisher of a name in a channel with an `auto` rule can push older
+  versions out of the newest N by publishing new ones. The current versions are never retired, pins
+  keep what nodes need, the grace leaves time to restore, and each retirement writes
+  `release.retire` (see [Observability](../observability.md)).
+
 ## Binding keys to a signed channel
 
 A signed channel needs an active key before anything can be released into it. A key belongs to

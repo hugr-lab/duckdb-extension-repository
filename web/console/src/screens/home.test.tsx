@@ -33,7 +33,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const now = Date.parse('2026-11-05T10:00:00Z')
+const now = Date.now()
 const hours = (h: number) => new Date(now + h * 3600_000).toISOString()
 
 const entry = (source: string, name: string, more: Partial<CatalogueEntry> = {}): CatalogueEntry =>

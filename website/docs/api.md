@@ -143,7 +143,8 @@ Errors are `application/problem+json`:
 | `conflict` | `409`: a duplicate, a refused state change, the last-admin rule |
 | `source` | `409`: another source holds the extension's name in the channel; the detail names it ([spec 0031](upstreams.md#a-names-source-in-a-channel)) |
 | `held` | `409`: a held entry placed or promoted without `early`, or a publisher with a hold on a channel's publication route ([holds](upstreams.md#holds)) |
-| `withdrawn` | `409`: a [withdrawn](upstreams.md#withdrawals) build placed, its release made active, current or public, its body published again, or the build purged |
+| `withdrawn` | `409`: a [withdrawn](upstreams.md#withdrawals) build placed, its release made active, current, public or restored, its body published again, or the build purged |
+| `retired` | `409`: a publication, promotion or placement into the slot of a [retired](administration/tenants-and-channels.md#retention) release, of its body or another (spec 0042); restore it instead |
 | `stale` | `409`: a signed metadata write older than the entry's last one, or of its second with another body ([spec 0036](publishing.md#an-entrys-icon-and-summary)); read the metadata again |
 | `publisher-taken` | `409`: a distribution admin's new [distributor's publisher](publishing.md#distributors-publishers) whose name a tenant's own publisher holds (spec 0037); it says nothing else about that publisher |
 | `not-computed` | `400`: a [distributor's statistics](observability.md#a-distributors-statistics) query before any week is computed, or with `from` after the newest week computed (spec 0036); the same query is answered once its weeks are |
@@ -366,7 +367,7 @@ names](publishing.md#reserved-names); `kista duckdb core-extensions <tag>` print
 | `GET tenants/{t}/channels/{c}` | public: kind, DuckDB versions and C API maxima, signing keys |
 | `GET tenants/{t}/channels/{c}/extensions[?duckdb_version=&platform=&prefix=&cursor=&limit=]` | public, in the caller's view |
 | `GET tenants/{t}/channels/{c}/extensions/{name}[?duckdb_version=&platform=]` | public, in the caller's view; to the name's administrators also `purged`, the releases the channel purged of its selected source, `[{"version", "platform", "slot", "duckdb_version"}]` (the slot as the release had it; `duckdb_version` the DuckDB version the slot is, `""` for a C API build's `capi:<major>`), filtered as the rows are (a C API build's by its platform) (spec 0043) |
-| `GET tenants/{t}/channels/{c}/extensions/{name}/versions/{v}?duckdb_version=&platform=` | public: `available`, `deprecated`, `yanked`, `withdrawn` (only a [withdrawn](upstreams.md#withdrawals) release would serve it: a `withdrawn` list of its rows) or `missing`. An index row of a withdrawn build carries `"withdrawn": true` and `withdrawn_reason`, its DuckDB versions in `would_serve` (spec 0039) |
+| `GET tenants/{t}/channels/{c}/extensions/{name}/versions/{v}?duckdb_version=&platform=` | public: `available`, `deprecated`, `yanked`, `withdrawn` (only a [withdrawn](upstreams.md#withdrawals) release would serve it: a `withdrawn` list of its rows), `retired` (only a [retired](administration/tenants-and-channels.md#retention) release would serve it: gone from this channel, not "do not run it"; spec 0042) or `missing`. A retired release's row has `state: "retired"` and its DuckDB versions in `would_serve`, as a yanked one's. An index row of a withdrawn build carries `"withdrawn": true` and `withdrawn_reason`, its DuckDB versions in `would_serve` (spec 0039) |
 | `GET tenants/{t}/channels/{c}/extensions/{name}/attachments[/{id}]` | public, in the caller's view |
 | `GET tenants/{t}/attestation-keys` | public |
 
@@ -400,13 +401,13 @@ See [Tenants and channels](administration/tenants-and-channels.md) and
 
 | Route | Who |
 | --- | --- |
-| `GET tenants/{t}/channels/{c}/releases[?state=&prefix=&cursor=&limit=]` | channel admin |
+| `GET tenants/{t}/channels/{c}/releases[?state=&prefix=&cursor=&limit=]` | channel admin; `state` is `active`, `deprecated`, `yanked` or `retired`; a retired release carries `retired_from` and `retired_at` |
 | `GET tenants/{t}/channels/{c}/extensions/{ext}/releases[/{id}]` | extension admin, its publishers |
 | `POST …/extensions/{ext}/releases?version=&platform=[&visibility=&current=]` | `publish` on the extension (raw file body) |
 | `POST …/extensions/{ext}/releases/promote` | `promote` on the extension |
 | `POST …/extensions/{ext}/releases/place` | `promote` on the extension; a name without a rule in the channel, or `"early": true` (a held version), channel admin ([placing from the catalogue](publishing.md#placing-from-the-catalogue)); `source` as answers name it, and for a server administrator also `publisher-id:<id>` of a live distributor's publisher, as its catalogue names one |
-| `POST …/extensions/{ext}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private` | extension admin |
-| `DELETE …/extensions/{ext}/releases/{id}` | extension admin: purge a yanked release |
+| `POST …/extensions/{ext}/releases/{id}/yank`, `/deprecate`, `/activate`, `/current`, `/public`, `/private`, `/restore` | extension admin; `restore` returns a retired release to its state before (spec 0042), until the next retention pass unless the rule or a pin keeps it: pin what must stay (channel admin) |
+| `DELETE …/extensions/{ext}/releases/{id}` | extension admin: purge a yanked or retired release |
 | `GET, POST tenants/{t}/blocks`; `GET, DELETE tenants/{t}/blocks/{hash}` | tenant admin; the reads answer each block with `builds` (spec 0041), what the body is in the tenant's catalogue: `[{"source", "name", "version", "platform", "slot", "package_type" (omitted for the default)}]`, any state, `[]` when the tenant holds nothing of it |
 | `GET, POST tenants/{t}/publishers`; `GET, DELETE …/publishers/{name}` | tenant admin, an auditor (`GET`, spec 0040: every publisher); `POST {"name", "distributor"}` creates a [distributor's publisher](publishing.md#distributors-publishers): server, a distribution admin (`404` to a tenant admin). A distribution admin (spec 0037) lists and reads distributors' publishers only (a tenant's own one is left out of a list, and reading it is `404`), creates only with `distributor` (`404` without), and gets `409` `publisher-taken` for a name a tenant's own publisher holds; never `DELETE`. A tenant holds at most 200 publishers of its own and, counted apart, 10 distributors' publishers by default (`limits.ceilings`). Every publisher answer carries its `id` (spec 0037) |
 | `GET, POST …/publishers/{name}/keys`; `GET, DELETE …/keys/{id}` | tenant admin, an auditor (`GET`); a distribution admin for a distributor's publisher only (spec 0037: the tenant's own publishers, marked or not, answer it the `404` of a missing publisher); a key is unique in the tenant: one another publisher holds is `409`, recorded for a distribution admin as an `authz.refused` (`reason` `key-taken`) when a tenant's own publisher holds it; `DELETE …?purge_held=true` purges the builds the key published that are still held, and answers what it purged and kept, revoked ([holds](publishing.md#holds-and-early-placement)) |
@@ -442,6 +443,28 @@ A decision answers `{"id", "kind", "channel" (a channel's), "source", "name", "v
 decision's answer. An id of another tenant, or outside the route's channel, is `404`. Writes are
 `decision.set` (with `before` when it replaced one) and `decision.clear` events. A decision is
 advisory: it changes no placement, rule, follow or answer that serves an extension.
+
+### Retention
+
+Spec 0042: [version retention](administration/tenants-and-channels.md#retention) in signed channels
+(a passthrough channel answers `400`).
+
+| Route | Who |
+| --- | --- |
+| `GET, PUT tenants/{t}/retention` | tenant admin (`GET` also an auditor): the tenant's default, `{"keep": 3 \| null, "grace": "720h" \| null, "etag"}` (null: not set); `PUT` the whole rule, a field left out unset (`{}` clears it; `"keep": "none"` is leaving it out) |
+| `GET, PUT tenants/{t}/channels/{c}/retention` | channel admin (`GET` also an auditor): the channel's own (`keep` a number, `"none"` for no retention there, null for the tenant's; `grace` null for the tenant's) with `in_force` (`{"keep": {"value", "from": "channel" \| "tenant"} \| null, "grace": {"value", "from", "capped"?} \| null, "missing": ["keep" \| "grace"]}`: a field with no value anywhere is no rule; a passthrough channel's is `{"keep": null, "grace": null, "missing": [], "passthrough": true}`), `checked_at`, `next_run` and `etag`; `PUT` the whole rule, `{}` the tenant's |
+| `GET tenants/{t}/channels/{c}/retention/plan[?cursor=&limit=]` | channel admin, an auditor: what the next pass would do, paged by (name, version): `retire` (`[{"source", "name", "version", "lines", "platforms", "releases", "bytes", "kept": {"<line>": [the versions it keeps]}, "kept_by": [the version's releases another line keeps, with their `lines`]}]`), `purge` (the retired releases past their grace, `pinned` true for those a pin keeps) and `retired` (in the grace, each with `purge_at`), `in_force`, `next_run` and `purge_off` (`gc.interval` is `0`: nothing is purged). Each release gives its `bytes` and whether a purge would leave its body `shared`: `shared_by` names the holders among the channels the caller administers and `catalogue` for a landed build, `others` counts the rest |
+| `GET, POST tenants/{t}/channels/{c}/retention/pins`; `DELETE …/pins/{id}` | channel admin (`GET` also an auditor, `?name=&cursor=&limit=`): `POST {"name", "version", "duckdb_version"?, "reason"}` (no `duckdb_version`: every line; a reason of 1 to 400 bytes of printable text; the version must have a release in the channel and the line be one a release of it serves) answers the pin `201`, or `200` with the one already there; a pin is `{"id", "name", "version", "duckdb_version"?, "reason", "pinned_by", "pinned_at"}`; another channel's id is `404` |
+| `POST tenants/{t}/channels/{c}/retention/lines {"duckdb_version", "name"?}` | channel admin: retire a DuckDB version's line (the version need not be served any more); answers `{"duckdb_version", "retired": [{"id", "name", "version", "platform"}], "kept": [... with the `lines` keeping each], "withdrawn", "pins_removed"}` |
+
+A rule's `GET` and `PUT` answer the stored rule's `ETag`, the body's `etag` the same: what a
+`PUT`'s optional `If-Match` takes (`412` when stale). As for a tenant's limits, a `GET` never
+answers `304`: what is in force (the tenant's default, the last pass) changes without the stored
+rule. A `PUT` refuses `keep` outside 1 to
+2147483647 and a `grace` that is not whole seconds, or above `limits.ceilings.retention_grace`
+where it changes (an unchanged one sent again passes), and writes
+`retention.set` only when something changes. Pins write `retention.pin` and `retention.unpin`, the
+line act `retention.line` and a `release.retire` per (name, version).
 
 ### The channels' order
 

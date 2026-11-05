@@ -423,9 +423,12 @@ While `gc.interval` is `0`, `-apply` also needs `-force`, which vouches that eve
 version. A dry run counts one pass only, so it underestimates what two passes delete (a stream is
 deleted a grace after its record).
 
-### Purging yanked releases
+### Purging yanked and retired releases
 
-Yanked releases are kept until an administrator purges one. A purge deletes the release and its
+Yanked releases are kept until an administrator purges one; a retired release is purged by its
+channel's [retention](administration/tenants-and-channels.md#retention) pass once its grace ends,
+when no pin keeps it, a rule is in force there and `gc.interval` is set (or by an administrator
+before, a pin or not). A purge deletes the release and its
 signatures; its slot (channel, source, name, version, platform, and the DuckDB version or C API
 major) stays taken for good, so its source can never release another body there (a slot purged
 before schema 34 stays taken for every source). The Build loses its reference and the collector removes it, then the body,
@@ -437,9 +440,11 @@ kista admin -config kista.yaml release purge acme/prod <release-id>
 ```
 
 Over the API: `DELETE /api/v1/tenants/{t}/channels/{c}/extensions/{name}/releases/{id}` with
-`If-Match`, for an administrator of the channel or the extension (`204`). Only a yanked release can
-be purged (`409` otherwise). While `gc.interval` is `0` a purge is refused (`409`), and the CLI needs
-`-force`. Each purge is the event `release.purge`. See [Publishing](publishing.md).
+`If-Match`, for an administrator of the channel or the extension (`204`). Only a yanked or retired
+release can be purged (`409` otherwise). While `gc.interval` is `0` a purge is refused (`409`), the
+CLI needs `-force`, and the retention pass purges nothing. Each purge is the event `release.purge`
+(with `reason` `retention` for the pass's). A purge of a version's last release in a line a pin keeps
+it in removes the pin. See [Publishing](publishing.md).
 
 ## Attachments
 

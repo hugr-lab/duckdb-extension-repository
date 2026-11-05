@@ -20,6 +20,10 @@ import (
 
 // channelErr maps the key and release services' refusals (409) before the common mapping.
 func (h *Handler) channelErr(w http.ResponseWriter, err error, bodyRef bool) {
+	if errors.Is(err, release.ErrRetired) { // spec 0042: an insert into a retired release's slot
+		problem(w, http.StatusConflict, typeRetired, publicRefusal(err))
+		return
+	}
 	for _, e := range []error{keys.ErrState, keys.ErrTooSoon, keys.ErrNoKeys, release.ErrState, release.ErrSlot} {
 		if errors.Is(err, e) {
 			problem(w, http.StatusConflict, typeConflict, publicRefusal(err))
@@ -373,8 +377,11 @@ type releaseJSON struct {
 	Source   string `json:"source"`
 	Selected bool   `json:"selected"`
 	// Withdrawn: its build was withdrawn (spec 0033 phase B): served nowhere, never made active again
-	Withdrawn bool   `json:"withdrawn,omitempty"`
-	ETag      string `json:"etag"`
+	Withdrawn bool `json:"withdrawn,omitempty"`
+	// RetiredFrom and RetiredAt: a retired release's state before and when it was retired (spec 0042)
+	RetiredFrom string `json:"retired_from,omitempty"`
+	RetiredAt   string `json:"retired_at,omitempty"`
+	ETag        string `json:"etag"`
 }
 
 // sourcesOf is what release answers show of sources (spec 0031): their labels and the channel's
@@ -427,6 +434,9 @@ func releaseView(packageType string, x store.Candidate, c caller, admin bool, pr
 		CreatedAt: timeOf(x.CreatedAt), StateChangedAt: timeOf(x.StateChangedAt), Origin: x.Origin,
 		Provenance: provenanceView(x.Provenance, c, admin), Shadows: release.Shadows(packageType, x, provided), ETag: versionTag(x.Version),
 		Withdrawn: x.Withdrawn}
+	if x.State == store.ReleaseRetired {
+		o.RetiredFrom, o.RetiredAt = x.RetiredFrom, timeOf(x.RetiredAt)
+	}
 	if src != nil {
 		o.Source, o.Selected = store.Label(src.labels, x.Source), src.selected[x.Name].Source == x.Source
 	}
@@ -470,8 +480,8 @@ func (h *Handler) listReleases(w http.ResponseWriter, r *http.Request, c caller,
 		return
 	}
 	state := r.URL.Query().Get("state")
-	if state != "" && state != store.ReleaseActive && state != store.ReleaseDeprecated && state != store.ReleaseYanked {
-		problem(w, http.StatusBadRequest, typeInvalid, "state is active, deprecated or yanked")
+	if state != "" && state != store.ReleaseActive && state != store.ReleaseDeprecated && state != store.ReleaseYanked && state != store.ReleaseRetired {
+		problem(w, http.StatusBadRequest, typeInvalid, "state is active, deprecated, yanked or retired")
 		return
 	}
 	prefix, ok := namePrefix(w, r)
@@ -557,7 +567,7 @@ func (h *Handler) purgeRelease(w http.ResponseWriter, r *http.Request, c caller,
 }
 
 var changes = map[string]release.Change{"yank": release.Yank, "deprecate": release.Deprecate, "activate": release.Activate,
-	"current": release.MakeCurrent, "public": release.SetPublic, "private": release.SetPrivate}
+	"current": release.MakeCurrent, "public": release.SetPublic, "private": release.SetPrivate, "restore": release.Restore}
 
 func (h *Handler) changeRelease(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	ch, ok := changes[p["change"]]

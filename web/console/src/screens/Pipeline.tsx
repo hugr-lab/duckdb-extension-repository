@@ -11,14 +11,15 @@ import { SourceLicence, modeWords, removedSource } from './Catalogue'
 import { type Promoting, PromoteDialog, promote } from './Promote'
 import { Reports } from './Reports'
 import { holdWords } from './Sources'
+import { type ChannelRetention, type InForce, retentionWords } from '../lib/retention'
 
 // The pipeline (spec 0043, the owner's mockup Catalogue-Pipeline): the channels' order drawn as
-// stages, each with what it follows, its rules by mode, its DuckDB versions and hold, and its names;
-// then one matrix per chain, a row per name and a column per stage, so a name's progress reads in
-// one row: its rule in each stage, its current version, and what waits from the previous stage, with
-// the Report & licence panel before Promote of the previous stage's current, and Skip. A tenant
-// administrator's view, from the home's reads and each stage's index of a name. The order is for
-// display only: a promotion names its source each time, and the API decides.
+// stages, each with what it follows, its rules by mode, its DuckDB versions, hold and retention (spec
+// 0042), and its names; then one matrix per chain, a row per name and a column per stage, so a
+// name's progress reads in one row: its rule in each stage, its current version, and what waits from
+// the previous stage, with the Report & licence panel before Promote of the previous stage's current,
+// and Skip. A tenant administrator's view, from the home's reads and each stage's index of a name.
+// The order is for display only: a promotion names its source each time, and the API decides.
 
 /** A name's wait in a stage, from its previous stage: the cells, before the decisions. */
 interface Waiting {
@@ -47,6 +48,11 @@ export async function readPipeline(client: Client, api: string, reads: HomeReads
     const d = await client.get<{ duckdb_versions?: { duckdb_version: string }[] }>(`${api}/channels/${seg(c)}`)
     return [c, (d.data.duckdb_versions ?? []).map((v) => v.duckdb_version)] as const
   })))
+  // spec 0042: each stage's retention in force (null: not read)
+  const retention = new Map(await Promise.all(names.map(async (c) => {
+    const r = await client.get<ChannelRetention>(`${api}/channels/${seg(c)}/retention`).then((x) => x.data.in_force, () => null)
+    return [c, r] as const
+  })))
   const index = new Map<string, ReturnType<typeof indexOf>>()
   const rows = (c: string, n: string) => {
     const k = waitKey(c, n)
@@ -66,7 +72,7 @@ export async function readPipeline(client: Client, api: string, reads: HomeReads
       if (cells.length > 0) waits.set(waitKey(stage, r.name), { from, source: r.source, cells, prev: prev.releases })
     }))
   }))
-  return { versions, waits }
+  return { versions, waits, retention }
 }
 
 /** What waits in a stage, less the skips: name → its wait. */
@@ -112,7 +118,7 @@ export function Pipeline({ onEdit }: { onEdit: () => void }) {
               <Fragment key={c}>
                 {i > 0 && <span aria-hidden className="self-center text-ink-muted">→</span>}
                 <StageCard ch={reads.channels.find((x) => x.name === c)!} versions={load.data?.versions.get(c)} first={i === 0}
-                  waits={waitsOf(c)} failed={load.error != null} />
+                  waits={waitsOf(c)} failed={load.error != null} retention={load.data?.retention.get(c)} />
               </Fragment>
             ))}
           </div>
@@ -133,9 +139,11 @@ function waitWords(stage: string, waits: Waits | undefined, failed: boolean) {
   return n === 0 ? `Nothing waits for ${stage}` : n === 1 ? `1 version waits for ${stage}` : `${n} versions wait for ${stage}`
 }
 
-/** A stage's card: its follows, its rules by mode, its DuckDB versions, its hold and its names, and
- * (after the first stage) what waits for it. */
-function StageCard({ ch, versions, first, waits, failed }: { ch: ChannelReads; versions?: string[]; first: boolean; waits?: Waits; failed: boolean }) {
+/** A stage's card: its follows, its rules by mode, its DuckDB versions, its hold and its names, its
+ * retention in force (spec 0042), and (after the first stage) what waits for it. */
+function StageCard({ ch, versions, first, waits, failed, retention }: {
+  ch: ChannelReads; versions?: string[]; first: boolean; waits?: Waits; failed: boolean; retention?: InForce | null
+}) {
   const { base } = useTenant()
   const rules = ch.sources.filter((r) => r.source)
   return (
@@ -145,6 +153,7 @@ function StageCard({ ch, versions, first, waits, failed }: { ch: ChannelReads; v
       <span>rules: {rulesByMode(ch)}</span>
       <span>DuckDB: {versions === undefined ? '…' : versions.length === 0 ? 'none' : <Mono>{versions.join(' ')}</Mono>}</span>
       <span>hold {holdWords(ch.hold)} · {rules.length} {rules.length === 1 ? 'name' : 'names'}</span>
+      <span aria-label="retention">retention: {retention === null ? 'not read' : retentionWords(retention)}</span>
       {!first && (
         <span className={waits?.size ? 'chip self-start bg-warning-soft text-warning' : failed ? 'text-danger' : 'text-ink-muted'}>
           {waitWords(ch.name, waits, failed)}

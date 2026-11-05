@@ -285,8 +285,9 @@ var reapSteps = []reapStep{
 	{"upstream_platforms", ofUpstreams, false}, {"upstream_keys", ofUpstreams, false}, {"upstreams", ofTenant, false},
 	{"bundle_upload_chunks", "upload_id IN (SELECT id FROM bundle_uploads WHERE tenant_id = ?)", false}, {"bundle_uploads", ofTenant, false},
 	{"bundle_imports", ofTenant, false}, {"shadows", ofTenant, false}, {"blocks", ofTenant, false},
-	{"decisions", ofTenant, false},      // spec 0041: before the channels it references
-	{"channel_next", ofChannels, false}, // spec 0043: the channels' order, both its columns the tenant's channels
+	{"decisions", ofTenant, false},        // spec 0041: before the channels it references
+	{"channel_next", ofChannels, false},   // spec 0043: the channels' order, both its columns the tenant's channels
+	{"retention_pins", ofChannels, false}, // spec 0042: a channel's pins, before channels
 	{"channel_sources", ofChannels, false}, {"channel_follows", ofChannels, false}, {"follow_skips", ofChannels, false},
 	// by indexed columns: release_signatures by key, releases by channel
 	{"release_signatures", "key_id IN (SELECT id FROM channel_keys WHERE tenant_id = ?)", false}, {"releases", ofChannels, false},

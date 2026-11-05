@@ -107,6 +107,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0050_event_pruned` | 50 | an older replica's pruner would delete events without recording `pruned_through` |
 | `0051_decisions` | 51 | the decisions table references channels: an older replica's tenant reaper does not know it, and would fail deleting a tenant's channels |
 | `0052_channel_next` | 52 | the channels' order references channels: an older replica's tenant reaper does not know it, and would fail deleting a tenant's channels |
+| `0053_retention` | 53 | an older replica does not know the `retired` release state (it would refuse or misread it), and its tenant reaper does not know `retention_pins`, which references channels |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -177,7 +178,23 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 52)
+## Upgrading to the next release (schema 53)
+
+### Version retention in channels (spec 0042)
+
+- **Migration `0053_retention`** widens the releases' state to `retired` (SQLite rebuilds the
+  `releases` table, keeping its rows, signatures and indexes; PostgreSQL and SQL Server replace the
+  state's check), adds `retired_from` and `retired_at`, the rule's columns on tenants and channels
+  (`retention_keep`, `retention_grace_seconds`, and a channel's `retention_checked_at`), and the
+  table `retention_pins`. It raises `min_reader` to 53: stop every older replica first.
+- **What changes.** Nothing by default: kista has no retention until a tenant administrator sets a
+  default or a channel administrator a channel's own rule. New: the release state `retired` (served
+  nowhere, the index's status `retired`, `?state=retired`, `restore`), `409 retired` for an insert
+  into a retired release's slot and the cell outcome `retired`, the retention routes, the events
+  `release.retire`, `release.restore`, `retention.set`, `retention.pin`, `retention.unpin`,
+  `retention.line`, `retention.run` (and `release.purge`'s `reason`), the CLI's retention commands,
+  the configuration's `retention.interval` (the pass, `24h` by default) and
+  `limits.ceilings.retention_grace` (`2160h`), and the console's Retention tab.
 
 ### The channels' order (spec 0043)
 

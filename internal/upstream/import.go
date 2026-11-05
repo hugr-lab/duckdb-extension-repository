@@ -751,6 +751,8 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 		rec.Outcome = store.CellLanded
 	case got.Existed && got.Release.State == store.ReleaseYanked:
 		rec.Outcome = store.CellYanked
+	case got.Existed && got.Release.State == store.ReleaseRetired: // spec 0042: left as it is
+		rec.Outcome = store.CellRetired
 	case got.Existed:
 		rec.Outcome = store.CellUnchanged
 	case dryRun:
@@ -759,6 +761,7 @@ func (s *Service) importCell(ctx context.Context, a authz.Actor, t store.Tenant,
 		rec.Outcome = store.CellReleased
 	}
 	if rec.Outcome != store.CellReleased && rec.Outcome != store.CellUnchanged && rec.Outcome != would && rec.Outcome != store.CellYanked &&
+		rec.Outcome != store.CellRetired &&
 		rec.Outcome != store.CellLanded && rec.Outcome != store.CellHeld {
 		s.Log.Info("upstream: a bundle cell was not released", "tenant", t.Name, "upstream", u.Name, "duckdb_version", c.DuckDBVersion,
 			"platform", c.Platform, "name", c.Name, "outcome", rec.Outcome, "reason", rec.Detail)

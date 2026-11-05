@@ -52,6 +52,7 @@ const badgeTone: Record<string, string> = {
   active: 'bg-success-soft text-success',
   deprecated: 'bg-warning-soft text-warning',
   yanked: 'bg-danger-soft text-danger',
+  retired: 'bg-surface-soft text-ink-muted', // spec 0042: gone from the channel, restorable in the grace
   suspended: 'bg-danger-soft text-danger',
   ok: 'bg-success-soft text-success',
   refused: 'bg-warning-soft text-warning',

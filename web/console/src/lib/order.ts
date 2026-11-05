@@ -43,7 +43,7 @@ export function orderBody(read: OrderEdge[], listed: string[], next: Record<stri
 
 /** A release of a name in a channel as the channel's index answers it (GET …/channels/{c}/extensions/{name}):
  * its build's ABI and DuckDB version or C API, the DuckDB versions its versioned path serves, those
- * whose flat path it is current for, and for a yanked or withdrawn one those it would serve. */
+ * whose flat path it is current for, and for a yanked, retired (spec 0042) or withdrawn one those it would serve. */
 export interface IndexRelease {
   version: string
   platform: string
@@ -88,7 +88,7 @@ export interface CellWait {
  * - of a version S does not hold (an active release, not withdrawn, on any cell): the pass
  *   completes a held version by itself;
  * - in a slot (its version, platform and slot) S never had, purged slots included;
- * - newer than every version S has or had, in any state (active, deprecated, yanked, withdrawn,
+ * - newer than every version S has or had, in any state (active, deprecated, yanked, retired, withdrawn,
  *   and the releases it purged), on every cell of S its build serves (a C API build's are several),
  *   as the pass's newer() requires.
  * S with no release of the name has had nothing anywhere. */

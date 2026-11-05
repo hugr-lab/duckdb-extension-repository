@@ -39,11 +39,14 @@ const (
 	CellReleased  = "released"
 	CellUnchanged = "unchanged"
 	CellYanked    = "yanked"
-	CellConflict  = "conflict"
-	CellMissing   = "missing"
-	CellRejected  = "rejected"
-	CellBlocked   = "blocked"
-	CellShadowed  = "shadowed"
+	// CellRetired: the cell's release is retired in the channel (spec 0042): the run leaves it, as a
+	// yanked one; an administrator restores it.
+	CellRetired  = "retired"
+	CellConflict = "conflict"
+	CellMissing  = "missing"
+	CellRejected = "rejected"
+	CellBlocked  = "blocked"
+	CellShadowed = "shadowed"
 	// CellOtherSource: another source holds the name in the channel (spec 0031), decided before the
 	// download and asked again each run.
 	CellOtherSource = "other_source"
