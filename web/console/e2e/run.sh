@@ -107,6 +107,12 @@ openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/n.
 "$work/fixture" "$work/relay10.duckdb_extension" 1.0 o relay
 "$work/fixture" "$work/beacon10.duckdb_extension" 1.0 p beacon
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/st.pem" 2>/dev/null  # staging's
+# spec 0042: dial 1.0, 1.1 and 1.2 in vintage (after the other channels by name), whose retention
+# the Retention tab's test changes
+"$work/fixture" "$work/dial10.duckdb_extension" 1.0 q dial
+"$work/fixture" "$work/dial11.duckdb_extension" 1.1 r dial
+"$work/fixture" "$work/dial12.duckdb_extension" 1.2 s dial
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$work/keys/vi.pem" 2>/dev/null  # vintage's
 # K4: a build a server administrator adds to the catalogue from the console, its footer read there
 "$work/fixture" "$work/k4_tool.duckdb_extension" 0.4 j k4_tool
 # spec 0036: geo_tools' icon (its distributor's publisher's), and one tom gives maps in the console
@@ -222,6 +228,13 @@ k release place acme/nightly -name relay -source tenant -version 1.0
 k release place acme/nightly -name beacon -source tenant -version 1.0
 k channel source acme/staging relay -set tenant -mode manual
 k channel source acme/staging beacon -set tenant -mode manual
+# spec 0042: vintage keeps 2 versions for 720h; the pass run now retires dial 1.0, in its grace
+k channel create acme/vintage -kind signed
+k channel versions acme/vintage -add v2.0.0
+k key add acme/vintage -signer file:vi.pem -active
+for v in 10 11 12; do k release add acme/vintage "$work/dial$v.duckdb_extension" -name dial; done
+k channel retention acme/vintage -keep 2 -grace 720h
+k retention run acme/vintage -apply
 serve() {
 	"$work/kista" serve -config "$work/kista.yaml" >>"$work/kista.log" 2>&1 &
 	serve_pid=$!

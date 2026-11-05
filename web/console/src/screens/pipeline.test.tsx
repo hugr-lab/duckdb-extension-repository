@@ -198,6 +198,13 @@ function api(f: Fake = {}) {
     if (c.path === '/channel-order') return json({ order }, 200, `"o${etag}"`)
     if (c.path === '/channels') return json({ channels: channels.map((x) => ({ name: x.name, kind: 'signed' })) })
     if (c.path === '/decisions') return json({ decisions: f.decisions ?? [] })
+    // spec 0042: staging keeps 3 (the tenant's) with its own grace; the others have no rule
+    const rt = /^\/channels\/([^/]+)\/retention$/.exec(c.path)
+    if (rt) {
+      return json({ channel: rt[1], keep: null, grace: rt[1] === 'staging' ? '720h' : null, checked_at: null, next_run: null,
+        in_force: rt[1] === 'staging' ? { keep: { value: 3, from: 'tenant' }, grace: { value: '720h', from: 'channel' }, missing: [] }
+          : { keep: null, grace: null, missing: ['keep', 'grace'] } })
+    }
     let m = /^\/channels\/([^/]+)\/(sources|follows|hold)$/.exec(c.path)
     const ch = channels.find((x) => x.name === m?.[1])
     if (m && ch) return json(m[2] === 'sources' ? { sources: ch.sources } : m[2] === 'follows' ? { follows: ch.follows } : { hold: ch.hold })
@@ -246,6 +253,9 @@ describe('the pipeline', () => {
     expect(stages.map((s) => s.getAttribute('aria-label'))).toEqual(['stage nightly', 'stage staging', 'stage prod'])
     expect(within(stages[1]).getByText(/rules: 1 as it lands, 1 auto, 1 manual/)).toBeTruthy()
     expect(within(stages[1]).getByText(/hold 24h/)).toBeTruthy()
+    // spec 0042: each stage's retention in force
+    expect(await within(stages[1]).findByText('retention: keep 3 · grace 720h')).toBeTruthy()
+    expect(within(stages[2]).getByText('retention: no retention (no keep and no grace set)')).toBeTruthy()
     expect(await within(stages[1]).findByText('1 version waits for staging')).toBeTruthy()
     expect(within(stages[2]).getByText('Nothing waits for prod')).toBeTruthy()
     // one row per name, a column per stage: relay's progress in one row
