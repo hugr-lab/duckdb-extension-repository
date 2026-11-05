@@ -3,6 +3,7 @@ package upstream_test
 import (
 	"testing"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/upstream"
 )
@@ -111,6 +112,34 @@ func TestImportRetired(t *testing.T) {
 		}
 		if rs := en.releases(t, "x"); len(rs) != 1 || rs[0].State != store.ReleaseRetired {
 			t.Fatalf("the import changed the retired release: %+v", rs)
+		}
+	})
+}
+
+// Spec 0042: a lazy mirror's fetch of an asked cell whose release is retired records the outcome
+// retired and leaves it, as a run does.
+func TestLazyFetchRetired(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		u := lazySetup(t, en)
+		miss := release.Miss{TenantID: u.TenantID, UpstreamID: u.ID, DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "b",
+			Principal: "user:alice", Lazy: true}
+		p := en.puller()
+		p.Offer(miss)
+		p.Drain(ctx)
+		rs := en.releases(t, "b")
+		if len(rs) != 1 {
+			t.Fatalf("b's releases: %+v", rs)
+		}
+		en.retire(t, rs[0].ID)
+		en.repo.touch("v2.0.0", "linux_amd64", "b")
+		p = en.puller()
+		p.Offer(miss)
+		p.Drain(ctx)
+		if c := en.cellOf(t, "acme-repo", "b", "v2.0.0"); c.Outcome != store.CellRetired {
+			t.Fatalf("the cell: %+v", c)
+		}
+		if rs := en.releases(t, "b"); len(rs) != 1 || rs[0].State != store.ReleaseRetired {
+			t.Fatalf("the fetch changed the retired release: %+v", rs)
 		}
 	})
 }
