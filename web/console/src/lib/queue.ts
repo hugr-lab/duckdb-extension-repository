@@ -3,6 +3,7 @@
 // the decisions kept in kista. Nothing here is the server's: the queue is what the console shows.
 import { compareVersions, removedSource, type CatalogueEntry } from '../screens/Catalogue'
 import type { FollowRow, SourceRow } from '../screens/Sources'
+import type { OrderEdge } from './order'
 
 /** A decision as the API answers it: a skip of a channel's waiting version, or a dismissal keyed to
  * its situation (a follow's skip reason, a channel's; the channels taking a name, the tenant's). */
@@ -30,8 +31,11 @@ export interface ChannelReads {
 
 export interface HomeReads {
   entries: CatalogueEntry[]
+  /** in the channels' order's sequence, then the others by name (spec 0043) */
   channels: ChannelReads[]
   decisions: Decision[]
+  /** the channels' order of the default package type (spec 0043) */
+  order: OrderEdge[]
 }
 
 /** Whether a channel follows a source: a follow's rules then place automatically. */
@@ -163,12 +167,12 @@ interface Placed {
   state: string
 }
 
-/** The channel a version can be promoted from into target (spec 0041; spec 0043 names the previous
- * stage once channels have an order): one holding it as an active or deprecated release that the
- * caller may publish from (a promotion takes publish there), the first by name; '' for none, and the
- * version is placed from the catalogue instead. */
+/** The channel a version can be promoted from into target (spec 0041): one holding it as an active or
+ * deprecated release that the caller may publish from (a promotion takes publish there), the target's
+ * previous stage first (spec 0043), else the first by name; '' for none, and the version is placed
+ * from the catalogue instead. */
 export function promoteFrom(builds: { version: string; builds: { placed?: Placed[] }[] }[], version: string, target: string,
-  mayPublish: (channel: string) => boolean = () => true) {
+  mayPublish: (channel: string) => boolean = () => true, previous = '') {
   const holding = new Set<string>()
   for (const v of builds) {
     if (v.version !== version) continue
@@ -176,7 +180,8 @@ export function promoteFrom(builds: { version: string; builds: { placed?: Placed
       for (const p of b.placed ?? []) if (p.channel !== target && (p.state === 'active' || p.state === 'deprecated')) holding.add(p.channel)
     }
   }
-  return [...holding].sort().find(mayPublish) ?? ''
+  const sorted = [...holding].sort()
+  return (holding.has(previous) ? [previous, ...sorted] : sorted).find(mayPublish) ?? ''
 }
 
 /** A decision's body (PUT …/decisions) for a queue item: Skip of a waiting version, or Dismiss of

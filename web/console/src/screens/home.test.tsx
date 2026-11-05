@@ -70,6 +70,7 @@ function reads(decisions: Decision[] = []): HomeReads {
       }),
     ],
     decisions,
+    order: [],
   }
 }
 
@@ -231,6 +232,7 @@ function api(r: HomeReads, deleted = 204) {
     if (c.path === '/licenses') return json({ licenses: [] })
     if (c.path === '/channels') return json({ channels: r.channels.map((x) => ({ name: x.name, kind: 'signed' })) })
     if (c.path === '/decisions') return json({ decisions: ds })
+    if (c.path === '/channel-order') return json({ order: r.order })
     const m = /^\/channels\/([^/]+)\/(sources|follows|hold)$/.exec(c.path)
     const ch = r.channels.find((x) => x.name === m?.[1])
     if (m && ch) return json(m[2] === 'sources' ? { sources: ch.sources } : m[2] === 'follows' ? { follows: ch.follows } : { hold: ch.hold })

@@ -106,6 +106,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0049_upstream_names` | 49 | an older replica would run a `*` mirror of a kista with no names, and count none of them in a tenant's cells |
 | `0050_event_pruned` | 50 | an older replica's pruner would delete events without recording `pruned_through` |
 | `0051_decisions` | 51 | the decisions table references channels: an older replica's tenant reaper does not know it, and would fail deleting a tenant's channels |
+| `0052_channel_next` | 52 | the channels' order references channels: an older replica's tenant reaper does not know it, and would fail deleting a tenant's channels |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -176,7 +177,16 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 51)
+## Upgrading to the next release (schema 52)
+
+### The channels' order (spec 0043)
+
+- **Migration `0052_channel_next`** adds the table `channel_next` (a channel's next channel). It
+  raises `min_reader` to 52: stop every older replica first (its tenant reaper does not know the
+  table, which references channels).
+- **What changes.** New: the routes `GET` and `PUT …/channel-order`, the event `channel.order`, `kista
+  admin channel order`, and the console's pipeline. The order is for display only: nothing placed,
+  promoted or served changes.
 
 ### The catalogue as the console's home, and decisions (spec 0041)
 

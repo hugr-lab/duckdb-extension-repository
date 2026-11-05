@@ -259,6 +259,36 @@ A signed channel may have a **hold** (`ka channel hold acme/prod 1d`, its admini
 none): an automatic placement into it waits until an entry's arrival plus the hold, and it asks no
 lazy mirror. See [Holds](../upstreams.md#holds).
 
+### The channels' order
+
+A tenant may record the order in which a version moves through its channels, as a pipeline:
+`nightly → staging → prod`. Each signed channel may name its **next** channel, of the same tenant
+and package type; the order is a strict chain:
+
+- a channel is the next of at most one channel (two channels never share a next), and never its
+  own;
+- following `next` from any channel never comes back to it (no cycle);
+- a passthrough channel takes no place in it;
+- a tenant may hold several chains (each starts at a channel with a next and no previous one).
+
+```bash
+ka channel order acme nightly staging prod    # sets that chain: the whole order of the type
+ka channel order acme                          # prints it, a chain per line: nightly -> staging -> prod
+ka channel order acme -clear                   # clears it
+```
+
+`-type` names another package type's order (the default type without it). Over the API, `GET
+/api/v1/tenants/{t}/channel-order[?type=]` reads it and `PUT` replaces it whole (see the
+[API](../api.md#the-channels-order)).
+
+The order is **for display only**. The [console](../console.md#screens) draws it as a pipeline,
+puts the catalogue's columns in its sequence, and offers a promotion from the previous stage.
+kista reads it nowhere else: placement, promotion, holds and serving keep their meaning, and a
+promotion still names its source channel each time, with its rights (`publish` there, `promote` in
+the target), so a promotion out of order is allowed. Only the tenant's administrators set it (it
+spans channels); its channels' administrators and its auditors read it. The public channel lists
+do not show it.
+
 ### Channel kinds
 
 | | `signed` | `passthrough` |

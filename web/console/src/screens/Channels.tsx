@@ -1,8 +1,10 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { Badge, Button, Card, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Table } from '../components/ui'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Badge, Button, Card, Chips, Empty, ErrorBox, Field, Loading, Mono, Note, PageTitle, Table } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
+import { useHome } from '../lib/home'
 import { seg } from '../lib/http'
+import { OrderDialog, Pipeline } from './Pipeline'
 
 interface Channel {
   name: string
@@ -12,6 +14,12 @@ interface Channel {
 export function Channels() {
   const { client, api, perms, base } = useTenant()
   const [creating, setCreating] = useState(false)
+  // spec 0043: a tenant administrator's (the home's reads) switch between the list and the pipeline
+  const home = useHome()
+  const [params, setParams] = useSearchParams()
+  const [ordering, setOrdering] = useState(false)
+  const ordered = (home?.reads?.order.length ?? 0) > 0
+  const view = ordered && params.get('view') === 'pipeline' ? 'pipeline' : 'list'
   const { data, error, loading } = useLoad(async () => {
     const chs = (await client.get<{ channels: Channel[] }>(`${api}/channels`)).data.channels.filter((c) => perms.anyIn(c.name))
     // each channel's DuckDB versions, from its (public) detail
@@ -30,7 +38,16 @@ export function Channels() {
         {perms.tenantAdmin && <span className="ml-auto"><Button tone="brand" onClick={() => setCreating(!creating)}>{creating ? 'Close' : 'New channel'}</Button></span>}
       </PageTitle>
       {creating && <NewChannel />}
-      {rows.length === 0 ? (
+      {home && (
+        <div className="flex flex-wrap items-center gap-2">
+          {ordered ? (
+            <Chips label="view" value={view} options={[['list', 'List'], ['pipeline', 'Pipeline']]}
+              onChange={(v) => setParams(v === 'pipeline' ? { view: v } : {}, { replace: true })} />
+          ) : <Button onClick={() => setOrdering(true)}>Set the order…</Button>}
+        </div>
+      )}
+      {home && <OrderDialog open={ordering} channels={(home.reads?.channels ?? []).map((c) => c.name)} onClose={() => setOrdering(false)} onSaved={home.reload} />}
+      {view === 'pipeline' ? <Pipeline onEdit={() => setOrdering(true)} /> : rows.length === 0 ? (
         <Empty>No channel you administer.</Empty>
       ) : (
         <Table

@@ -443,6 +443,20 @@ decision's answer. An id of another tenant, or outside the route's channel, is `
 `decision.set` (with `before` when it replaced one) and `decision.clear` events. A decision is
 advisory: it changes no placement, rule, follow or answer that serves an extension.
 
+### The channels' order
+
+Spec 0043: [the channels' order](administration/tenants-and-channels.md#the-channels-order), a
+strict chain per package type, for the console's display only.
+
+| Route | Who |
+| --- | --- |
+| `GET tenants/{t}/channel-order[?type=]` | tenant admin, a channel admin (of any of the tenant's channels), an auditor: `{"order": [{"channel": "nightly", "next": "staging"}, {"channel": "staging", "next": "prod"}]}`, by channel, with an `ETag` |
+| `PUT tenants/{t}/channel-order[?type=]` | tenant admin: the whole order of the type, the same body (`{"order": []}` clears it); `If-Match` optional (`412` when it no longer matches). Every channel named is the tenant's, signed and of the type; no channel twice as `channel` nor twice as `next`, none its own next, no cycle: `400` naming the first problem. It answers the order in force |
+
+A `PUT` that changes the order writes `channel.order` (subject `tenant:<name>`, `before` and
+`after` the edges); one that changes nothing writes no event. The order is in no public answer:
+`GET tenants/{t}/channels` and `…/channels/{c}` are unchanged.
+
 ### Upstreams
 
 | Route | Who |

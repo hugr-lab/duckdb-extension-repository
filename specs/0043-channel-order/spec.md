@@ -1,6 +1,6 @@
 # Spec 0043: The channels' order, a pipeline from nightly to prod
 
-- **Status**: accepted (the owner's decisions of 2026-11-05)
+- **Status**: implemented (the owner's decisions of 2026-11-05; one point open: purged slots, see As built)
 - **Date**: 2026-11-01
 - **Author**: vgsml, Claude
 
@@ -176,6 +176,74 @@ One PR, `0043-channel-order`, after spec 0041's: the table, the routes, the CLI,
 pipeline, the tests. The website: `tenants-and-channels.md` (the order), `console.md` (the
 pipeline), `api.md`, `administration/commands.md`, `observability.md` (`channel.order`),
 `administration/upgrading.md` (the migration's `min_reader`).
+
+Delivered on one branch, `0043-channel-order-impl`.
+
+### As built
+
+- **The table** is migration `0052_channel_next` (`min_reader` 52), with the unique key
+  `ux_channel_next_next` on `next_channel_id`. The reaper deletes it by channel before
+  `channel_sources` and `channels`; `TestReapCompleteness` and `TestReapTenant` take it.
+- **One check, in the transaction.** `store.SetChannelOrder` reads the tenant's channels, checks the
+  edges in the order sent (each name the tenant's, signed, of the type; no channel its own next;
+  none twice as a channel nor as a next; then no cycle) and answers `ErrInvalid` naming the first
+  problem. It replaces the type's edges by deleting them and inserting the new ones, so a reversed
+  chain passes the unique key. An unchanged order (compared by channel) writes nothing and no
+  event. The service runs it under the tenant's row lock (`InTenantTxForUpdate`, as channels are
+  created).
+- **The ETag** is a hash of the edges (`"o<hex>"`): the table keeps no row version, and an order
+  set again unchanged keeps its ETag. `If-Match` is compared in the transaction.
+- **Who reads.** The route admits any of the tenant's principals that is not a publisher
+  (`channelAdmins`); the service admits `audit` on the tenant (its administrators and auditors), or
+  `admin` on one of its channels (one authorisation per channel: a grant on the channel, as the
+  console's `channelAdmin`, never one on an extension or a group in it). An install holder, an
+  extension administrator and a distribution admin get `404`; a caller without a token of the
+  tenant `401`.
+- **`channel.order`** carries `before` and `after` sorted by channel, `[]` for none.
+- **The CLI** prints one chain per line, `nightly -> staging -> prod`; setting takes two channels
+  or more (one is a usage error), `-clear` none.
+- **The console.** The home's reads read the order once (`GET …/channel-order`) and list the signed
+  channels in its sequence (`inOrder`): the matrix's columns, the entry page's rules, the queue's
+  channel filter. The queue's **Promote** names the item's previous stage first when it holds the
+  version (`promoteFrom`). Channels shows a tenant administrator **Set the order…** while there is
+  none, then **List** and **Pipeline** (`?view=pipeline`); the order dialog lists each signed
+  channel of the default type with its next, and sends the whole order at the ETag read when it
+  opened. The pipeline (`screens/Pipeline.tsx`) draws each chain's stage cards (follows, rules
+  counted by mode, DuckDB versions from the channel's public detail, hold, names, "N versions
+  wait") and a table per stage (rule, current, "serves it from …", "no rule", what waits).
+- **What waits, in the console** (`lib/order.ts`: `cellWaits`, `stageWait`). For a stage's rule of
+  source X whose previous stage selects X and has a `current`, the console reads both stages' index
+  of the name (`GET …/channels/{c}/extensions/{name}`, a tenant administrator's full view): the
+  previous stage's current per cell is a release's `current_for`, and what the stage's cell has or
+  had is its releases' `serves` and `would_serve` (active, deprecated, yanked, withdrawn). A
+  stage's index holds only its selected source, which is X there. Each (channel, name) is read once.
+- **The panel.** **Report & licence** shows the entry's licence (`SourceLicence`) and the reports of
+  the bodies of the version's builds in the previous stage, then **Promote…** (K4's dialog, made
+  `PromoteDialog`, its source the previous stage, its target the stage, the version filled in; with
+  `promote` on the name in the stage and `publish` in the previous one) and **Skip** under a manual
+  rule.
+- **Not shown: the stage's retention** (spec 0042), which is not implemented yet: the card gains it
+  with spec 0042's console.
+- **Open (stopped on, for the owner): purged slots.** The Design counts what the stage's cell had
+  "in any state (yanked, retired and purged included)". No answer the console reads carries a
+  channel's purged slots: a purge (spec 0016 phase 2) deletes the release, and `purged_slots` is read
+  by the placement pass's look only (`store.SlotCandidates`, `lookOf`). So the pipeline counts a
+  stage's active, deprecated, yanked and withdrawn releases, and a version the stage purged shows
+  as waiting again (retired versions, spec 0042, are to come). Counting them needs a server answer
+  the spec does not define (for instance the stage's purged versions per cell, or the wait itself
+  computed by the look's function): left to the owner's decision. The console unit tests cover a
+  yanked and a deprecated version, not a purged one.
+- **Tests.** Store (three dialects): `TestChannelOrder` (replacement, the refusals, a reversed
+  chain, another type's order apart, clearing, the migration's `min_reader`), the reaper's.
+  API: `TestChannelOrderRoutes` (the readers, `404` and `401`, `If-Match` and `412`, `304`, the
+  refusals, no event for an unchanged order, `channel.order`'s data, the public list unchanged).
+  `channel.order` in the events registry, `SubjectForm` and `TestCoverage`. CLI: `TestAdminCLI` and
+  `TestAdminPackageTypes` (`-type`). Console: `src/screens/pipeline.test.tsx` (the chains and the
+  columns' sequence; the cells; a stage with no release; the newest of two cells; a skip; Promote
+  filled in from the previous stage; Skip; the order dialog with its ETag; a channel administrator's
+  list); end to end, `e2e/pipeline.spec.ts` on run.sh's fixture (staging, and the tenant's relay and
+  beacon placed into nightly under staging's manual rules): the order set, two versions waiting
+  for staging, relay promoted after its panel, beacon skipped, the catalogue's columns in order.
 
 ## Follow-ups
 

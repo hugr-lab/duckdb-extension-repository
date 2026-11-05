@@ -86,15 +86,11 @@ function Promote({ channel, ext }: { channel: string; ext: string }) {
   const { busy, failure, act } = useAction('The promotion')
   if (chans.error || active.error) return <ErrorBox error={chans.error ?? active.error} />
   if (here?.kind !== 'signed' || targets.length === 0 || versions.length === 0) return null
-  const ready = p.target !== '' && p.version.trim() !== ''
-  const submit = () => {
-    if (!ready) return
-    const q = { ...p, version: p.version.trim() }
+  const submit = (q: Promoting) => {
     setOpen(false)
-    let status = 0
     act(async () => {
-      status = (await client.post(`${api}/channels/${seg(q.target)}/extensions/${seg(ext)}/releases/promote`, { body: promoteBody(channel, q) })).status
-    }).then((ok) => ok && setDone(status === 200 ? `${q.version} is in ${q.target} already` : `${q.version} promoted to ${q.target}`))
+      setDone(await promote(client, api, ext, channel, q))
+    })
   }
   return (
     <>
@@ -107,30 +103,50 @@ function Promote({ channel, ext }: { channel: string; ext: string }) {
         }}>Promote…</Button>
       </span>
       {failure != null && <ErrorBox error={failure} />}
-      <Confirm open={open} title={`Promote ${ext} from ${channel}`} confirm="Promote" disabled={!ready} onConfirm={submit} onClose={() => setOpen(false)}>
-        <p>Every active release of the version that <Mono>{channel}</Mono> serves is released in the target, every platform and slot,
-          signed with its key: all or none.</p>
-        <Field label="To channel">
-          <select className="field" value={p.target} onChange={(e) => setP({ ...p, target: e.target.value })}>
-            {targets.map((c) => <option key={c}>{c}</option>)}
-          </select>
-        </Field>
-        <Field label="Version">
-          <input className="field font-mono" list="promote-versions" value={p.version} data-autofocus
-            onChange={(e) => setP({ ...p, version: e.target.value })}
-            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit() } }} />
-        </Field>
-        <datalist id="promote-versions">{versions.map((v) => <option key={v} value={v} />)}</datalist>
-        <label className="flex items-center gap-2 text-[13px]">
-          <input type="checkbox" checked={p.narrow} onChange={(e) => setP({ ...p, narrow: e.target.checked })} /> private: only callers granted install
-        </label>
-        <label className="flex items-center gap-2 text-[13px]">
-          <input type="checkbox" checked={p.notCurrent} onChange={(e) => setP({ ...p, notCurrent: e.target.checked })} /> not current: leave the target's
-          current version as it is
-        </label>
-        <Note>The visibility stays the source's unless private is asked: promotion never makes a private build public. The target must serve
-          each build's DuckDB version.</Note>
-      </Confirm>
+      <PromoteDialog open={open} ext={ext} from={channel} targets={targets} versions={versions} p={p} setP={setP} onSubmit={submit}
+        onClose={() => setOpen(false)} />
     </>
+  )
+}
+
+/** Promotes a version of ext from a channel (spec 0008's route), answering what happened in words. */
+export async function promote(client: Client, api: string, ext: string, from: string, q: Promoting) {
+  const status = (await client.post(`${api}/channels/${seg(q.target)}/extensions/${seg(ext)}/releases/promote`, { body: promoteBody(from, q) })).status
+  return status === 200 ? `${q.version} is in ${q.target} already` : `${q.version} promoted to ${q.target}`
+}
+
+/** The promotion dialog (K4's): the target, the version, private and not current; from is the source
+ * channel. The pipeline (spec 0043) opens it with its source and version filled in. */
+export function PromoteDialog({ open, ext, from, targets, versions, p, setP, onSubmit, onClose }: {
+  open: boolean; ext: string; from: string; targets: string[]; versions: string[]; p: Promoting; setP: (p: Promoting) => void
+  onSubmit: (p: Promoting) => void; onClose: () => void
+}) {
+  const ready = p.target !== '' && p.version.trim() !== ''
+  const submit = () => ready && onSubmit({ ...p, version: p.version.trim() })
+  return (
+    <Confirm open={open} title={`Promote ${ext} from ${from}`} confirm="Promote" disabled={!ready} onConfirm={submit} onClose={onClose}>
+      <p>Every active release of the version that <Mono>{from}</Mono> serves is released in the target, every platform and slot,
+        signed with its key: all or none.</p>
+      <Field label="To channel">
+        <select className="field" value={p.target} onChange={(e) => setP({ ...p, target: e.target.value })}>
+          {targets.map((c) => <option key={c}>{c}</option>)}
+        </select>
+      </Field>
+      <Field label="Version">
+        <input className="field font-mono" list={`promote-versions-${from}`} value={p.version} data-autofocus
+          onChange={(e) => setP({ ...p, version: e.target.value })}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit() } }} />
+      </Field>
+      <datalist id={`promote-versions-${from}`}>{versions.map((v) => <option key={v} value={v} />)}</datalist>
+      <label className="flex items-center gap-2 text-[13px]">
+        <input type="checkbox" checked={p.narrow} onChange={(e) => setP({ ...p, narrow: e.target.checked })} /> private: only callers granted install
+      </label>
+      <label className="flex items-center gap-2 text-[13px]">
+        <input type="checkbox" checked={p.notCurrent} onChange={(e) => setP({ ...p, notCurrent: e.target.checked })} /> not current: leave the target's
+        current version as it is
+      </label>
+      <Note>The visibility stays the source's unless private is asked: promotion never makes a private build public. The target must serve
+        each build's DuckDB version.</Note>
+    </Confirm>
   )
 }
