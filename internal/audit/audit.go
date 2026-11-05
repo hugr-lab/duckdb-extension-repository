@@ -205,7 +205,9 @@ var catalogue = map[Kind][]string{
 	"release.current":   {"release", "name", "version", "platform"},
 	"release.public":    {"release", "name", "version", "platform"},
 	"release.private":   {"release", "name", "version", "platform"},
-	"release.purge":     {"release", "name", "version", "platform", "slot", "body_hash"},
+	"release.restore":   {"release", "name", "version", "platform"}, // spec 0042: a retired release restored
+	// a purge: an administrator's, or the retention pass's (spec 0042: reason retention)
+	"release.purge":     {"release", "name", "version", "platform", "slot", "body_hash", "reason"},
 	"block.add":         {"body_hash", "reason"},
 	"block.remove":      {"body_hash"},
 	"upstream.add":      {"name", "kind", "prefix", "channel", "mode", "fetch", "visibility", "keys", "platforms", "extensions", "credential", "revocations"},

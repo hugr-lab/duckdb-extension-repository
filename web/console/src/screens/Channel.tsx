@@ -15,7 +15,8 @@ import type { Release } from './types'
 export const platforms = ['linux_amd64', 'linux_arm64', 'linux_amd64_musl', 'linux_arm64_musl', 'osx_amd64', 'osx_arm64',
   'windows_amd64', 'windows_arm64', 'wasm_eh', 'wasm_mvp', 'wasm_threads']
 
-export const releaseStates: ['' | 'active' | 'deprecated' | 'yanked', string][] = [['', 'All'], ['active', 'Active'], ['deprecated', 'Deprecated'], ['yanked', 'Yanked']]
+export const releaseStates: ['' | 'active' | 'deprecated' | 'yanked' | 'retired', string][] = [['', 'All'], ['active', 'Active'], ['deprecated', 'Deprecated'],
+  ['yanked', 'Yanked'], ['retired', 'Retired']]
 
 type Tab = 'extensions' | 'releases' | 'sources' | 'keys' | 'events'
 

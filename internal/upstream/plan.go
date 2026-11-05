@@ -137,7 +137,7 @@ func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, sel Pl
 					}
 					c, ok := cells[ck]
 					conditional := ok && c.BodyHash != "" && slices.Contains([]string{store.CellReleased, store.CellUnchanged,
-						store.CellYanked, store.CellConflict}, c.Outcome)
+						store.CellYanked, store.CellRetired, store.CellConflict}, c.Outcome)
 					switch {
 					case m.held == nil && conditional:
 						m.held = &held{etag: c.ETag, hash: c.BodyHash, ok: true}

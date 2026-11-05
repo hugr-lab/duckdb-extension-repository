@@ -363,13 +363,14 @@ func (rs *resolver) flatOf(v, platform, name string) *store.Candidate {
 }
 
 // versionedOf resolves among active and deprecated releases, or (withYanked) as if nothing were
-// yanked.
+// yanked or retired (spec 0042).
 func (rs *resolver) versionedOf(v, platform, name, extVersion string, withYanked bool) *store.Candidate {
 	k := [5]string{v, platform, name, extVersion, strconv.FormatBool(withYanked)}
 	c, ok := rs.vers[k]
 	if !ok {
 		if withYanked {
-			c = rs.snap.Versioned(v, platform, name, extVersion, rs.vis, store.ReleaseActive, store.ReleaseDeprecated, store.ReleaseYanked)
+			c = rs.snap.Versioned(v, platform, name, extVersion, rs.vis, store.ReleaseActive, store.ReleaseDeprecated, store.ReleaseYanked,
+				store.ReleaseRetired)
 		} else {
 			c = rs.snap.Versioned(v, platform, name, extVersion, rs.vis)
 		}
@@ -380,7 +381,8 @@ func (rs *resolver) versionedOf(v, platform, name, extVersion string, withYanked
 
 // row describes one release: the DuckDB versions whose versioned path resolves to it, and those
 // whose flat path does; a yanked release is served nowhere and lists instead the versions whose
-// versioned path it would serve, so a node that installed it learns it was yanked.
+// versioned path it would serve, so a node that installed it learns it was yanked; and so does a
+// retired one (spec 0042), so a node learns it is gone from the channel.
 func (rs *resolver) row(rel *store.Candidate) releaseOut {
 	o := releaseOut{id: rel.ID, created: rel.CreatedAt, Name: rel.Name, PackageVersion: rel.PackageVersion, Platform: rel.Platform,
 		ABI: rel.ABI, DuckDBVersion: rel.DuckDBVersion, State: rel.State, Visibility: rel.Visibility, BodyHash: rel.BodyHash,
@@ -403,7 +405,7 @@ func (rs *resolver) row(rel *store.Candidate) releaseOut {
 		o.CAPI = rel.CAPI.String()
 	}
 	for _, v := range rs.versions {
-		if rel.State == store.ReleaseYanked {
+		if rel.State == store.ReleaseYanked || rel.State == store.ReleaseRetired {
 			if best := rs.versionedOf(v, rel.Platform, rel.Name, rel.PackageVersion, true); best != nil && best.ID == rel.ID {
 				o.WouldServe = append(o.WouldServe, v)
 			}
@@ -555,9 +557,10 @@ func (h *Handler) purgedOf(ctx context.Context, snap *release.Snapshot, name, ve
 }
 
 // item answers the node agent's question for name@version on a DuckDB version and platform:
-// available, deprecated, yanked, or missing (which also means "not in your view"). With available or
-// deprecated come the yanked rows that would have served the path (a higher C API major, say), so a
-// node compares the body hash it installed.
+// available, deprecated, yanked, withdrawn, retired (spec 0042: only a retired release would have
+// served the path, the version gone from this channel), or missing (which also means "not in your
+// view"). With available or deprecated come the yanked rows that would have served the path (a higher
+// C API major, say), so a node compares the body hash it installed.
 func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	name, extVersion := p["name"], p["v"]
 	version, platform := r.URL.Query().Get("duckdb_version"), r.URL.Query().Get("platform")
@@ -575,11 +578,18 @@ func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p param
 	}
 	out := map[string]any{"name": name, "version": extVersion, "duckdb_version": version, "platform": platform}
 	var yanked []releaseOut
+	retired := false // spec 0042: a retired release would have served the path
 	for _, rel := range snap.Group(name, platform) {
-		if rel.PackageVersion == extVersion && rel.State == store.ReleaseYanked && rs.vis(rel) {
+		if rel.PackageVersion != extVersion || !rs.vis(rel) {
+			continue
+		}
+		switch rel.State {
+		case store.ReleaseYanked:
 			if o := rs.row(rel); o.reaches(version) {
 				yanked = append(yanked, o)
 			}
+		case store.ReleaseRetired:
+			retired = retired || rs.row(rel).reaches(version)
 		}
 	}
 	// spec 0039: the withdrawn releases that would have served the path, beside what does
@@ -603,6 +613,13 @@ func (h *Handler) item(w http.ResponseWriter, r *http.Request, c caller, p param
 	if best != nil {
 		row = rs.row(best)
 		ptrs = append(ptrs, &row)
+	}
+	if len(ptrs) == 0 && retired {
+		// spec 0042: gone from this channel, not "do not run it"; nothing else would have served it
+		out["status"] = store.ReleaseRetired
+		out["yanked"], out["withdrawn"], out["current"] = []releaseOut{}, []releaseOut{}, false
+		answer(w, r, out, c.anonymous())
+		return
 	}
 	if len(ptrs) == 0 {
 		out["status"] = "missing"

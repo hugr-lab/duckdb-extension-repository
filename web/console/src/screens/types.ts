@@ -26,6 +26,9 @@ export interface Release {
   selected: boolean
   /** its catalogue entry was withdrawn by its distributor (spec 0033 phase B): served nowhere */
   withdrawn?: boolean
+  /** a retired release's state before and when it was retired (spec 0042): served nowhere, restorable */
+  retired_from?: string
+  retired_at?: string
   etag: string
 }
 

@@ -186,6 +186,9 @@ const (
 	// typeWithdrawn: a withdrawn entry (spec 0033 phase B): placed nowhere, its release never made
 	// active again, its body never arriving again in its source
 	typeWithdrawn = "withdrawn"
+	// typeRetired: an insert into the slot of a release its channel's retention retired (spec 0042):
+	// an administrator restores it instead
+	typeRetired = "retired"
 	// typeDistributorsEntry: a write on a distributor's publisher's licence entry by a tenant
 	// administrator (spec 0037), the one 404 with a type and a detail of its own: the caller reads
 	// the licence and sees whose entry it is, so they reveal nothing
@@ -206,7 +209,7 @@ var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "
 	typeRequired: "Precondition Required", typeTooLarge: "Content Too Large", typeMediaType: "Unsupported Media Type",
 	typeRateLimited: "Rate Limited", typeUploadSlots: "Upload Slots Taken", typeIngestBusy: "Ingest Busy", typeChunksBusy: "Chunks Busy",
 	typeCatalogueFull: "Catalogue Full", typeIssuerBusy: "Issuer Busy", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
-	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeDistributorsEntry: "A Distributor's Entry", typeStale: "Stale",
+	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeRetired: "Retired", typeDistributorsEntry: "A Distributor's Entry", typeStale: "Stale",
 	typePublisherTaken: "Publisher Name Taken", typeNotComputed: "Not Computed Yet", typeTenantLimit: "Tenant Limit Reached"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.

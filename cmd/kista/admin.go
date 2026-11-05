@@ -144,8 +144,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   release add <tenant>/<channel> <file|-> -name <name> [-private] [-not-current] [-unchecked]
   release list <tenant>/<channel> [-name <name>]
   release yank|deprecate|activate|current|public|private <tenant>/<channel> <release-id>
+  release restore <tenant>/<channel> <release-id>   a retired release back to its state before (spec 0042)
   release purge <tenant>/<channel> <release-id> [-force]
-                  delete a yanked release for good; its slot stays taken (-force while gc.interval is 0)
+                  delete a yanked or retired release for good; its slot stays taken (-force while gc.interval is 0)
   release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> | -version <v>)
                   [-private] [-not-current]               release Builds of another channel here
   release place <tenant>/<channel> -name <name> -source <source> -version <v> [-private] [-not-current] [-type t] [-early]
@@ -1109,7 +1110,7 @@ func (a *adminCmd) release(ctx context.Context, sub string, args []string) error
 			a.logf("release place %s %s/%s %s %s %s %s", *source, t, c, r.Name, r.PackageVersion, r.Platform, r.Slot)
 			fmt.Fprintln(a.out, r.ID)
 		}
-	case len(pos) == 2 && slices.Contains([]string{"yank", "deprecate", "activate", "current", "public", "private"}, sub):
+	case len(pos) == 2 && slices.Contains([]string{"yank", "deprecate", "activate", "current", "public", "private", "restore"}, sub):
 		r, err := a.svc.Releases.Apply(ctx, a.actor, t, c, "", pos[1], release.Change(sub), 0)
 		if err != nil {
 			return err

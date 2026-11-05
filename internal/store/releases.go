@@ -24,6 +24,9 @@ const (
 	ReleaseActive     = "active"
 	ReleaseDeprecated = "deprecated"
 	ReleaseYanked     = "yanked"
+	// ReleaseRetired is a release its channel's retention retired (spec 0042): served nowhere,
+	// restored to the state it came from, or purged after the grace.
+	ReleaseRetired = "retired"
 	// ReleasePurged is a slot candidate whose release was purged (spec 0016 phase 2): its slot stays
 	// taken. It is never a release's stored state.
 	ReleasePurged = "purged"
@@ -150,6 +153,11 @@ type Release struct {
 	// OriginSignature is an upstream release's original signature (spec 0009), written at insert;
 	// list reads leave it empty.
 	OriginSignature []byte
+	// RetiredFrom and RetiredAt are, for a retired release (spec 0042), the state it came from (active
+	// or deprecated) and when it was retired (the grace's clock); kept through an upstream's yank of it
+	// (spec 0039), so its lift returns it to retired. "" and zero otherwise.
+	RetiredFrom string
+	RetiredAt   time.Time
 }
 
 // Origins of builds and releases.
@@ -192,17 +200,18 @@ func scanBuild(r interface{ Scan(...any) error }) (Build, error) {
 
 const releaseCols = `r.id, r.tenant_id, r.channel_id, r.build_id, r.name, r.package_version, r.platform, r.slot, r.state,
 r.visibility, r.seq, r.created_at, r.created_by, r.state_changed_at, r.state_changed_by, r.version, r.origin, r.provenance,
-r.publisher_statement, r.publisher_signature, r.source`
+r.publisher_statement, r.publisher_signature, r.source, r.retired_from, r.retired_at`
 
 func scanRelease(r interface{ Scan(...any) error }, extra ...any) (Release, error) {
 	var x Release
 	var seq sql.NullInt64
-	var prov, stmt, sig sql.NullString
+	var prov, stmt, sig, from sql.NullString
 	dst := []any{&x.ID, &x.TenantID, &x.ChannelID, &x.BuildID, &x.Name, &x.PackageVersion, &x.Platform, &x.Slot,
 		&x.State, &x.Visibility, &seq, scanTime{&x.CreatedAt}, &x.CreatedBy, scanTime{&x.StateChangedAt},
-		&x.StateChangedBy, &x.Version, &x.Origin, &prov, &stmt, &sig, &x.Source}
+		&x.StateChangedBy, &x.Version, &x.Origin, &prov, &stmt, &sig, &x.Source, &from, scanTime{&x.RetiredAt}}
 	err := r.Scan(append(dst, extra...)...)
 	x.Seq, x.Provenance, x.PublisherStatement, x.PublisherSignature = seq.Int64, prov.String, stmt.String, sig.String
+	x.RetiredFrom = from.String
 	return x, err
 }
 
@@ -525,12 +534,54 @@ publisher_statement, publisher_signature, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?
 	return err
 }
 
-// SetReleaseState changes a release's state (compare-and-set).
+// SetReleaseState changes a release's state (compare-and-set). A release set back to retired (spec
+// 0042: an upstream's yank of a retired release lifted, spec 0039) keeps the state it came from and is
+// retired from now on: a new grace. A retirement is RetireRelease's, a restore RestoreRelease's.
 func (t *Tx) SetReleaseState(ctx context.Context, r *Release, state, actor string) error {
 	now := t.Now()
+	if state == ReleaseRetired {
+		if r.RetiredFrom == "" {
+			return fmt.Errorf("%w: release %s was never retired", ErrInvalid, r.ID)
+		}
+		return t.cas(ctx, "UPDATE releases SET state = ?, retired_at = ?, state_changed_at = ?, state_changed_by = ?, version = version + 1 WHERE id = ? AND version = ?",
+			[]any{state, t.s.d.timeArg(now), t.s.d.timeArg(now), actor, r.ID, r.Version},
+			func() { r.State, r.RetiredAt, r.StateChangedAt, r.StateChangedBy = state, now, now, actor; r.Version++ })
+	}
 	return t.cas(ctx, "UPDATE releases SET state = ?, state_changed_at = ?, state_changed_by = ?, version = version + 1 WHERE id = ? AND version = ?",
 		[]any{state, t.s.d.timeArg(now), actor, r.ID, r.Version},
 		func() { r.State, r.StateChangedAt, r.StateChangedBy = state, now, actor; r.Version++ })
+}
+
+// RetireRelease retires an active or deprecated release (spec 0042; compare-and-set): it keeps the
+// state it came from and when, the grace's clock.
+func (t *Tx) RetireRelease(ctx context.Context, r *Release, actor string) error {
+	if r.State != ReleaseActive && r.State != ReleaseDeprecated {
+		return fmt.Errorf("%w: a %s release is not retired", ErrInvalid, r.State)
+	}
+	now, from := t.Now(), r.State
+	return t.cas(ctx, "UPDATE releases SET state = ?, retired_from = ?, retired_at = ?, state_changed_at = ?, state_changed_by = ?, "+
+		"version = version + 1 WHERE id = ? AND version = ?",
+		[]any{ReleaseRetired, from, t.s.d.timeArg(now), t.s.d.timeArg(now), actor, r.ID, r.Version},
+		func() {
+			r.State, r.RetiredFrom, r.RetiredAt, r.StateChangedAt, r.StateChangedBy = ReleaseRetired, from, now, now, actor
+			r.Version++
+		})
+}
+
+// RestoreRelease returns a retired release to the state it came from (spec 0042; compare-and-set),
+// keeping its seq: it is current again only if nothing newer is.
+func (t *Tx) RestoreRelease(ctx context.Context, r *Release, actor string) error {
+	if r.State != ReleaseRetired || r.RetiredFrom != ReleaseActive && r.RetiredFrom != ReleaseDeprecated {
+		return fmt.Errorf("%w: a %s release is not restored", ErrInvalid, r.State)
+	}
+	now, to := t.Now(), r.RetiredFrom
+	return t.cas(ctx, "UPDATE releases SET state = ?, retired_from = NULL, retired_at = NULL, state_changed_at = ?, state_changed_by = ?, "+
+		"version = version + 1 WHERE id = ? AND version = ?",
+		[]any{to, t.s.d.timeArg(now), actor, r.ID, r.Version},
+		func() {
+			r.State, r.RetiredFrom, r.RetiredAt, r.StateChangedAt, r.StateChangedBy = to, "", time.Time{}, now, actor
+			r.Version++
+		})
 }
 
 // SetReleaseSeq gives a release a sequence number (compare-and-set).

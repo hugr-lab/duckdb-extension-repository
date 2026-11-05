@@ -562,7 +562,7 @@ var refusal = map[string]bool{store.CellRejected: true, store.CellConflict: true
 	store.CellOtherSource: true}
 
 // conditional outcomes: the same answer changes nothing, so the last ETag is sent.
-var conditional = map[string]bool{store.CellReleased: true, store.CellUnchanged: true, store.CellYanked: true, store.CellConflict: true,
+var conditional = map[string]bool{store.CellReleased: true, store.CellUnchanged: true, store.CellYanked: true, store.CellRetired: true, store.CellConflict: true,
 	store.CellLanded: true, store.CellHeld: true}
 
 // What made a cell's fetch, for its upstream.release event (spec 0032): a scheduled run, an
@@ -781,6 +781,8 @@ func (s *Service) cell(ctx context.Context, a authz.Actor, sc store.ServeChannel
 		rec.Outcome = store.CellLanded
 	case got.Existed && got.Release.State == store.ReleaseYanked:
 		rec.Outcome = store.CellYanked
+	case got.Existed && got.Release.State == store.ReleaseRetired: // spec 0042: left as it is
+		rec.Outcome = store.CellRetired
 	case got.Existed:
 		rec.Outcome = store.CellUnchanged
 	case dryRun:

@@ -105,7 +105,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"Add":       {"release.add", "release.publish", "shadow.add", "source.set", "license.public_warning"},
 		"Promote":   {"release.promote", "shadow.add", "source.set", "license.public_warning"},
 		"SetSource": {"source.set", "license.public_warning"}, "ClearSource": {"source.clear"}, "Sources": nil, "Source": nil, "Apply": {"release.yank",
-			"release.deprecate", "release.activate", "release.current", "release.public", "release.private", "license.public_warning"},
+			"release.deprecate", "release.activate", "release.current", "release.public", "release.private", "release.restore", "license.public_warning"},
 		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set", "license.public_warning"}, "Resign": {"key.resign"},
 		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "BlockBuilds": nil, "DuckDBCore": nil,
 		// spec 0041: the decisions on the decision queue
@@ -594,10 +594,26 @@ func TestCoverage(t *testing.T) {
 		return err
 	}), "source.set")
 	en.expect("release.Service.ClearSource", do(func() error { return en.rel.ClearSource(rctx, admin, "acme", "prod", "parquet") }), "source.clear")
-	for _, c := range []release.Change{release.SetPrivate, release.SetPublic, release.MakeCurrent, release.Deprecate, release.Activate, release.Yank} {
+	for _, c := range []release.Change{release.SetPrivate, release.SetPublic, release.MakeCurrent, release.Deprecate, release.Activate,
+		release.Restore, release.Yank} {
 		kind := map[release.Change]audit.Kind{release.SetPrivate: "release.private", release.SetPublic: "release.public",
 			release.MakeCurrent: "release.current", release.Deprecate: "release.deprecate", release.Activate: "release.activate",
-			release.Yank: "release.yank"}[c]
+			release.Restore: "release.restore", release.Yank: "release.yank"}[c]
+		if c == release.Restore { // spec 0042: retired as the retention pass does (its events are the pass's)
+			ch, err := st.GetChannel(ctx, "acme", "staging")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.InTx(ctx, "", func(tx *store.Tx) error {
+				r, err := tx.GetRelease(ctx, ch.ID, relID)
+				if err != nil {
+					return err
+				}
+				return tx.RetireRelease(ctx, &r, "system:release-retention")
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
 		en.expect("release.Service.Apply", do(func() error {
 			_, err := en.rel.Apply(rctx, admin, "acme", "staging", "tresor", relID, c, 0)
 			return err
