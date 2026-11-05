@@ -108,7 +108,7 @@ are all the kinds in `internal/audit`:
 | | `source.waiting` | `channel:<channel>/ext:<name>` | `source`, `version`, `current` (the newest version the channel holds from the source), `mode` (`manual`, or `follow` once the channel no longer follows the source), `package_type` (omitted for the default): a version waiting under a manual rule, told once per version by the placement pass (actor `system:placement`; spec 0041). kista delivers it to no one itself: alert on it through a sink |
 | | `decision.set`, `decision.clear` | `channel:<channel>/ext:<name>` (a channel's decision) or `ext:<name>` (the tenant's) | `id`, `kind` (`skip`, `dismiss`), `source`, `version` (a skip's) or `situation` (a dismissal's), `package_type` (omitted for the default); `decision.set` with `before` when it replaced one: an administrator's [decision](catalogue.md#know-what-waits) on the console's queue written or removed (spec 0041) |
 | | `release.yank`, `release.deprecate`, `release.activate`, `release.current`, `release.public`, `release.private`, `release.restore` | the release | `release`, `name`, `version`, `platform`; `release.restore`: a retired release back to its state before (spec 0042) |
-| | `release.purge` | the release | `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `reason` (`retention`: the retention pass's, actor `system:release-retention`; none for an administrator's) |
+| | `release.purge` | the release | `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `reason` (`retention`: the retention pass's, actor `system:release-retention`; none for an administrator's), `pins_removed` (the ids of the pins the purge removed, when any: a pinned line's last release, spec 0042) |
 | | `release.retire` | `channel:<channel>/ext:<name>` | `version`, `releases` (the ids), `lines` (the DuckDB versions), `by` (`retention`: the pass, actor `system:release-retention`; `line`: an administrator's line act): a version's releases retired in a channel, one event per (name, version) (spec 0042) |
 | | `retention.set` | `tenant:<name>` or `channel:<channel>` | `before`, `after` (the rule as stored: `keep`, `grace`, each only when set), `in_force` (a channel's: each field's value and where it comes from): a retention rule changed (spec 0042) |
 | | `retention.pin`, `retention.unpin` | `channel:<channel>/ext:<name>` | `id`, `version`, `duckdb_version` (`""`: every line), `reason` |
@@ -190,7 +190,9 @@ Notes on some kinds:
   Subjects are unchanged. A group's removal lists its members in one `extension_group.members`
   event per type.
 - The background actors are `system:upstream:<tenant>/<name>`, `system:feed:<tenant>/<name>`,
-  `system:resign`, `system:retention`, `system:serve`, `system:sinks`, `system:audit` and
+  `system:resign`, `system:retention` (the events pruner), `system:release-retention` (the
+  [retention pass](administration/tenants-and-channels.md#retention): `release.retire`,
+  `release.purge`, `retention.run`), `system:serve`, `system:sinks`, `system:audit` and
   `system:gc` (every garbage collection pass, scheduled or `kista admin blob gc`),
   `system:tenant-delete` (the reaper of a deleted tenant), and `system:community-sync` (the
   community sync: `reserved.add` when it reserves names, `reserved.sync` with outcome `failed` and

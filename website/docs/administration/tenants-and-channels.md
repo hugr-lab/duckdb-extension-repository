@@ -314,8 +314,9 @@ autoloading never silently picks DuckDB's build over the replacement. List and r
 
 Without retention a channel keeps every release it ever made. A **retention rule** keeps the
 newest N versions of each name per DuckDB version the channel serves (a **line**), and the
-retention pass **retires** the others: a retired release is served nowhere, and an administrator can
-**restore** it until a **grace** ends, after which the pass purges it as an
+retention pass **retires** the others: a retired release is served nowhere, and an extension
+administrator can **restore** it until a **grace** ends (it holds until the next pass unless the
+rule or a pin keeps it), after which the pass purges it as an
 [administrator's purge](../storage.md) does (its slot stays taken). kista has **no retention by
 default**.
 
@@ -346,10 +347,12 @@ ka release restore acme/prod <release-id>
   The grace is at most `limits.ceilings.retention_grace` (default `2160h`), checked where it changes;
   a lowered ceiling caps a stored grace. A passthrough channel takes no rule, pin or line act.
 - **Pins** keep a version in one DuckDB version, or in every one, whatever the rule: an active one
-  from retirement, a retired one from the purge (a pin does not restore it). A purge of a version's
+  from retirement, a retired one from the pass's purge (not from an administrator's; a pin does not
+  restore it). A purge of a version's
   last release in a pinned line removes the pin (a DuckDB version the channel no longer serves
-  counts by its own C API maxima). A **restore** alone does not keep a version: one the rule still
-  does not keep is retired again by the next pass, so pin what must stay.
+  counts by its own C API maxima). A **restore** holds only until the next pass: one the rule still
+  does not keep is retired again then unless a pin keeps it, so pin what must stay. Pinning is a
+  channel administrator's act: an extension administrator can restore a release but not pin it.
 - **The pass** runs every `retention.interval` (default `24h`, `0` for none) over the signed
   channels of active tenants, one replica at a time per channel. Each retirement and purge is its
   own short transaction, re-checked under the channel's lock: a release made current, pinned or

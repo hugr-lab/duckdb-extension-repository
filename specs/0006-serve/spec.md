@@ -1,6 +1,7 @@
 # Spec 0006: Serving, tokens and grants
 
 - **Status**: implemented (phases 1-2)
+- **Changed by** [0042](../0042-channel-retention/spec.md): a release has a fourth state, `retired` (the channel's retention took it out): served nowhere, every path answers the channel's missing answer as for a version that never existed, and the index's status of it is `retired`; a restore serves it again.
 - **Date**: 2026-10-08
 - **Author**: vgsml, Claude
 

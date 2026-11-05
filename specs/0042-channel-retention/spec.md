@@ -492,9 +492,10 @@ the pass or the line act.
   set) whose `retention_checked_at` is an interval old; replicas share the work through the lease
   `kista/retention/<channel id>` (taken for two minutes, renewed before each write; holding it, a
   replica reads the channel's last look again, so one another replica just made is not repeated).
-  The service's `RetainChannel` reads the look, then retires each (name, version) in its own
-  transaction under the channel lock, where it reads the rule, the group's releases
-  (`SourceReleases`), the lines and the pins again and retires only the releases still retirable
+  The service's `RetainChannel` reads the look, then retires each (name, version), every source's
+  releases of it together, in its own transaction under the channel lock with one `release.retire`
+  (review fix), where it reads the rule, each source's releases of it (`SourceReleases`), the lines
+  and the pins again and retires only the releases still retirable
   whose row version is the look's: a release restored, made current, deprecated or pinned meanwhile
   is left for the next pass. Then it purges each retired release past its grace in its own
   transaction, re-reading the release (state, row version, `retired_at` against the grace in
@@ -502,13 +503,14 @@ the pass or the line act.
   "retention"`. Nothing is purged while `PurgeOff` (`gc.interval` 0). `retention.run` and
   `retention_checked_at` (the look's start) are written in one transaction at the end, the event
   only when something was retired, purged or failed; a failure's text goes to the log. A pass whose
-  lease is lost stops, still writes `retention.run` for what it did, and records no look (review
-  fix). No rule in force: nothing retired or purged, the look recorded. `retention.interval` is `0`
+  lease is lost, or whose context ends, stops, still writes `retention.run` for what it did (in a
+  transaction without the context), and records no look; it answers the context's error when the
+  context ended, not a lost lease, and counts nothing it could not do as failed (review fixes). No rule in force: nothing retired or purged, the look recorded. `retention.interval` is `0`
   or at least `1m`.
 - **Pins** are bounded by what the channel holds, as the spec says. A purge (an administrator's or
   the pass's) removes the version's pins left without a release in their line (for a pin of every
-  line, in the channel); this writes no event of its own (the purge's `release.purge` records the
-  act). Whether a release serves a pin's DuckDB version is read, for a version the channel no longer
+  line, in the channel); this writes no event of its own: the purge's `release.purge` names them in
+  `pins_removed` (review fix). Whether a release serves a pin's DuckDB version is read, for a version the channel no longer
   serves, by that version's own C API maxima (or a build of its slot), as the line act reads a line:
   a pin of a line removed from the channel still keeps a retired release of it from the purge, and
   goes only once no release of its version serves that line (review fix).
@@ -516,8 +518,9 @@ the pass or the line act.
   is active or deprecated again with its first release unchanged, so a version outside the newest
   N, not current and not pinned is retired again by the next pass (a new grace). This follows the
   rule as written (a pin keeps a version, a restore only undoes a retirement); the docs, the
-  release page's Restore and the CLI's docs say to pin what must stay. An open point for the owner:
-  the extension's administrators restore, but only a channel's administrators pin.
+  release page's Restore and the CLI's docs say to pin what must stay. The owner settled it
+  (2026-11-05): a restore holds only until the next pass, and what must stay is pinned, a channel
+  administrator's act (an extension administrator restores but cannot pin).
 - **The line act** is one transaction under the channel lock. The line's maxima come from
   `duckdb_versions` by name (`DuckDBVersionCAPIs`; an unknown version is `400`); "another line
   keeps it" is the computation above over the channel's other lines, and with no rule in force
@@ -537,19 +540,29 @@ the pass or the line act.
   `others` (the holders counted, not named). `purge_off` says a purge waits for `gc.interval`.
 - **The rule's answers.** `in_force` is `{"keep": {"value", "from"} | null, "grace": {"value",
   "from", "capped"?} | null, "missing": [...]}` (keep `"none"` from the channel is a value, not a
-  missing field). The ETag is the stored values (`"r<keep>.<grace seconds>"`, `-` for unset);
-  `If-Match` is compared in the transaction. `retention.set` carries `before` and `after` as stored
+  missing field); a passthrough channel's is `{"keep": null, "grace": null, "missing": [],
+  "passthrough": true}`, whatever the tenant's default. The answers' `ETag` is over their bytes, so
+  a change of what is in force is never a `304`; the body's `etag` is the stored values
+  (`"r<keep>.<grace seconds>"`, `-` for unset), what `If-Match` takes, compared in the transaction
+  (review fix). `retention.set` carries `before` and `after` as stored
   (each field only when set; a channel's none as `"none"`) and, for a channel, `in_force`. A
   passthrough channel's rule, pin or line act is `400`.
 - **The CLI.** `tenant retention` takes `-grace none` too, to clear the tenant's grace (the rule is
-  read, the flags applied and the whole rule sent, so a field cannot otherwise be cleared);
+  read, the flags applied and the whole rule sent, so a field cannot otherwise be cleared); a
+  channel's `-grace none` and `-keep 0` are refused (a channel's grace is its own or `default`);
   `channel retention` prints the rule, the rule in force and the pins; `retention run` lists the
   channels the pass would look at and prints each one's plan, or with `-apply` runs the pass under
   its lease (`another replica runs its pass now` when it is held).
 - **The console.** A signed channel's **Retention** tab (`screens/Retention.tsx`,
   `lib/retention.ts`) as the spec draws it; its versions by line are computed from the channel's
-  releases (a page of 500) and the channel's DuckDB versions' C API maxima, with the plan's
-  `retire` (a page of 500). The release page offers **restore** (a withdrawn entry's: yank and
+  releases and the channel's DuckDB versions' C API maxima (`c_api_maxima`), with the plan's
+  `retire`, every list read to its end in pages of 500 (review fix). Review fixes: the tenant's
+  default form is filled with the stored rule; a mistyped keep is refused before anything is sent;
+  Restore asks for a confirmation saying how long a restore holds, and is offered on a pinned purge
+  row and on every row while nothing is purged; the line act's confirmation states its scope (the
+  line, the name, current and pinned versions included, the pins removed, what the grace means);
+  a line the channel no longer serves is marked "no longer built"; "Always kept" lists the
+  currents, the newest N and the pins; each channel's rule is read again after a save. The release page offers **restore** (a withdrawn entry's: yank and
   purge only); the releases' state filter has `retired`; the upstream cells' filter `retired`. The
   pipeline's stage cards read each stage's `GET …/retention` and show its `in_force` (`retention:
   keep 3 · grace 720h`), "not read" when the read fails.

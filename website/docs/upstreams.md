@@ -297,7 +297,7 @@ skipped). A run without room counts `skipped_at_limit` ([A run at a limit](#a-ru
 | `released` | a new release was made |
 | `unchanged` | the slot already holds this body |
 | `yanked` | the slot holds this body, yanked; it stays yanked |
-| `retired` | the slot holds this body, retired by the channel's retention (spec 0042); it stays retired until an administrator restores it |
+| `retired` | the slot holds this body, retired by the channel's retention (spec 0042); it stays retired until an administrator restores it. After a restore the cell keeps the outcome `retired` until the upstream's answer changes |
 | `conflict` | the upstream's slot holds another body; the version is immutable within its source |
 | `landed` | the build is in the catalogue, placed nowhere: the channel's rule for the name is `manual` and holds no release of its version |
 | `held` | the build is in the catalogue, held (the upstream's [hold](#holds), or the channel's); the placement pass places it in the channel when the hold ends. The cell keeps this outcome until its next fetch |

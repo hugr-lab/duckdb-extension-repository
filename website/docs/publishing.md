@@ -555,14 +555,14 @@ An administrator of the extension (or of its channel or tenant) changes a releas
 | `activate` | a deprecated release is active again |
 | `current` | makes an active release current (a rollback, or a release published with `current=false`) |
 | `public`, `private` | changes visibility |
-| `restore` | a retired release back to the state it had (active or deprecated), keeping its sequence number: current again only if nothing newer is |
+| `restore` | a retired release back to the state it had (active or deprecated), keeping its sequence number: current again only if nothing newer is. It holds until the next pass unless the rule or a pin keeps it; pin what must stay (a channel administrator's act) |
 
 A release is in one of four states: `active`, `deprecated`, `yanked` (final: do not run it) and
 `retired`: the channel's [retention](administration/tenants-and-channels.md#retention) took it out
 of the channel (housekeeping, not a security event). A retired release is served nowhere: DuckDB gets
 the channel's missing answer, the same as for a version that never existed, and the index shows it
-`retired`. It stays signed, so a `restore` serves it again at once; a `yank` and a purge take it
-too. A withdrawn entry's release is never restored.
+`retired`. It stays signed, so a `restore` serves it again at once, until the next pass unless the rule or a pin keeps it: pin what must stay (a channel administrator's act); a
+`yank` and a purge take it too. A withdrawn entry's release is never restored.
 
 `DELETE …/releases/{id}` (and `kista admin release purge`) deletes a yanked or retired release for
 good; its slot stays taken (see [Storage](storage.md)).

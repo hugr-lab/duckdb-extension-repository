@@ -426,8 +426,9 @@ deleted a grace after its record).
 ### Purging yanked and retired releases
 
 Yanked releases are kept until an administrator purges one; a retired release is purged by its
-channel's [retention](administration/tenants-and-channels.md#retention) pass once its grace ends (or
-by an administrator before). A purge deletes the release and its
+channel's [retention](administration/tenants-and-channels.md#retention) pass once its grace ends,
+when no pin keeps it, a rule is in force there and `gc.interval` is set (or by an administrator
+before, a pin or not). A purge deletes the release and its
 signatures; its slot (channel, source, name, version, platform, and the DuckDB version or C API
 major) stays taken for good, so its source can never release another body there (a slot purged
 before schema 34 stays taken for every source). The Build loses its reference and the collector removes it, then the body,
