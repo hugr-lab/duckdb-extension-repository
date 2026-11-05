@@ -58,8 +58,9 @@ decisions (2026-11-05, Q-E to Q-H) are at the end.
     retention in that channel, whatever the tenant's default: `{"keep": 5}` keeps five with the
     tenant's grace, `{"keep": 5, "grace": "168h"}` its own grace too, `{"keep": "none"}` turns it
     off, `{}` follows the tenant entirely.
-  - The CLI reads the rule, applies the flags it was given (`-keep default` or `-grace default`
-    leaves that field out) and sends the whole rule.
+  - The CLI reads the rule, applies the flags it was given and sends the whole rule: at a channel
+    `-keep default` or `-grace default` leaves that field out (the tenant's), at a tenant `-keep
+    none` or `-grace none` does (no default; `default` is no word there).
 - **Each field in force on its own**: a channel may set `keep` and take the tenant's `grace`. The
   answer's `in_force` gives each field its value and its own `from` (`channel` or `tenant`). **A
   field with no value anywhere means no rule in force**: the pass retires and purges nothing in that
@@ -268,7 +269,7 @@ Release events: `release.retire`, one per (name, version) per channel (subject
 `audit.SubjectForm` gains the forms of `retention.*` and `release.retire`; every new kind joins the
 events registry and `TestCoverage`.
 
-CLI: `kista admin tenant retention <t> [-keep N|none] [-grace d]`, `kista admin channel retention
+CLI: `kista admin tenant retention <t> [-keep N|none] [-grace d|none]`, `kista admin channel retention
 <t>/<c> [-keep N|default|none] [-grace d|default]`, `kista admin channel retention-plan <t>/<c>`,
 `kista admin channel pin <t>/<c> <name> <version> [-duckdb-version v] -reason text`, `kista admin
 channel unpin <t>/<c> <pin-id>`, `kista admin channel retire-line <t>/<c> <duckdb-version> [-name
@@ -541,16 +542,19 @@ the pass or the line act.
 - **The rule's answers.** `in_force` is `{"keep": {"value", "from"} | null, "grace": {"value",
   "from", "capped"?} | null, "missing": [...]}` (keep `"none"` from the channel is a value, not a
   missing field); a passthrough channel's is `{"keep": null, "grace": null, "missing": [],
-  "passthrough": true}`, whatever the tenant's default. The answers' `ETag` is over their bytes, so
-  a change of what is in force is never a `304`; the body's `etag` is the stored values
-  (`"r<keep>.<grace seconds>"`, `-` for unset), what `If-Match` takes, compared in the transaction
-  (review fix). `retention.set` carries `before` and `after` as stored
+  "passthrough": true}`, whatever the tenant's default. The `ETag` is the stored values
+  (`"r<keep>.<grace seconds>"`, `-` for unset), what `If-Match` takes, compared in the transaction;
+  the body's `etag` is the same tag. As a tenant's limits (spec 0038) a rule's `GET` never answers
+  `304`: what is in force changes without the stored values (review fixes). `retention.set` carries `before` and `after` as stored
   (each field only when set; a channel's none as `"none"`) and, for a channel, `in_force`. A
   passthrough channel's rule, pin or line act is `400`.
 - **The CLI.** `tenant retention` takes `-grace none` too, to clear the tenant's grace (the rule is
-  read, the flags applied and the whole rule sent, so a field cannot otherwise be cleared); a
-  channel's `-grace none` and `-keep 0` are refused (a channel's grace is its own or `default`);
-  `channel retention` prints the rule, the rule in force and the pins; `retention run` lists the
+  read, the flags applied and the whole rule sent, so a field cannot otherwise be cleared), and
+  refuses `default` for both flags; a channel's `-grace none` and `-keep 0` are refused (a channel's
+  grace is its own or `default`); each scope's usage error names its own words, printed before the
+  usage. A tenant's rule prints a field not set as `unset`, a channel's as `default` (the tenant's).
+  `channel retention` prints the rule, the rule in force (a passthrough channel's: `none (a
+  passthrough channel)`) and the pins; `retention run` lists the
   channels the pass would look at and prints each one's plan, or with `-apply` runs the pass under
   its lease (`another replica runs its pass now` when it is held).
 - **The console.** A signed channel's **Retention** tab (`screens/Retention.tsx`,
@@ -560,10 +564,13 @@ the pass or the line act.
   default form is filled with the stored rule; a mistyped keep is refused before anything is sent;
   Restore asks for a confirmation saying how long a restore holds, and is offered on a pinned purge
   row and on every row while nothing is purged; the line act's confirmation states its scope (the
-  line, the name, current and pinned versions included, the pins removed, what the grace means);
-  a line the channel no longer serves is marked "no longer built"; "Always kept" lists the
-  currents, the newest N and the pins; each channel's rule is read again after a save. The release page offers **restore** (a withdrawn entry's: yank and
-  purge only); the releases' state filter has `retired`; the upstream cells' filter `retired`. The
+  line, the name, current and pinned versions included, the pins removed, of the name when one is
+  given, and what the grace means: "kept retired (purging is off)" while `gc.interval` is 0); a
+  name's line whose newest version is older than the name's newest in another line is marked "no
+  longer built", the spec's label; "Always kept" lists the currents, the newest N and the pins;
+  each channel's rule is read again after a save. A rule's form is filled again from the stored
+  rule when its tag changes, not remounted, so a save's "changed meanwhile" stays on the page. The
+  release page offers **restore** (a withdrawn entry's: yank and purge only); the releases' state filter has `retired`; the upstream cells' filter `retired`. The
   pipeline's stage cards read each stage's `GET …/retention` and show its `in_force` (`retention:
   keep 3 · grace 720h`), "not read" when the read fails.
 - **Known**: a mirror's cell whose release was retired keeps the outcome `retired` (it is

@@ -315,9 +315,9 @@ autoloading never silently picks DuckDB's build over the replacement. List and r
 Without retention a channel keeps every release it ever made. A **retention rule** keeps the
 newest N versions of each name per DuckDB version the channel serves (a **line**), and the
 retention pass **retires** the others: a retired release is served nowhere, and an extension
-administrator can **restore** it until a **grace** ends (it holds until the next pass unless the
-rule or a pin keeps it), after which the pass purges it as an
-[administrator's purge](../storage.md) does (its slot stays taken). kista has **no retention by
+administrator can **restore** it until it is purged (the grace ends, unless a pin keeps it or
+purging is off; a restore holds until the next pass unless the rule or a pin keeps it): the pass
+purges it as an [administrator's purge](../storage.md) does (its slot stays taken). kista has **no retention by
 default**.
 
 ```bash

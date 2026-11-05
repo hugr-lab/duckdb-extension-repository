@@ -457,9 +457,10 @@ Spec 0042: [version retention](administration/tenants-and-channels.md#retention)
 | `GET, POST tenants/{t}/channels/{c}/retention/pins`; `DELETE …/pins/{id}` | channel admin (`GET` also an auditor, `?name=&cursor=&limit=`): `POST {"name", "version", "duckdb_version"?, "reason"}` (no `duckdb_version`: every line; a reason of 1 to 400 bytes of printable text; the version must have a release in the channel and the line be one a release of it serves) answers the pin `201`, or `200` with the one already there; a pin is `{"id", "name", "version", "duckdb_version"?, "reason", "pinned_by", "pinned_at"}`; another channel's id is `404` |
 | `POST tenants/{t}/channels/{c}/retention/lines {"duckdb_version", "name"?}` | channel admin: retire a DuckDB version's line (the version need not be served any more); answers `{"duckdb_version", "retired": [{"id", "name", "version", "platform"}], "kept": [... with the `lines` keeping each], "withdrawn", "pins_removed"}` |
 
-A rule's `GET` and `PUT` answer an `ETag` over the answer's bytes (a change of what is in force,
-such as the tenant's default, is never a `304`); the body's `etag` is the stored rule's, what a
-`PUT`'s optional `If-Match` takes (`412` when stale). A `PUT` refuses `keep` outside 1 to
+A rule's `GET` and `PUT` answer the stored rule's `ETag`, the body's `etag` the same: what a
+`PUT`'s optional `If-Match` takes (`412` when stale). As for a tenant's limits, a `GET` never
+answers `304`: what is in force (the tenant's default, the last pass) changes without the stored
+rule. A `PUT` refuses `keep` outside 1 to
 2147483647 and a `grace` that is not whole seconds, or above `limits.ceilings.retention_grace`
 where it changes (an unchanged one sent again passes), and writes
 `retention.set` only when something changes. Pins write `retention.pin` and `retention.unpin`, the
