@@ -392,6 +392,68 @@ hosts, the threat table), `observability.md` (the class, the reason, the audited
 warnings), `api.md` (`egress-host`), and `deployment/kubernetes.md` (the NetworkPolicy cannot filter
 by name; `egress.hosts` does it in kista; egress IPs never trusted by source-restricted hosts).
 
+### As built
+
+- **egress.** `internal/egress/hosts.go`: `NewHosts` (never nil), `CheckHostEntry` (the entry
+  rules, for the configuration's messages), `(*Hosts).Check(url)` (nil on a nil matcher),
+  `ErrHostNotAllowed` and `*HostError`. `Config` gains `Hosts` and `Log`; `checkURL` and `dial`
+  both call one `refusedHost`, which logs the refusal at warn with the host; `doErr` (now also
+  `Download`'s mapping) returns the `*HostError` unchanged. `Client.HostAllowed` logs nothing;
+  `egress.CheckHost(checker, url, log, args...)` is the callers' pre-check (nil checker: off),
+  logging with the caller's tenant and record, so a refusal is logged once either way.
+  `Client.HostsOn()` is the start log's.
+- **config.** `Egress.HostsEnforce` and `Egress.Hosts`; `Config.EgressHosts()` is the matcher (nil
+  when off). `hosts: []` decodes as an empty, non-nil list, so `[]` and `null` stay apart. The
+  bootstrap check names the field: `bootstrap.issuer.url`, `bootstrap.issuer.jwks_uri`,
+  `bootstrap.upstreams[i]`. DuckDB's two URLs moved to `upspec` (`CoreURL`, `CommunityURL`,
+  `BuiltIn(kind)`), which the configuration already imports; `upstream.CoreURL` and `CommunityURL`
+  are the same constants.
+- **app.** `egressWith` takes the matcher: `Egress` passes `cfg.EgressHosts()`; `ServerEgress`, the
+  credential posters, the sinks and the new `CommunityEgress` pass nil. The services' `Hosts` is the
+  tenants' client itself (`app.NewServices`; `serve` for the forwarder).
+- **Issuers.** `tenants.AuthAdmin.IssuerJWKS` checks the URL's host and an explicit `jwks_uri`'s,
+  discovers, and checks the discovered one's; issuer add and the bootstrap's plan both use it. In the
+  plan, a refused host is the issuer item `refused` (its detail the `HostError`), so `apply` answers
+  `ErrRefused` without retrying; `transient()` is false for `ErrHostNotAllowed` before the other
+  classes (it may be wrapped in `ErrIssuerFetch`), and `classify` makes a bootstrap upstream refused
+  by host a refused item.
+- **Upstreams.** The check is in `CheckSource` (so `CheckAddAll` and the bootstrap have it), at the
+  start of `run` (wrapping `errFailed`: `last_run.error` reads `the run failed: egress: refused:
+  <host> …`, as other run failures carry that prefix), in `Puller.fetch` once the cell's lease is
+  held (where the keys' failure is), and before a bundle export's `.well-known` read. A refused
+  lazy or pull-through fetch is the outcome `failed` to the puller, so the cell is not offered again
+  for a minute (`failedTTL`) and a miss storm logs no line per request.
+- **Feeds, relay, usage.** `attachment.Feeds.Add` checks an online feed's URL before its
+  credential; `run` checks before the credential's token. `licenses.Service.fetch` checks before
+  `Credentials.For`; the forwarder before any day, and `post` maps a `*HostError` from egress to the
+  same reason `egress-host: <host>`.
+- **Tokens.** `jwksEntry` and `discoEntry` keep `lastErr`; `key()` returns it with a missing key,
+  and `VerifyIdentity` fails with `auth.ReasonIssuerHost` (`issuer host not allowed`, the log
+  line's) when it is `ErrHostNotAllowed`. In the `auth.failure` event the reason is
+  `issuer_host_not_allowed` (`auth.EventReason`): the event's reasons are one token, as
+  `stale_token` and `unnamed_writer` are.
+- **API.** `serviceErr` maps a `*HostError` first (after the limit problems): `400 egress-host` with
+  `host`, noted as a refusal with `reason: egress-host` and `host`; `authz.refused` gains the field
+  `host` in the events catalogue.
+- **Start.** `serve` logs `egress: host list on` (`entries`) or `egress: host list off`, and
+  `warnEgressHosts` one warning per host off the list (`host`, `records`, `tenants`) from
+  `Store.IssuerURLs` (now with `jwks_uri`), `Store.UpstreamPrefixes` and `Store.FeedURLs`, skipping
+  bundle-mode records.
+- **e2e.** `TestUpstreamLazy`'s mirror runs with the list on (`localhost` listed). The refusal is a
+  case of its own, `TestUpstreamLazyHostOff`, on a fresh pair: every cell of the first case's
+  mirror is fetched by its end. DuckDB's first request is answered `503` (the ask), its retry `404`.
+- **Refusals coalesce.** The event writer merges an actor's refusals with one reason into a first
+  event and a count (as for `publisher-taken`), so a run of probes records the first one's `host`
+  and how many followed.
+
+**Paused 2026-11-05.** Done: the code (egress, config, app, upstreams, issuers and the verifier,
+the bootstrap, feeds, the relay, usage, the API, the store reads, the start-time warning), every
+test the Testing section lists, the e2e lazy-mirror cases (both pass), and the website pages.
+Each new test passed on SQLite, PostgreSQL and SQL Server when it was written. Nothing is in
+progress. Left: one full `make test` over all three engines, `make lint` over the whole tree (the
+changed packages were clean), the full `make e2e` (stopped before it finished), the review passes,
+and then the Status and the `specs/README.md` row set to `implemented`.
+
 ## Follow-ups
 
 - Per-tenant entries narrowing the server-wide list, which would also end the probing noted under
