@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -294,6 +295,120 @@ func TestWaitingTenant(t *testing.T) {
 		}
 		if evs := p.waitingEvents(t); len(evs) != 0 {
 			t.Fatalf("a tell for the tenant's source: %v", evs)
+		}
+	})
+}
+
+// Spec 0041: a build of a version the channel holds is the pass's to complete, never a version that
+// waits (a second platform, or a DuckDB version the channel starts serving); every platform is served
+// (a channel has no list of them).
+func TestWaitingHeldVersion(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		p := newPlacing(t, en)
+		p.toCat(t, "tresor", cpp("1.0"))
+		if _, err := p.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", "manual"); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := p.rel.Place(ctx, admin, "acme", "prod", "tresor", release.PlaceOptions{Source: "publisher:ci", Version: "1.0"}); err != nil {
+			t.Fatal(err)
+		}
+		mac := cpp("1.0")
+		mac.Platform = "linux_amd64_musl"
+		p.toCat(t, "tresor", mac)
+		if v := p.view(t, "tresor"); v.Waiting != "" {
+			t.Fatalf("a held version's build for another platform waits: %+v", v)
+		}
+		other := cpp("1.1")
+		other.Platform = "linux_amd64_musl"
+		p.toCat(t, "tresor", other)
+		if v := p.view(t, "tresor"); v.Waiting != "1.1" {
+			t.Fatalf("a new version on another platform: %+v", v)
+		}
+		p.pass(t, true)
+		if got := strings.Join(p.waitingEvents(t), ", "); got != "tresor 1.1 1.0 manual" {
+			t.Fatalf("the tells: %q", got)
+		}
+		if got := p.prod(t); !strings.Contains(got, "1.0@v2.0.0:active 1.0@v2.0.0:active") {
+			t.Fatalf("the held version completed: %q", got)
+		}
+	})
+}
+
+// Spec 0041: under a rule placing automatically, what waits is what the next look places: a blocked
+// newest build leaves its slot nothing waiting; under a manual rule an older version may be placed by
+// hand, and waits.
+func TestWaitingBlockedAuto(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		p := newPlacing(t, en)
+		p.toCat(t, "tresor", cpp("1.1"))
+		newest := p.toCat(t, "tresor", cpp("1.2"))
+		if _, _, err := p.rel.Block(ctx, admin, "acme", newest.BodyHash, "CVE"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", "manual"); err != nil {
+			t.Fatal(err)
+		}
+		if v := p.view(t, "tresor"); v.Waiting != "1.1" {
+			t.Fatalf("a manual rule past a blocked newest version: %+v", v)
+		}
+		// the channel's hold keeps the pass from placing while the answer is read
+		if _, err := p.rel.SetChannelHold(ctx, admin, "acme", "prod", 3*time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.rel.SetSource(ctx, admin, "acme", "prod", "tresor", "publisher:ci", "auto"); err != nil {
+			t.Fatal(err)
+		}
+		if v := p.view(t, "tresor"); v.Waiting != "" {
+			t.Fatalf("an auto rule past a blocked newest version: %+v", v)
+		}
+	})
+}
+
+// Spec 0041: no tell for a rule without a mode (an arrival's: the channel serves what lands in it).
+func TestNoTellWithoutMode(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		p := newPlacing(t, en)
+		p.publish(t, cpp("1.0")) // into staging: the arrival writes its rule, without a mode
+		p.toCat(t, "tresor", cpp("1.1"))
+		p.pass(t, true)
+		if evs := p.waitingEvents(t); len(evs) != 0 {
+			t.Fatalf("a tell for a rule without a mode: %v", evs)
+		}
+	})
+}
+
+// Spec 0041: a channel's sources answer reads its rules' waits at once: its statements do not grow
+// with its rules.
+func TestSourcesStatements(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		p := newPlacing(t, en)
+		var n atomic.Int64
+		store.CountQueries(p.st, &n)
+		count := func() int64 {
+			t.Helper()
+			n.Store(0)
+			if _, err := p.rel.Sources(ctx, admin, "acme", "prod"); err != nil {
+				t.Fatal(err)
+			}
+			return n.Load()
+		}
+		rule := func(name string) {
+			t.Helper()
+			if _, _, err := p.pubs.AddToCatalogue(ctx, p.pub, "acme", bytes.NewReader(built(t, cpp("1.0"), name+"_duckdb_cpp_init")),
+				publish(name, "1.0", "linux_amd64")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.rel.SetSource(ctx, admin, "acme", "prod", name, "publisher:ci", "manual"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rule("ext_a")
+		one := count()
+		for _, name := range []string{"ext_b", "ext_c", "ext_d", "ext_e"} {
+			rule(name)
+		}
+		if five := count(); five != one {
+			t.Fatalf("statements for one rule %d, for five %d", one, five)
 		}
 	})
 }

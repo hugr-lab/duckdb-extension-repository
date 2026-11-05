@@ -275,6 +275,19 @@ func (s *Store) UpstreamBlocked(ctx context.Context, upstreamID, hash string) (b
 	return n > 0, err
 }
 
+// UpstreamBlockedHashes lists the bodies an upstream blocked (spec 0041: what waits under a rule of
+// its source, read once for a channel's rules).
+func (s *Store) UpstreamBlockedHashes(ctx context.Context, upstreamID string) (map[string]bool, error) {
+	out := map[string]bool{}
+	err := s.eachRow(ctx, "SELECT body_hash FROM upstream_blocks WHERE upstream_id = ?", []any{upstreamID}, func(sc func(...any) error) error {
+		var h string
+		err := sc(&h)
+		out[h] = err == nil
+		return err
+	})
+	return out, err
+}
+
 // ChannelUpstreamBlocks lists the upstream blocks of the bodies a channel holds a release of: their
 // state and reason by (upstream, body hash), what the channel's -/revocations route shows (a
 // snapshot reads them; not the whole tenant's).

@@ -359,7 +359,7 @@ type ruleLook struct {
 
 // lookAt reads a rule's look: the source's builds of the name in the channel's catalogue, and the
 // source's releases of it in the channel.
-func (s *Service) lookAt(ctx context.Context, ch store.Channel, source, name string, now time.Time) (ruleLook, error) {
+func (s *Service) lookAt(ctx context.Context, ch store.Channel, source, name string) (ruleLook, error) {
 	builds, err := s.Store.SourceBuilds(ctx, ch.TenantID, ch.PackageType, source, name)
 	if err != nil || len(builds) == 0 {
 		return ruleLook{}, err
@@ -380,6 +380,12 @@ func (s *Service) lookAt(ctx context.Context, ch store.Channel, source, name str
 	}); err != nil {
 		return ruleLook{}, err
 	}
+	return lookOf(ch, capis, builds, purged, rels), nil
+}
+
+// lookOf is a rule's look from what was read of it: the channel's DuckDB versions, the source's
+// builds of the name (purged: those purged for good), and its releases and purged slots there.
+func lookOf(ch store.Channel, capis map[string][]store.CAPI, builds []store.Build, purged map[string]bool, rels []store.Candidate) ruleLook {
 	lk := ruleLook{sv: newServed(rels, capis)}
 	for _, r := range rels {
 		if (r.State == store.ReleaseActive || r.State == store.ReleaseDeprecated) && !r.Withdrawn &&
@@ -396,31 +402,51 @@ func (s *Service) lookAt(ctx context.Context, ch store.Channel, source, name str
 		}
 		lk.cands = append(lk.cands, candidate{b: b, at: b.AvailableIn(ch.Hold), newer: newer(b.PackageVersion, lk.sv.cells(b), lk.sv.newest)})
 	}
-	return lk, nil
+	return lk
+}
+
+// blockedFn reports whether a body of a source's build is blocked: in the tenant, or by the source's
+// upstream (spec 0039).
+type blockedFn func(ctx context.Context, source, hash string) (bool, error)
+
+// blockedNow reads each body's blocks as it is asked (the pass's look, a candidate or two).
+func (s *Service) blockedNow(tenantID string) blockedFn {
+	return func(ctx context.Context, source, hash string) (bool, error) {
+		blocked, err := s.Store.Blocked(ctx, tenantID, hash)
+		if id, ok := strings.CutPrefix(source, store.SourceUpstreamPrefix); err == nil && !blocked && ok {
+			blocked, err = s.Store.UpstreamBlocked(ctx, id, hash)
+		}
+		return blocked, err
+	}
 }
 
 // waitingOf is a rule's waiting version (spec 0041): the newest of its candidates newer than what
 // their cells had whose entry is available (its source's hold ended) and whose body is not blocked
-// (in the tenant, or by its upstream); "" for none. The pass places a blocked body's build all the
-// same, and its refusal is the rule's outcome; it is not what waits.
-func (s *Service) waitingOf(ctx context.Context, tenantID, source string, lk ruleLook, now time.Time) (string, error) {
+// (in the tenant, or by its upstream); "" for none. A candidate of a version the channel holds is
+// not one: the pass completes it by itself. Under a rule placing automatically (auto) it is what the
+// next look places: per platform and slot the newest candidate, so a blocked newest one, which the
+// pass tries all the same (its refusal is the rule's outcome), leaves that slot nothing waiting; an
+// administrator placing by hand may take an older one.
+func waitingOf(ctx context.Context, source string, lk ruleLook, now time.Time, auto bool, blocked blockedFn) (string, error) {
 	var cands []store.Build
 	for _, c := range lk.cands {
-		if c.newer && !c.b.Held(now) {
+		if c.newer && !c.b.Held(now) && !lk.sv.held[c.b.PackageVersion] {
 			cands = append(cands, c.b)
 		}
 	}
 	slices.SortFunc(cands, func(x, y store.Build) int { return CompareVersions(y.PackageVersion, x.PackageVersion) })
-	upstreamID, fromUpstream := strings.CutPrefix(source, store.SourceUpstreamPrefix)
+	tried := map[[2]string]bool{} // (platform, slot) whose newest was looked at
 	for _, b := range cands {
-		blocked, err := s.Store.Blocked(ctx, tenantID, b.BodyHash)
-		if err == nil && !blocked && fromUpstream {
-			blocked, err = s.Store.UpstreamBlocked(ctx, upstreamID, b.BodyHash)
+		k := [2]string{b.Platform, b.Slot()}
+		if auto && tried[k] {
+			continue
 		}
+		tried[k] = true
+		bl, err := blocked(ctx, source, b.BodyHash)
 		if err != nil {
 			return "", err
 		}
-		if !blocked {
+		if !bl {
 			return b.PackageVersion, nil
 		}
 	}
@@ -589,7 +615,7 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 		return lookResult{}, nil
 	}
 	now := s.Store.Now() // what is held is held at the look's start
-	lk, err := s.lookAt(ctx, ch, r.Source, r.Name, now)
+	lk, err := s.lookAt(ctx, ch, r.Source, r.Name)
 	if err != nil || len(lk.cands) == 0 {
 		return lookResult{}, err
 	}
@@ -672,7 +698,7 @@ func (s *Service) placeRule(ctx context.Context, r store.DueRule, renew func(con
 	})
 	res := lookResult{current: lk.current}
 	if r.Mode == store.RuleManual && !home {
-		if res.waiting, err = s.waitingOf(ctx, r.TenantID, r.Source, lk, now); err != nil {
+		if res.waiting, err = waitingOf(ctx, r.Source, lk, now, false, s.blockedNow(r.TenantID)); err != nil {
 			return lookResult{}, err
 		}
 	}

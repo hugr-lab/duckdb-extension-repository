@@ -141,6 +141,93 @@ func (t *Tx) SourceReleases(ctx context.Context, channelID, source, name string)
 	return out, purged.Err()
 }
 
+// RuleReads are what the placement pass reads of a rule (SourceBuilds, PurgedBuilds and
+// SourceReleases), for many rules of a channel at once, by (source, name) (spec 0041: the sources
+// answer looks at every rule of a channel).
+type RuleReads struct {
+	Builds   map[[2]string][]Build
+	Purged   map[string]bool // build ids
+	Releases map[[2]string][]Candidate
+	// Slots are the channel's purged slots by name, Source "*" for one purged before slots had a
+	// source (it is every source's)
+	Slots map[string][]Candidate
+}
+
+// Of are a (source, name)'s builds, and its releases and purged slots in the channel, as
+// SourceBuilds and SourceReleases answer them.
+func (rr RuleReads) Of(source, name string) ([]Build, []Candidate) {
+	rels := slices.Clone(rr.Releases[[2]string{source, name}])
+	for _, c := range rr.Slots[name] {
+		if c.Source == source || c.Source == "*" {
+			c.Source = source
+			rels = append(rels, c)
+		}
+	}
+	return rr.Builds[[2]string{source, name}], rels
+}
+
+// ChannelRuleReads reads, for a channel's rules (of one name, or every name: ""), the catalogue builds
+// of each rule's (source, name), those purged for good, and the releases and purged slots of the
+// channel: four statements, however many rules.
+func (s *Store) ChannelRuleReads(ctx context.Context, ch Channel, name string) (RuleReads, error) {
+	rr := RuleReads{Builds: map[[2]string][]Build{}, Purged: map[string]bool{}, Releases: map[[2]string][]Candidate{}, Slots: map[string][]Candidate{}}
+	of, args := "", []any{ch.ID, ch.TenantID, ch.PackageType}
+	if name != "" {
+		of, args = " AND cs.name = ?", append(args, name)
+	}
+	rules := ` FROM builds b JOIN channel_sources cs ON cs.source = b.source AND cs.name = b.name
+WHERE cs.channel_id = ? AND b.tenant_id = ? AND b.package_type = ?` + of
+	if err := s.eachRow(ctx, "SELECT "+prefixed("b.", buildCols)+rules+" ORDER BY b.created_at, b.id", args, func(sc func(...any) error) error {
+		b, err := scanBuild(rowScanner(sc))
+		if err == nil {
+			k := [2]string{b.Source, b.Name}
+			rr.Builds[k] = append(rr.Builds[k], b)
+		}
+		return err
+	}); err != nil {
+		return rr, err
+	}
+	if err := s.eachRow(ctx, "SELECT b.id"+rules+` AND NOT EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id)
+AND EXISTS (SELECT 1 FROM purged_slots p JOIN channels c ON c.id = p.channel_id WHERE c.tenant_id = b.tenant_id
+	AND c.package_type = b.package_type AND p.name = b.name AND p.package_version = b.package_version AND p.body_hash = b.body_hash
+	AND p.source IN (b.source, '*'))`, args, func(sc func(...any) error) error {
+		var id string
+		err := sc(&id)
+		rr.Purged[id] = err == nil
+		return err
+	}); err != nil {
+		return rr, err
+	}
+	on, rargs := "", []any{ch.ID}
+	if name != "" {
+		on, rargs = " AND r.name = ?", append(rargs, name)
+	}
+	if err := s.eachRow(ctx, "SELECT "+candidateCols+" FROM releases r JOIN builds b ON b.id = r.build_id WHERE r.channel_id = ?"+on, rargs,
+		func(sc func(...any) error) error {
+			c, err := scanCandidate(rowScanner(sc))
+			if err == nil {
+				k := [2]string{c.Source, c.Name}
+				rr.Releases[k] = append(rr.Releases[k], c)
+			}
+			return err
+		}); err != nil {
+		return rr, err
+	}
+	on = strings.ReplaceAll(on, "r.", "")
+	err := s.eachRow(ctx, "SELECT release_id, package_version, platform, slot, abi, body_hash, seq, source, name FROM purged_slots WHERE channel_id = ?"+on,
+		rargs, func(sc func(...any) error) error {
+			c := Candidate{Release: Release{ChannelID: ch.ID, State: ReleasePurged}}
+			var seq sql.NullInt64
+			if err := sc(&c.ID, &c.PackageVersion, &c.Platform, &c.Slot, &c.ABI, &c.BodyHash, &seq, &c.Source, &c.Name); err != nil {
+				return err
+			}
+			c.Seq = seq.Int64
+			rr.Slots[c.Name] = append(rr.Slots[c.Name], c)
+			return nil
+		})
+	return rr, err
+}
+
 // SetRuleChecked records the placement pass's look at a rule, begun at start: when (builds made
 // after it are looked at next time), its outcome ("" for none), and when the first hold it waits for
 // ends (spec 0033 phase A2: due, zero for none). A rule changed since the look began (its source,
