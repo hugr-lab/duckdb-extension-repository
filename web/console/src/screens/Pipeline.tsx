@@ -4,7 +4,7 @@ import { Badge, Button, Confirm, Empty, ErrorBox, Loading, Mono, Note } from '..
 import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { useHome } from '../lib/home'
-import { type Client, seg } from '../lib/http'
+import { ApiError, type Client, seg } from '../lib/http'
 import { type IndexRelease, type OrderEdge, type PurgedRelease, type StageWait, cellWaits, chainsOf, orderBody, previousOf, slotOf, stageWait } from '../lib/order'
 import { type ChannelReads, type Decision, type HomeReads, actsManual } from '../lib/queue'
 import { SourceLicence, modeWords, removedSource } from './Catalogue'
@@ -319,15 +319,27 @@ function Panel({ stage, name, wait, onChanged, onClose, onDone }: {
  * names its next, or none. The whole order is sent, at the ETag read when the dialog opened (read
  * again when it changed meanwhile); the edges of channels it does not list are kept. The API refuses
  * a cycle, two channels sharing a next, and a channel its own next. */
-export function OrderDialog({ open, channels, onClose, onSaved }: { open: boolean; channels: string[]; onClose: () => void; onSaved: () => void }) {
+export function OrderDialog({ open, channels: known, onClose, onSaved, reload }: {
+  open: boolean; channels: string[]; onClose: () => void; onSaved: () => void
+  /** reads the home again: the channels the dialog lists may be older than the order it reads */
+  reload: () => void
+}) {
   const { client, api } = useTenant()
   const [read, setRead] = useState<{ etag: string; edges: OrderEdge[]; next: Record<string, string> } | null>(null)
   const [reads, setReads] = useState(0)
-  const { busy, failure, act, setFailure } = useAction('The order', () => setReads((n) => n + 1))
+  const { busy, failure, act, setFailure } = useAction('The order', () => {
+    setReads((n) => n + 1)
+    reload()
+  })
+  // the home's channels and every channel the order read names (one the home read before it was made)
+  const channels = [...known, ...(read?.edges ?? []).flatMap((e) => [e.channel, e.next]).filter((c, i, a) => !known.includes(c) && a.indexOf(c) === i).sort()]
   useEffect(() => {
     if (!open) return
     setRead(null)
-    if (reads === 0) setFailure(null)
+    if (reads === 0) {
+      setFailure(null)
+      reload()
+    }
     let alive = true
     client.get<{ order: OrderEdge[] }>(`${api}/channel-order`).then(
       (r) => alive && setRead({ etag: r.etag, edges: r.data.order, next: Object.fromEntries(r.data.order.map((e) => [e.channel, e.next])) }),
@@ -335,6 +347,7 @@ export function OrderDialog({ open, channels, onClose, onSaved }: { open: boolea
     return () => {
       alive = false
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload is the home's, read again with it
   }, [open, api, client, setFailure, reads])
   useEffect(() => {
     if (!open) setReads(0)
@@ -342,7 +355,15 @@ export function OrderDialog({ open, channels, onClose, onSaved }: { open: boolea
   const save = () => {
     if (!read || channels.length === 0) return
     const order = orderBody(read.edges, channels, read.next)
-    act(() => client.put(`${api}/channel-order`, { body: { order }, ifMatch: read.etag })).then((ok) => {
+    act(async () => {
+      try {
+        await client.put(`${api}/channel-order`, { body: { order }, ifMatch: read.etag })
+      } catch (e) {
+        // refused (a channel gone or made since the home was read): the home is read again
+        if (e instanceof ApiError && e.status === 400) reload()
+        throw e
+      }
+    }).then((ok) => {
       if (ok) {
         onClose()
         onSaved()

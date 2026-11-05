@@ -47,7 +47,7 @@ export function Channels() {
           ) : <Button onClick={() => setOrdering(true)}>Set the order…</Button>}
         </div>
       )}
-      {home?.reads && <OrderDialog open={ordering} channels={home.reads.channels.map((c) => c.name)} onClose={() => setOrdering(false)} onSaved={home.reload} />}
+      {home?.reads && <OrderDialog open={ordering} channels={home.reads.channels.map((c) => c.name)} onClose={() => setOrdering(false)} onSaved={home.reload} reload={home.reload} />}
       {view === 'pipeline' ? <Pipeline onEdit={() => setOrdering(true)} /> : rows.length === 0 ? (
         <Empty>No channel you administer.</Empty>
       ) : (

@@ -147,6 +147,10 @@ interface Fake {
   noBody?: boolean
   /** the order's PUT answers 412 once */
   stale?: boolean
+  /** the order's PUT answers 400 once */
+  refuse?: boolean
+  /** more edges in the order than the home's channels name */
+  extra?: { channel: string; next: string }[]
 }
 
 // nightly → staging → prod; relay 1.0 is nightly's current, staging's rule manual with no release of
@@ -162,9 +166,10 @@ function api(f: Fake = {}) {
     { name: 'staging', hold: '24h0m0s', follows: [], sources: [{ name: 'relay', source: 'tenant', mode: 'manual', waiting: '1.0', available: {} },
       { name: 'beacon', source: 'upstream:core', mode: 'auto', available: {} }, { name: 'lantern', source: 'tenant', available: {} }] },
   ]
-  let order = [{ channel: 'nightly', next: 'staging' }, { channel: 'staging', next: 'prod' }]
+  let order = [{ channel: 'nightly', next: 'staging' }, { channel: 'staging', next: 'prod' }, ...(f.extra ?? [])]
   let etag = 1
   let stale = f.stale ?? false
+  let refuse = f.refuse ?? false
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
     const u = new URL(input)
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body
@@ -173,6 +178,10 @@ function api(f: Fake = {}) {
     if (c.method === 'POST' && c.path.endsWith('/releases/promote')) return json({ releases: [] }, 201)
     if (c.method === 'PUT' && c.path === '/decisions') return json({ ...body, id: 'd9', etag: '"v1"' }, 201)
     if (c.method === 'PUT' && c.path === '/channel-order') {
+      if (refuse) {
+        refuse = false
+        return json({ status: 400, title: 'Bad Request', detail: 'qa is not a channel of the tenant' }, 400)
+      }
       if (stale) {
         stale = false
         etag++
@@ -346,6 +355,28 @@ describe('the pipeline', () => {
     expect(put[0].headers['If-Match']).toBe('"o1"')
     expect(put[1].headers['If-Match']).toBe('"o2"')
     expect(put[1].body).toEqual({ order: [{ channel: 'nightly', next: 'staging' }] })
+  })
+
+  it('lists the channels the order read names beside the home\'s, and reads the home again on opening, on a 412 and on a 400', async () => {
+    const calls = api({ extra: [{ channel: 'dev', next: 'qa' }], refuse: true, stale: true })
+    page('server')
+    await pipeline()
+    const homeReads = () => calls.filter((c) => c.method === 'GET' && c.path === '/catalogue').length
+    await screen.findByRole('button', { name: 'Edit the order…' })
+    const before = homeReads()
+    fireEvent.click(screen.getByRole('button', { name: 'Edit the order…' }))
+    await waitFor(() => expect(homeReads()).toBe(before + 1)) // on opening
+    // dev and qa, which the home's channels do not name, are rows and choices too
+    const dev = await screen.findByLabelText('next of dev') as HTMLSelectElement
+    expect(dev.value).toBe('qa')
+    expect([...(screen.getByLabelText('next of nightly') as HTMLSelectElement).options].map((o) => o.value)).toEqual(
+      ['', 'staging', 'prod', 'beta', 'dev', 'qa']) // the home's, in the order's sequence, then the order's others
+    fireEvent.click(within(openDialog()).getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText(/qa is not a channel of the tenant/)).toBeTruthy() // 400
+    await waitFor(() => expect(homeReads()).toBe(before + 2))
+    fireEvent.click(within(openDialog()).getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText(/The order changed meanwhile/)).toBeTruthy() // 412
+    await waitFor(() => expect(homeReads()).toBe(before + 3))
   })
 
   it("is a tenant administrator's: a channel's administrator sees the list of its channels only", async () => {
