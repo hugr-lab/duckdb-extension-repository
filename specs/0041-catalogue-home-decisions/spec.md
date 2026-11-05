@@ -80,9 +80,10 @@ distributors' publishers' entries only). So:
 - **A channel's administrator who is not a tenant administrator**: the home stays **Channels**, as
   today; their channels' Sources tabs show `waiting` and `waits_until`, and they read their
   channels' decisions and events. The queue and writing decisions are tenant administrators' only
-  (decision Q-B).
-- **An auditor** (`audit`, spec 0040) reads the decisions; the console has no auditor's view (spec
-  0040's follow-up), so this is for the API.
+  (decision Q-B). Their Channels screen lists their own channels only, without the pipeline: the
+  pipeline (Channels → Pipeline, spec 0043) is a tenant administrator's view.
+- **An auditor** (`audit`, spec 0040) reads the decisions, and writes nothing; the console has no
+  auditor's view (spec 0040's follow-up), so this is for the API.
 
 ### The queue, as the console computes it
 
@@ -175,14 +176,27 @@ cost per channel is the look's.
 ### A channel's administrators read their channel's events
 
 Spec 0040's readers of `GET …/events` and `…/events/{id}` (the tenant's auditors and
-administrators) gain a channel's administrators, for their channel only: a caller holding `admin` on
-a channel, without `audit` on the tenant, must send `subject=channel:<c>/` (or a longer prefix of
-it) naming a channel it administers, and reads the events whose subject is under it (the rules',
-releases', placements', `source.waiting`, `decision.*` of the channel). Any other read by such a
-caller is `404`, as today; `GET …/events/{id}` answers it an event under one of its channels only.
-The API rule admits the caller by the path's tenant; the service checks the subject prefix against
-the caller's channels (defence in depth, as spec 0040's `readTenant`). Nothing else of spec 0040
-changes (the `kind` list, the settled tail, `pruned_through`, the actor forms).
+administrators) gain a channel's administrators, for their channel only:
+
+- **The subject.** A caller holding `admin` on a channel, without `audit` on the tenant, must send
+  `subject=channel:<c>` or `subject=channel:<c>/…` (a longer prefix), naming a channel it
+  administers. `channel:<c>` is read as that exact subject plus the prefix `channel:<c>/`, never as
+  a bare prefix, so `channel:prod` does not match `channel:prod2`. That takes in the channel's own
+  events (`channel.versions`, the channel's `catalogue.hold`, `follow.set` and `follow.clear`,
+  `retention.*` of spec 0042, `key.*`) and those under it (rules, releases, placements,
+  `source.waiting`, `decision.*` of the channel).
+- **Two kinds left out**: `install` and `extension.use`, whatever the subject. Their actor is the
+  installing principal, with its display name, client address and `User-Agent` (spec 0010, spec
+  0012), and a channel's administrators do not see installers today: the statistics answer them
+  counts per channel and extension (`stats/downloads`, `stats/usage`, through their `admin` grant),
+  never who installed. The service filters them out by kind (an exclusion added to the caller's
+  `kind` list, so an explicit `kind=install` is `404`).
+- Any other read by such a caller is `404`, as today; `GET …/events/{id}` answers it only an event
+  it could list.
+- The API rule admits the caller by the path's tenant; the service checks the subject against the
+  caller's channels and applies the kind exclusion (defence in depth, as spec 0040's `readTenant`).
+  Nothing else of spec 0040 changes (the `kind` list, the settled tail, `pruned_through`, the actor
+  forms).
 
 ### Decisions
 
@@ -192,18 +206,28 @@ sees the same queue. A dismissal is keyed to the situation (decision Q-C):
 | Kind | Scope | Keyed to | The item comes back when |
 | --- | --- | --- | --- |
 | `skip` | a channel, a source, a name | the waiting version skipped | a version newer than it waits |
-| `dismiss` (a follow's skip) | a channel, a source, a name | the follow's skip reason | the follow skips the name for another reason |
-| `dismiss` (no channel, or some channels only) | the tenant, a source, a name | the set of channels whose rules take the name (empty: none) | that set changes |
+| `dismiss` (a follow's skip) | a channel, a source, a name | the follow's skip reason, a JSON string | the follow skips the name for another reason |
+| `dismiss` (no channel, or some channels only) | the tenant, a source, a name | the channels whose rules take the name, a JSON array of channel names sorted bytewise (`[]`: none) | that set changes |
 
 - **One decision per (scope, kind, source, name)**: a later decision replaces it (a skip of `0.4.1`
   replaces the skip of `0.4.0`). Only the newest waiting version is ever shown, so remembering one
   version per item is enough.
-- **A decision changes nothing else.** A skip does not stop a placement by hand or a promotion, a
-  manual rule places nothing by itself anyway, and an `auto` rule has nothing to skip. A dismissal
-  does not change a follow. The decision only shapes the queue.
+- **`situation`** is the dismissal's key: a string for a follow's skip, a sorted array for the
+  channels taking the name. It is stored canonically, as the JSON text of that value (no spaces, the
+  array sorted and without duplicates), and compared as stored: the item comes back when the
+  canonical text of what the console now sees differs.
+- **A decision changes nothing else.** A skip does not stop a placement by hand or a promotion, and
+  a manual rule places nothing by itself anyway. Skip is offered only under a manual rule (or a
+  follow's rule acting as manual), where a version waits for a person: in the queue's first group
+  and on the pipeline (spec 0043); under an `auto` rule there is nothing to skip. Wherever a waiting
+  count is shown (the navigation, the pipeline's "N versions wait"), a version a skip covers is left
+  out by the same key: (channel, source, name), and the waiting version not newer than the skipped
+  one. A dismissal does not change a follow. The decision only shapes the queue.
 - **Routes** (answers: `id`, `kind`, `channel` when scoped to one, `source` as answers name it,
   `name`, `version` (a skip's) or `situation` (a dismissal's), `decided_by` masked as `created_by` is
-  (spec 0040), `decided_at`, `package_type` when not the default, and an `ETag` of its row version):
+  (spec 0040), `decided_at`, `package_type` when not the default, and `etag`, its row version as a
+  strong ETag, in every answer, lists included, so any client can Undo; a single decision's answer
+  also sends it as the `ETag` header):
   - `GET /api/v1/tenants/{t}/decisions[?type=&channel=&cursor=&limit=]`: the tenant's
     administrators and its auditors; every decision of the tenant, paged by id.
   - `GET /api/v1/tenants/{t}/channels/{c}/decisions[?cursor=&limit=]`: also the channel's
@@ -214,15 +238,16 @@ sees the same queue. A dismissal is keyed to the situation (decision Q-C):
     (decision Q-B).
     It writes or replaces the decision of (scope, kind, source, name) and answers it (`200`; `201`
     when new).
-  - `DELETE /api/v1/tenants/{t}/decisions/{id}` with `If-Match` (the ETag): the tenant's
+  - `DELETE /api/v1/tenants/{t}/decisions/{id}` with `If-Match` (the `etag`): the tenant's
     administrators (Undo). A stale ETag is `412`: another administrator changed the decision since.
 - **Ids are checked against their scope**: an id of another tenant answers `404`, the same bytes
   as an unknown id; a channel's read answers only that channel's decisions.
 - **Checks** (shape and existence, `400` or `404` as the catalogue's routes answer): the source is
   one of the tenant's live sources, and the name has entries of it in the catalogue, of the
   channel's package type; a skip's version is one of them, in a signed channel; a dismissal's
-  `situation` is what the console was shown (a skip reason from the follow's list, or a list of the
-  tenant's channel names). A decision on a removed source cannot be written.
+  `situation` is of its kind's JSON type (a string of at most 400 bytes for a follow's skip; an array
+  of the tenant's channel names for the tenant's), stored canonically. A decision on a removed source
+  cannot be written.
 - **Gone with what they name**: removing a source deletes its decisions (as its follows and skips,
   spec 0033 part 4); when the collector deletes the last build of a (source, name), it deletes that
   (source, name)'s decisions in the same transaction, so decisions never outlive the catalogue
@@ -297,9 +322,13 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
   read them through the catalogue; nothing of another tenant sharing the body in a storage domain.
 - **The event** carries versions and a source label, facts the sources answer shows; it is the
   tenant's.
-- **A channel's administrators' events** are those under their channel's subject only, checked by
-  the API rule and again by the service; the tenant's other events (identity, grants, other
-  channels, refusals with `route:` subjects) stay its auditors' and administrators'.
+- **A channel's administrators' events** are their channel's subject and those under it only,
+  checked by the API rule and again by the service, an exact subject or a `/` prefix (no
+  `prod` → `prod2`); the tenant's other events (identity, grants, other channels, refusals with
+  `route:` subjects) stay its auditors' and administrators'. `install` and `extension.use` are left
+  out: they name installers, whom a channel's administrators do not see today (their statistics
+  are counts). The rest under the channel is what they already read through its management routes
+  (its rules, follows, hold, releases, keys and their events, `…/keys/events`).
 - **Fail closed**: a tell that fails is tried again and never shown as a failed placement; a
   decision that fails to write leaves the item in the queue.
 
@@ -322,14 +351,20 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
   racing past a lapsed lease tell once; a failed tell is logged, not the rule's outcome.
 - **API**: the decision routes (a tenant administrator writes; a channel administrator reads its
   channel's and gets `404` on another channel's, on the tenant route and on any write; an auditor
-  reads and writes nothing; a distribution admin, an install holder and a publisher `404`); ids out of
-  scope `404`; `If-Match` on `DELETE` (`412` when stale); the checks (`400`, `404`); paging;
+  reads, and writes nothing; a distribution admin, an install holder and a publisher `404`); ids out of
+  scope `404`; `etag` in list answers, `If-Match` on `DELETE` (`412` when stale); `situation`
+  stored canonically (an array sent unsorted matches the sorted one); the checks (`400`, `404`);
+  paging;
   `decision.set`, `decision.clear` and `source.waiting` in the events registry, `SubjectForm` and
   `TestCoverage`; `held_until`, `waiting`, `waits_until`; `builds` in the block answers.
-- **Channel administrators' events**: a channel administrator reads `subject=channel:<c>/` of its
-  channel and `…/events/{id}` of an event under it; `404` without the subject, with another channel's,
-  with a prefix that is not a channel's (`channel:`), and for an event of another channel; an auditor
-  and a tenant administrator unchanged.
+- **Channel administrators' events**: a channel administrator reads `subject=channel:<c>` (the
+  channel's own events, `channel.versions`, `catalogue.hold`, `follow.*`, `retention.*`, and those
+  under `channel:<c>/`), `subject=channel:<c>/ext:<name>`, and `…/events/{id}` of such an event;
+  `channel:prod` does not match `channel:prod2`'s events; `install` and `extension.use` are never
+  answered (`kind=install` is `404`, a list without `kind` leaves them out, `…/events/{id}` of one is
+  `404`); `404` without the subject, with another channel's, with a prefix that is not a channel's
+  (`channel:`), and for an event of another channel; an auditor and a tenant administrator
+  unchanged.
 - **CLI**: `catalogue list`'s `HELD`, `block list`'s `WHAT`.
 - **Console**: unit tests of the matrix and the queue's groups from fixtures (a skip hides a version
   until a newer one, a dismissal until its situation changes, Promote offered only where a channel
@@ -393,8 +428,7 @@ home, the queue, decisions), `api.md` (the routes), `observability.md` (`source.
 
 - Version constraints in a rule: a spec of their own (decision Q-D).
 - Enterest's side (decision Q-A): its tenant watch (its spec 0012) ignores `system:` events, so it
-  takes `source.waiting` explicitly to tell its customers; its provisioning, if it sets retention
-  (spec 0042), needs `retention.set` in its `kista_acts`.
+  takes `source.waiting` explicitly to tell its customers.
 - A tenant-wide read of every channel's rules with `current`, `waiting` and the outcome, if the
   matrix's one read per channel becomes slow for tenants with many channels.
 - The queue for other package types (spec 0034) in the console.
