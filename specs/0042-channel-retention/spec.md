@@ -46,17 +46,30 @@ decisions (2026-11-05, Q-E to Q-H) are at the end.
 
 - `keep`: N, a whole number at least 1 that fits its column (`400` above it); `grace`: a duration
   of whole seconds, at least 0 (`0` purges at the next pass after the retirement: no time to
-  restore), at most the ceiling `limits.ceilings.retention_grace` (default `2160h`, as `max_hold`;
-  spec 0038's amendment). "Off" is no rule at all.
+  restore), at most the ceiling `limits.ceilings.retention_grace` (below). "Off" is no rule at all.
 - **The tenant's default** (`PUT …/tenants/{t}/retention`), for every signed channel without its
-  own; **a channel's own** (`PUT …/channels/{c}/retention`): per field, its value, `"default"` (the
-  tenant's), or for `keep`, `"none"` (no retention in that channel, whatever the tenant's default).
-  A tenant without a default and a channel without its own keep everything, as today: kista has
-  no retention by default (decision Q-H).
+  own; **a channel's own** (`PUT …/channels/{c}/retention`). A tenant without a default and a channel
+  without its own keep everything, as today: kista has no retention by default (decision Q-H).
+- **A `PUT` is the whole rule**: a field it leaves out is unset.
+  - At the tenant: `{"keep": 3, "grace": "720h"}` sets both; `{"keep": 3}` sets `keep` and clears
+    the grace (a grace is cleared by leaving it out); `{}` clears both, and `{"keep": "none"}` is
+    the same as leaving `keep` out (no default).
+  - At a channel: a field left out is unset, so the tenant's applies; `"keep": "none"` means no
+    retention in that channel, whatever the tenant's default: `{"keep": 5}` keeps five with the
+    tenant's grace, `{"keep": 5, "grace": "168h"}` its own grace too, `{"keep": "none"}` turns it
+    off, `{}` follows the tenant entirely.
+  - The CLI reads the rule, applies the flags it was given (`-keep default` or `-grace default`
+    leaves that field out) and sends the whole rule.
 - **Each field in force on its own**: a channel may set `keep` and take the tenant's `grace`. The
-  answer's `in_force` gives each field its value and its `from` (`channel` or `tenant`). **A field
-  with no value anywhere means no rule in force**: the pass retires and purges nothing in that
+  answer's `in_force` gives each field its value and its own `from` (`channel` or `tenant`). **A
+  field with no value anywhere means no rule in force**: the pass retires and purges nothing in that
   channel (fail closed), and `in_force` says which field is missing.
+- **`limits.ceilings.retention_grace`** (default `2160h`, as `max_hold`) follows spec 0038's rules
+  for product ceilings: it is the server's, put in force by `store.SetCeilings` as the store opens,
+  with its shape checked only (at least 1s). It is checked where a grace changes, so a client
+  sending an unchanged value again is not refused; a ceiling lowered below a stored grace caps it,
+  and `in_force` shows the capped value (the stored one is kept and counts again if the ceiling is
+  raised).
 - **Passthrough channels** take no rule, no pin, no restore and no line act (`400`): they serve
   DuckDB's core byte-identical, by their upstream's cells (spec 0009).
 
@@ -108,6 +121,9 @@ A pin keeps (name, version) in one line, or in every line, whatever the rule: `P
   given, must be a line one of its releases serves (`400` otherwise).
 - A pin keeps an active or deprecated version from retirement, and a **retired** version from the
   purge; it does not restore a retired version (the console offers both).
+- Answers: each pin is `id`, `name`, `version`, `duckdb_version` (omitted for every line), `reason`,
+  `pinned_by` (masked as other actors are, spec 0040) and `pinned_at`; `POST` answers the pin with
+  `201`, or `200` with the existing one when the same (name, version, line) is pinned already.
 - A purge of one of the version's releases (by hand) drops the pin only when no release of the
   version is left in the pinned line (or, for every line, in the channel).
 - A pin names no source: it keeps the version from any source.
@@ -169,16 +185,23 @@ A pin keeps (name, version) in one line, or in every line, whatever the rule: `P
 `POST …/channels/{c}/retention/lines {"duckdb_version": …, "name"?: …}` (a channel administrator):
 retires every active or deprecated release of the name (or of every name) that serves that line and
 that no other line of the channel keeps, current and pinned versions included (pins for that line
-are removed; a pin for every line keeps its version in the other lines).
+are removed; a pin for every line keeps its version in the other lines). Withdrawn entries' releases
+are skipped, as they are never purged (spec 0033), and counted in the answer.
+
+- **A pin for every line** on a version whose release serves only that line (a `cpp` build): the
+  line act retires the release, as it retires everything the line alone keeps; the pin stays and
+  keeps the retired release from the purge, so a restore stays possible for as long as it is
+  pinned.
 
 - The DuckDB version need not be served by the channel any more, so the releases a removed line
   left behind can go too: which releases serve it is read from the version's own C API maxima
   (`duckdb_version_c_apis`) for `c_struct` releases, and from the slot (the DuckDB version) for
   `cpp` and `c_struct_unstable` ones.
-- The answer lists the releases retired and those kept by another line. Event `retention.line`
-  (subject `channel:<c>`; data `duckdb_version`, `name` when given, `retired` (how many releases),
-  `kept` (how many another line keeps), `pins_removed`), and a `release.retire` per (name, version)
-  with `by: "line"`.
+- The answer lists the releases retired, those kept by another line, and how many withdrawn
+  entries' releases were skipped. Event `retention.line` (subject `channel:<c>`; data
+  `duckdb_version`, `name` when given, `retired` (how many releases), `kept` (how many another line
+  keeps), `withdrawn` (how many skipped), `pins_removed`), and a `release.retire` per (name,
+  version) with `by: "line"`.
 - Afterwards the line keeps nothing for those names until a new release arrives for it; removing the
   version from the channel (spec 0003) stops serving the line at all, including `c_struct` builds
   another line keeps.
@@ -226,8 +249,8 @@ not this answer's.
 
 | Route | Who |
 | --- | --- |
-| `GET`, `PUT /api/v1/tenants/{t}/retention` `{"keep": 3, "grace": "720h"}` or `{"keep": "none"}` | tenant administrators (`GET` also auditors) |
-| `GET`, `PUT …/channels/{c}/retention` `{"keep": 5|"default"|"none", "grace": "168h"|"default"}`; the answer adds `in_force` (each field's value and `from`), `checked_at` and `next_run` | the channel's administrators (`GET` also auditors) |
+| `GET`, `PUT /api/v1/tenants/{t}/retention` `{"keep": 3, "grace": "720h"}`, `{}` to clear | tenant administrators (`GET` also auditors) |
+| `GET`, `PUT …/channels/{c}/retention` `{"keep": 5, "grace": "168h"}`, `{"keep": "none"}`, `{}` (the tenant's); the answer adds `in_force` (each field's value and its `from`), `checked_at` and `next_run` | the channel's administrators (`GET` also auditors) |
 | `GET …/channels/{c}/retention/plan` | the channel's administrators, auditors |
 | `GET`, `POST …/channels/{c}/retention/pins`, `DELETE …/pins/{id}` | the channel's administrators (`GET` also auditors) |
 | `POST …/channels/{c}/retention/lines` | the channel's administrators |
@@ -240,14 +263,15 @@ event when nothing changes, and otherwise `retention.set` (subject `tenant:<name
 
 Release events: `release.retire`, one per (name, version) per channel (subject
 `channel:<c>/ext:<name>`; data `version`, `releases` (the ids), `lines`, `by`: `retention` or
-`line`); `release.restore` (subject the release, as `release.yank`); a pass's purge is
+`line`); `release.restore` (subject the release, its data as `release.yank`'s); a pass's purge is
 `release.purge`, which gains a `reason` field (`retention`; an administrator's purge has none).
 `audit.SubjectForm` gains the forms of `retention.*` and `release.retire`; every new kind joins the
 events registry and `TestCoverage`.
 
 CLI: `kista admin tenant retention <t> [-keep N|none] [-grace d]`, `kista admin channel retention
 <t>/<c> [-keep N|default|none] [-grace d|default]`, `kista admin channel retention-plan <t>/<c>`,
-`kista admin channel pin|unpin …`, `kista admin channel retire-line <t>/<c> <duckdb-version> [-name
+`kista admin channel pin <t>/<c> <name> <version> [-duckdb-version v] -reason text`, `kista admin
+channel unpin <t>/<c> <pin-id>`, `kista admin channel retire-line <t>/<c> <duckdb-version> [-name
 n]`, `kista admin release restore <t>/<c> <id>`, `kista admin retention run`. `release list` shows
 `retired`.
 
@@ -342,8 +366,11 @@ pipeline (spec 0043) shows each channel's `in_force`.
   private current (full view) and a public one both kept; a non-selected source's current kept; a
   `c_struct` build across two lines kept by one; a release serving no line left alone; pins per line
   and for every line, a pinned retired version not purged, a pin kept while a release of its version
-  is left in its line; yanked, withdrawn and retired releases not counted; two sources counted apart;
-  `keep` from the channel and `grace` from the tenant; a missing field: nothing retired or purged.
+  is left in its line; the line act on a `cpp` release with a pin for every line (retired, not
+  purged, restorable); withdrawn entries' releases skipped by the line act and counted; yanked, withdrawn and retired releases not counted; two sources counted apart;
+  `keep` from the channel and `grace` from the tenant; a missing field: nothing retired or purged;
+  a `PUT` leaving a field out unsets it, `{"keep": "none"}` at the tenant equals `{}`; a lowered
+  ceiling capping a stored grace in `in_force`.
 - **The pass**: lease, idempotence, a retirement re-checked under the lock (a release made current
   or pinned meanwhile is kept), the purge after the grace through spec 0016's purge, no purge while
   `gc.interval` is 0, suspended and deleting tenants skipped, one `release.retire` per (name,
@@ -356,9 +383,10 @@ pipeline (spec 0043) shows each channel's `in_force`.
   an auto rule not placing it again.
 - **The line act**: a line the channel serves and one it no longer serves (`c_struct` matched by the
   version's maxima, `cpp` by its slot); a passthrough channel refused.
-- **API and CLI**: every route's rights (`404` for a caller without them; auditors read and write
-  nothing), the `PUT`s' no-op and events, `in_force` per field, `keep` above its column and `grace`
-  above its ceiling refused, the plan's lists, paging and `shared_by` limited to the caller's
+- **API and CLI**: every route's rights (`404` for a caller without them; an auditor reads, and
+  writes nothing), the `PUT`s' no-op and events, `in_force` per field, `keep` above its column
+  refused, a `grace` above its ceiling refused on change (an unchanged one sent again passes), the
+  pins' answers (`201`, `200` for the same pin), the plan's lists, paging and `shared_by` limited to the caller's
   channels, the index's `retired` status, `?state=retired`, `release.purge`'s `reason`,
   `SubjectForm` and `TestCoverage`.
 - **DuckDB end to end** at the pin: `INSTALL x FROM repo VERSION 'old'` fails once the version is
@@ -407,7 +435,8 @@ The owner's decisions of 2026-11-05, which the text above follows:
 
 Two PRs: (1) the `retired` state (migration, serving, the index, restore, purge, every intake path,
 the mirrors and bundles, spec 0039's revocations), with the DuckDB end to end; (2) the rule, pins,
-the line act, the pass, the plan, the ceiling, the CLI and the console's Retention tab. The website:
+the line act, the pass, the plan, the ceiling (a row in spec 0038's table of ceilings), the CLI
+and the console's Retention tab. Spec 0038 gains the `retention_grace` ceiling. The website:
 `tenants-and-channels.md` (retention), `publishing.md` (the release states), `api.md`,
 `configuration.md` (`retention.interval`, `limits.ceilings.retention_grace`), `console.md`,
 `observability.md` (the events), `administration/commands.md`, `administration/upgrading.md` (the
@@ -416,6 +445,8 @@ migration's `min_reader`).
 ## Follow-ups
 
 - Retiring one release by hand (`POST …/releases/{id}/retire`); the mockup does not show it.
+- Enterest's side: its provisioning, if it sets its tenants' retention, needs `retention.set` in its
+  `kista_acts` (Enterest spec 0012's watch).
 - `KeepLanded` (the catalogue's three newest landed versions, spec 0033) is a constant in code; by
   the owner's rule it becomes configuration, as a separate cleanup.
 - Retention per name (a name keeping more than the channel's N): pins cover single versions; a
