@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Loading, Mono, Note, Table, when } from '../components/ui'
 import { useAction } from '../lib/action'
@@ -60,7 +60,7 @@ export function Retention({ channel, versions }: { channel: string; versions: Ch
   const r = rule.data.data
   return (
     <div className="flex flex-col gap-4">
-      <RuleCard key={r.etag} rule={r} etag={r.etag} path={path} purgeOff={plan.data?.purge_off} onChanged={reload} />
+      <RuleCard rule={r} etag={r.etag} path={path} purgeOff={plan.data?.purge_off} onChanged={reload} />
       {(perms.tenantAdmin || perms.canAudit) && <ChannelRules epoch={epoch} onChanged={reload} />}
       <Pins channel={channel} path={path} versions={versions} pins={pins.data} error={pins.error} onChanged={reload} />
       <Card title="Versions by line">
@@ -71,16 +71,29 @@ export function Retention({ channel, versions }: { channel: string; versions: Ch
       {plan.error ? <ErrorBox error={plan.error} /> : !plan.data ? <Loading /> : (
         <PlanCards channel={channel} plan={plan.data} onChanged={reload} />
       )}
-      <RetireLine channel={channel} path={path} versions={versions} inForce={r.in_force} onChanged={reload} />
+      <RetireLine channel={channel} path={path} versions={versions} inForce={r.in_force} purgeOff={plan.data?.purge_off} onChanged={reload} />
     </div>
   )
+}
+
+/** A rule's form fields, filled again from the stored rule whenever its tag changes (a save, or a 412
+ * read again): the form is not remounted, so a failure stays on the page. */
+function useRuleForm(rule: { keep: number | 'none' | null; grace: string | null }, etag?: string) {
+  const [keep, setKeep] = useState(rule.keep === null ? '' : String(rule.keep))
+  const [grace, setGrace] = useState(rule.grace ?? '')
+  useEffect(() => {
+    setKeep(rule.keep === null ? '' : String(rule.keep))
+    setGrace(rule.grace ?? '')
+    // the stored rule's tag says when it changed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [etag])
+  return { keep, setKeep, grace, setGrace }
 }
 
 /** The rule in force (each field with where it comes from), the channel's own, and its form. */
 function RuleCard({ rule, etag, path, purgeOff, onChanged }: { rule: ChannelRetention; etag?: string; path: string; purgeOff?: boolean; onChanged: () => void }) {
   const { client } = useTenant()
-  const [keep, setKeep] = useState(rule.keep === null ? '' : String(rule.keep))
-  const [grace, setGrace] = useState(rule.grace ?? '')
+  const { keep, setKeep, grace, setGrace } = useRuleForm(rule, etag)
   const { busy, failure, act } = useAction('The rule', onChanged)
   const f = rule.in_force
   return (
@@ -101,7 +114,8 @@ function RuleCard({ rule, etag, path, purgeOff, onChanged }: { rule: ChannelRete
           </ul>
         </div>
         <Note>
-          A retired release is served nowhere; it can be restored until its grace ends. {restoreWords}
+          A retired release is served nowhere; it can be restored until it is purged (the grace ends, unless a pin keeps it or
+          purging is off). {restoreWords}
           {purgeOff ? ' Purging is off while the server\'s gc.interval is 0: nothing is purged.' : ''}
         </Note>
         <form role="group" aria-label="the channel's rule" className="flex flex-wrap items-center gap-2"
@@ -146,7 +160,7 @@ function ChannelRules({ epoch, onChanged }: { epoch: number; onChanged: () => vo
         <span>Tenant default: {t ? (t.keep === null && t.grace === null ? 'none (no retention by default)' :
           `keep ${t.keep ?? 'not set'} · grace ${t.grace === null ? 'not set' : graceWords(t.grace)}`) : '…'}</span>
         {perms.tenantAdmin && tenant.data && (
-          <TenantDefault key={tenant.data.data.etag} rule={tenant.data.data} etag={tenant.data.data.etag} onChanged={() => {
+          <TenantDefault rule={tenant.data.data} etag={tenant.data.data.etag} onChanged={() => {
             tenant.reload()
             chs.reload()
             onChanged()
@@ -169,8 +183,7 @@ function ChannelRules({ epoch, onChanged }: { epoch: number; onChanged: () => vo
  * left empty clears it. */
 function TenantDefault({ rule, etag, onChanged }: { rule: TenantRetention; etag?: string; onChanged: () => void }) {
   const { client, api } = useTenant()
-  const [keep, setKeep] = useState(rule.keep === null ? '' : String(rule.keep))
-  const [grace, setGrace] = useState(rule.grace ?? '')
+  const { keep, setKeep, grace, setGrace } = useRuleForm(rule, etag)
   const { busy, failure, act } = useAction('The tenant\'s rule', onChanged)
   return (
     <>
@@ -312,8 +325,8 @@ function PlanCards({ channel, plan, onChanged }: { channel: string; plan: Plan; 
             ['Platform', (x) => <Mono>{x.release.platform}</Mono>],
             ['Bytes', (x) => sizeText(x.release.bytes)],
             ['Body', (x) => bodyWords(x.release)],
-            ['', (x) => (x.pinned ? <Badge>pinned</Badge> : plan.purge_off ? 'purging is off' : 'purged by the next pass')],
-            ['', (x) => (x.pinned || plan.purge_off ? restoreButton(x) : '')],
+            ['State', (x) => (x.pinned ? <Badge>pinned</Badge> : plan.purge_off ? 'purging is off' : 'purged by the next pass')],
+            ['Restore', (x) => (x.pinned || plan.purge_off ? restoreButton(x) : '')],
           ]} />
         )}
       </Card>
@@ -341,8 +354,8 @@ function PlanCards({ channel, plan, onChanged }: { channel: string; plan: Plan; 
 }
 
 /** "Retire the line…": what only a DuckDB version keeps (a version the channel no longer serves too). */
-function RetireLine({ channel, path, versions, inForce: f, onChanged }: {
-  channel: string; path: string; versions: ChannelVersion[]; inForce: InForce; onChanged: () => void
+function RetireLine({ channel, path, versions, inForce: f, purgeOff, onChanged }: {
+  channel: string; path: string; versions: ChannelVersion[]; inForce: InForce; purgeOff?: boolean; onChanged: () => void
 }) {
   const { client } = useTenant()
   const [open, setOpen] = useState(false)
@@ -379,8 +392,9 @@ function RetireLine({ channel, path, versions, inForce: f, onChanged }: {
         <p aria-label="the line act's scope">
           Retires every active or deprecated release {name.trim() ? <>of <Mono>{name.trim()}</Mono> </> : 'of every extension '}serving{' '}
           <Mono>{l}</Mono> that no other DuckDB version of {channel} keeps, current and pinned versions included; a build another
-          DuckDB version keeps stays. The pins for <Mono>{l}</Mono> are removed (a pin for every version stays). The version need not
-          be served any more. A retired release is {graceMeaning(f)}.
+          DuckDB version keeps stays. {name.trim() ? <>The pins of <Mono>{name.trim()}</Mono> for <Mono>{l}</Mono> are removed</> :
+            <>The pins for <Mono>{l}</Mono> are removed</>} (a pin for every version stays). The version need not be served any
+          more. A retired release is {graceMeaning(f, purgeOff)}.
         </p>
       </Confirm>
     </Card>

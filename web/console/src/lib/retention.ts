@@ -145,9 +145,11 @@ export function ruleBody(keep: string, grace: string): Record<string, unknown> {
   return out
 }
 
-/** What a retired release's grace means, as the line act's confirmation and the plan say it. */
-export function graceMeaning(f: InForce): string {
+/** What a retired release's grace means, as the line act's confirmation and the plan say it; while
+ * purging is off (gc.interval 0) nothing is purged. */
+export function graceMeaning(f: InForce, purgeOff = false): string {
   if (!inForce(f)) return 'kept retired (restorable) while no rule is in force'
+  if (purgeOff) return 'kept retired (purging is off)'
   const g = String(f.grace!.value)
   return /^0[a-z]*$/.test(g) ? 'purged at the next pass' : `restorable for ${graceWords(g)}, then purged`
 }

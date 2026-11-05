@@ -55,6 +55,7 @@ describe('retention in words and numbers', () => {
     expect(graceMeaning(f)).toBe('restorable for 720h, then purged')
     expect(graceMeaning({ ...f, grace: { value: '0s', from: 'channel' } })).toBe('purged at the next pass')
     expect(graceMeaning({ keep: null, grace: null, missing: ['keep', 'grace'] })).toBe('kept retired (restorable) while no rule is in force')
+    expect(graceMeaning(f, true)).toBe('kept retired (purging is off)')
     expect(retentionWords({ keep: null, grace: null, missing: [], passthrough: true })).toBe('no retention (a passthrough channel)')
   })
 
@@ -105,8 +106,10 @@ const json = (body: unknown, status = 200, etag = '') =>
 
 // prod keeps 2 (its own) with the tenant's grace; geo 1.0 is retired next, 0.9 is past its grace, 0.8
 // in it; a pin keeps 0.7
-function api() {
+function api(o: { stale?: boolean } = {}) {
   const calls: Call[] = []
+  // the channel's stored rule; a stale PUT finds it changed to keep 4 meanwhile
+  let stored = { keep: 2, etag: '"r2.-"' }
   const inForceNow = { keep: { value: 2, from: 'channel' }, grace: { value: '720h0m0s', from: 'tenant' }, missing: [] }
   vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
     const u = new URL(input)
@@ -114,10 +117,14 @@ function api() {
     const path = u.pathname.replace('/api/v1/tenants/acme', '')
     calls.push({ method: init?.method ?? 'GET', path, body, ifMatch: (init?.headers as Record<string, string>)?.['If-Match'] })
     const method = init?.method ?? 'GET'
+    if (path === '/channels/prod/retention' && method === 'PUT' && o.stale) {
+      stored = { keep: 4, etag: '"r4.-"' }
+      return json({ type: 'urn:kista:problem:precondition-failed', title: 'Precondition Failed', status: 412, detail: 'it changed: read it again' }, 412)
+    }
     if (path === '/channels/prod/retention' && method === 'PUT') return json({ channel: 'prod', keep: body.keep ?? null, grace: body.grace ?? null,
       in_force: inForceNow, checked_at: null, next_run: null, etag: '"r5.-"' }, 200, '"h5"')
-    if (path === '/channels/prod/retention') return json({ channel: 'prod', keep: 2, grace: null, in_force: inForceNow,
-      checked_at: '2026-11-05T10:00:00Z', next_run: '2026-11-06T10:00:00Z', etag: '"r2.-"' }, 200, '"h2"')
+    if (path === '/channels/prod/retention') return json({ channel: 'prod', keep: stored.keep, grace: null, in_force: inForceNow,
+      checked_at: '2026-11-05T10:00:00Z', next_run: '2026-11-06T10:00:00Z', etag: stored.etag }, 200, stored.etag)
     if (path === '/channels/prod/retention/plan') {
       const r = { id: 'r1', platform: 'linux_amd64', slot: 'v2.0.0', body_hash: 'ab', bytes: 2048, shared: true, shared_by: ['staging'], others: 1 }
       return json({ in_force: inForceNow, next_run: null, purge_off: false,
@@ -142,7 +149,7 @@ function api() {
       rel('r3', 'geo', '1.2', { seq: 3 }), rel('r8', 'geo', '0.8', { state: 'retired' })] })
     if (/\/releases\/r8\/restore$/.test(path)) return json(rel('r8', 'geo', '0.8'))
     if (path === '/retention' && method === 'PUT') return json({ ...body, etag: '"r4.-"' }, 200, '"h4"')
-    if (path === '/retention') return json({ keep: 3, grace: '720h', etag: '"r3.2592000"' }, 200, '"h3"')
+    if (path === '/retention') return json({ keep: 3, grace: '720h', etag: '"r3.2592000"' }, 200, '"r3.2592000"')
     if (path === '/channels') return json({ channels: [{ name: 'prod', kind: 'signed' }, { name: 'core', kind: 'passthrough' }] })
     return json({}, 404)
   }))
@@ -161,6 +168,7 @@ function page() {
 
 describe('the Retention tab', () => {
   it('shows the rule in force with where each field comes from, the channels, pins, lines and the plan', async () => {
+    const errors = vi.spyOn(console, 'error')
     api()
     page()
     expect(await screen.findByText('keep 2 · grace 720h')).toBeTruthy()
@@ -189,6 +197,22 @@ describe('the Retention tab', () => {
     expect(within(line).getAllByRole('cell').map((c) => c.textContent)).toEqual(['geo', 'v2.0.0', '1.2', '1.2 1.1', '1.0', '0.8'])
     // the passthrough channel is not listed among the channels' rules
     expect(screen.queryByText('core')).toBeNull()
+    // every table's rows and columns have keys of their own
+    expect(errors.mock.calls.filter((c) => String(c[0]).includes('key'))).toEqual([])
+    errors.mockRestore()
+  })
+
+  it('keeps a save\'s "changed meanwhile" on the page and fills the form with the rule read again', async () => {
+    const calls = api({ stale: true })
+    page()
+    const keep = await screen.findByRole('textbox', { name: 'keep' })
+    expect((keep as HTMLInputElement).value).toBe('2')
+    fireEvent.change(keep, { target: { value: '5' } })
+    fireEvent.submit(screen.getByRole('group', { name: "the channel's rule" }))
+    await waitFor(() => expect(calls.filter((c) => c.method === 'GET' && c.path === '/channels/prod/retention').length).toBeGreaterThan(1))
+    await waitFor(() => expect((screen.getByRole('textbox', { name: 'keep' }) as HTMLInputElement).value).toBe('4'))
+    expect(screen.getByText('The rule changed meanwhile: it was read again.')).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: 'keep' })).toBe(keep) // the same form, not a new one
   })
 
   it("saves the tenant's default with the stored rule's tag, not the answer's ETag", async () => {
@@ -244,7 +268,7 @@ describe('the Retention tab', () => {
     fireEvent.change(within(dialog).getByRole('textbox', { name: "line's extension" }), { target: { value: 'geo' } })
     const scope = within(dialog).getByLabelText("the line act's scope").textContent
     expect(scope).toContain('of geo serving v1.5.2 that no other DuckDB version of prod keeps, current and pinned versions included')
-    expect(scope).toContain('The pins for v1.5.2 are removed')
+    expect(scope).toContain('The pins of geo for v1.5.2 are removed')
     expect(scope).toContain('restorable for 720h, then purged')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Retire the line' }))
     await waitFor(() => expect(calls.find((c) => c.path.endsWith('/retention/lines'))?.body).toEqual({ duckdb_version: 'v1.5.2', name: 'geo' }))
