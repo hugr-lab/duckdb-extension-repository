@@ -211,9 +211,10 @@ Delivered on one branch, `0043-channel-order-impl`.
   version (`promoteFrom`). Once the home's reads are there, Channels shows a tenant administrator
   **Set the order…** while there is none, then the **Channels view** switch, **List** and
   **Pipeline** (`?view=pipeline`). The order dialog lists each signed channel of the default type
+  and every channel the order it read names (home reads older than the order lose no edge), each
   with its next, sends the whole order at the ETag read when it opened, keeping the edges of
-  channels it does not list (`orderBody`), refuses to save with no channel listed, and reads the
-  order again on a `412`.
+  channels it does not list (`orderBody`), refuses to save with no channel listed, reads the order
+  again on a `412`, and reads the home again on opening and on a `412` or a `400`.
 - **The pipeline** (`screens/Pipeline.tsx`, the mockup's Catalogue-Pipeline): each chain's stage
   cards (follows, rules counted by their mode's words, "as it lands" included, DuckDB versions from
   the channel's public detail, hold, names, and what waits for it, or "Reading what waits…", or that
@@ -231,9 +232,10 @@ Delivered on one branch, `0043-channel-order-impl`.
   pass completes by itself; a deprecated one holds nothing, as there), when the stage never had it
   in its slot (its version, platform and slot, `sv.had`: the stage's releases, whose slot is
   computed as `store.Build.Slot`, `capi:<major>` for a C API build, and its purged slots), and when
-  it is newer than what the stage's cell has or had (`sv.newest`: its releases' `serves` and
-  `would_serve`, active, deprecated, yanked and withdrawn, and its purged slots of that DuckDB
-  version). A stage's index holds only its selected source, which is X there. Each (channel, name)
+  it is newer than what the stage has or had on every cell of the stage its build serves (`newer()`
+  over `sv.newest`: its releases' `serves` and `would_serve`, active, deprecated, yanked and
+  withdrawn, and its purged slots of those DuckDB versions; a C API build serves several, and one
+  having a version as new drops all of that build's cells). A stage's index holds only its selected source, which is X there. Each (channel, name)
   is read once.
 - **Purged releases** (a coordination fix: the Design counts them, no answer carried them). A
   purge (spec 0016 phase 2) deletes the release and keeps its slot in `purged_slots`, which only the
@@ -245,9 +247,11 @@ Delivered on one branch, `0043-channel-order-impl`.
   holders and anonymous callers get no such member; it is read-only and bounded as the rows are,
   one name of one channel. The console counts them as had, so a version the stage purged never
   waits again. Retired versions (spec 0042) are to come with that spec.
-- **The panel.** **Report & licence**, focused when it opens, shows the entry's licence
-  (`SourceLicence`), the reports of each body of the version's builds in the previous stage under
-  its platform (none when no body is known: never every report of the name), a link to the
+- **The panel.** **Report & licence** (its button's `aria-controls` names the panel), focused when
+  it opens and giving focus back to its button when it closes, shows the entry's licence
+  (`SourceLicence`), the reports of each build of the version current in the waiting cells of the
+  previous stage under its platform and slot ("linux_amd64 · v2.0.0"; none when no body is known:
+  never every report of the name), a link to the
   entry's page with every report, then **Promote…** (K4's dialog, made `PromoteDialog`, its source
   the previous stage, its target the stage, the version filled in; with `promote` on the name in
   the stage and `publish` in the previous one, else a note names the right missing), **Skip** under
