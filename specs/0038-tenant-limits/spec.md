@@ -2,6 +2,7 @@
 
 - **Status**: implemented (PR 1: the limits; PR 2: runs and the console)
 - **Amended** 2026-10-31: the ceilings, and the upper bounds of the server's own retention and token-age settings, are configuration (`limits.ceilings`, see "Amendment: configured ceilings").
+- **Changed by** [0042](../0042-channel-retention/spec.md) (accepted, not yet implemented): the ceiling `retention_grace` joins the table of product ceilings.
 - **Date**: 2026-10-29
 - **Author**: vgsml, Claude
 
@@ -640,6 +641,7 @@ when a token is verified; the configuration checks its issuers against its own c
 | `MaxUpstreamCells`, `MaxTenantCells` | product | `upstream_cells`, `tenant_cells` | 20000, 100000 |
 | `MaxDiscoveredNames` (spec 0039) | product | `discovered_names` | 1000 |
 | `MaxHold` | product | `max_hold` | 2160h (90 days) |
+| (new, spec 0042: the longest retention grace) | product | `retention_grace` | 2160h (90 days) |
 | `tenants.MaxKeyLifetime` | product | `publisher_key_lifetime` | 8784h (366 days) |
 | the issuer's `max_token_lifetime` cap (7 days) | product | `issuer_token_lifetime` | 168h |
 | `events.retention`'s most, 365 days (spec 0010) | setting | `events_retention` | 8760h |
