@@ -20,6 +20,9 @@ export function Button(props: {
   expanded?: boolean
   /** Its accessible name, when its text alone does not say what it is about (aria-label). */
   label?: string
+  id?: string
+  /** The id of what it opens (aria-controls). */
+  controls?: string
 }) {
   const tone = {
     brand: 'border border-brand-strong bg-brand-strong text-brand-on',
@@ -36,6 +39,8 @@ export function Button(props: {
       title={props.title}
       aria-expanded={props.expanded}
       aria-label={props.label}
+      id={props.id}
+      aria-controls={props.controls}
       className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-[14px] font-semibold leading-5 transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${props.wide ? 'justify-center py-3' : ''} ${tone}`}
     >
       {props.children}

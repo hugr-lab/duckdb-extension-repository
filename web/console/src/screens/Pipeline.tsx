@@ -5,7 +5,7 @@ import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { useHome } from '../lib/home'
 import { type Client, seg } from '../lib/http'
-import { type IndexRelease, type OrderEdge, type PurgedRelease, type StageWait, cellWaits, chainsOf, orderBody, previousOf, stageWait } from '../lib/order'
+import { type IndexRelease, type OrderEdge, type PurgedRelease, type StageWait, cellWaits, chainsOf, orderBody, previousOf, slotOf, stageWait } from '../lib/order'
 import { type ChannelReads, type Decision, type HomeReads, actsManual } from '../lib/queue'
 import { SourceLicence, modeWords, removedSource } from './Catalogue'
 import { type Promoting, PromoteDialog, promote } from './Promote'
@@ -161,6 +161,17 @@ function ChainMatrix({ chain, waitsOf, failed, order, onChanged }: {
 }) {
   const [open, setOpen] = useState<{ stage: string; name: string } | null>(null)
   const [said, setSaid] = useState('')
+  // the panel closed: focus goes back to the button that opened it (when it is still there)
+  const [refocus, setRefocus] = useState('')
+  useEffect(() => {
+    if (!refocus) return
+    document.getElementById(refocus)?.focus()
+    setRefocus('')
+  }, [refocus])
+  const close = () => {
+    if (open) setRefocus(panelIds(open.stage, open.name).button)
+    setOpen(null)
+  }
   const names = [...new Set(chain.flatMap((c) => c.sources.filter((r) => r.source).map((r) => r.name)))].sort()
   const openWait = open ? waitsOf(open.stage)?.get(open.name) : undefined
   const stage = chain.find((c) => c.name === open?.stage)
@@ -193,7 +204,8 @@ function ChainMatrix({ chain, waitsOf, failed, order, onChanged }: {
                       reading={i > 0 && !failed && !waitsOf(c.name)} expanded={open?.stage === c.name && open.name === name}
                       onToggle={() => {
                         setSaid('')
-                        setOpen(open?.stage === c.name && open.name === name ? null : { stage: c.name, name })
+                        if (open?.stage === c.name && open.name === name) close()
+                        else setOpen({ stage: c.name, name })
                       }} />
                   </td>
                 ))}
@@ -204,11 +216,15 @@ function ChainMatrix({ chain, waitsOf, failed, order, onChanged }: {
       </div>
       {open && openWait && stage && previousOf(order, stage.name) === openWait.from && (
         <Panel key={`${open.stage}|${open.name}`} stage={stage} name={open.name} wait={openWait} onChanged={onChanged}
-          onClose={() => setOpen(null)} onDone={(what) => { setOpen(null); setSaid(what); onChanged() }} />
+          onClose={close} onDone={(what) => { close(); setSaid(what); onChanged() }} />
       )}
     </div>
   )
 }
+
+/** The ids of a (stage, name)'s Report & licence button and of the panel it opens (channel and
+ * extension names are path segments: letters, digits, _ and -). */
+const panelIds = (stage: string, name: string) => ({ button: `rl-open-${stage}-${name}`, panel: `rl-panel-${stage}-${name}` })
 
 /** A name's cell in a stage: its rule (mode, current version; "serves it from …" when it names
  * another source than the previous stage's), "no rule", and what waits from the previous stage. */
@@ -228,7 +244,8 @@ function StageCell({ ch, prev, name, waits, reading, expanded, onToggle }: {
         <>
           <span className="chip bg-warning-soft text-warning">→ waits&nbsp;<Mono>{w.version}</Mono>&nbsp;from {w.from}</span>
           {/* a row's cells of several stages may each wait: the stage names the button too */}
-          <Button tone="plain" expanded={expanded} onClick={onToggle} label={`Report & licence of ${name} for ${ch.name}`}>Report & licence</Button>
+          <Button tone="plain" expanded={expanded} onClick={onToggle} label={`Report & licence of ${name} for ${ch.name}`}
+            id={panelIds(ch.name, name).button} controls={panelIds(ch.name, name).panel}>Report & licence</Button>
         </>
       )}
     </span>
@@ -247,25 +264,28 @@ function Panel({ stage, name, wait, onChanged, onClose, onDone }: {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => ref.current?.focus(), [])
   const rule = stage.sources.find((r) => r.name === name && r.source)
-  // the version's builds in the previous stage, each body once, by platform
-  const bodies = wait.prev.filter((r) => r.version === wait.version && r.body_hash)
-    .filter((r, i, a) => a.findIndex((x) => x.body_hash === r.body_hash) === i)
-    .sort((a, b) => a.platform.localeCompare(b.platform))
   const missing = [
     !perms.mayPromote(stage.name, name) && `promote on ${name} in ${stage.name}`,
     !perms.mayPublish(wait.from, name) && `publish on ${name} in ${wait.from}`,
   ].filter((x): x is string => !!x)
   const cells = wait.cells.filter((c) => c.version === wait.version)
+  // the version's builds current in the waiting cells of the previous stage, each (platform, slot)
+  // once, with a known body
+  const builds = wait.prev
+    .filter((r) => r.version === wait.version && r.body_hash && cells.some((c) => c.platform === r.platform && r.current_for.includes(c.duckdb)))
+    .map((r) => ({ body: r.body_hash!, what: `${r.platform} · ${slotOf(r)}` }))
+    .filter((b, i, a) => a.findIndex((x) => x.what === b.what) === i)
+    .sort((a, b) => a.what.localeCompare(b.what))
   return (
-    <div ref={ref} tabIndex={-1} className="flex flex-col gap-3 rounded-md border border-line p-4 outline-none" role="region"
-      aria-label={`${name} report and licence`}>
+    <div ref={ref} id={panelIds(stage.name, name).panel} tabIndex={-1} className="flex flex-col gap-3 rounded-md border border-line p-4 outline-none"
+      role="region" aria-label={`${name} report and licence`}>
       <p className="m-0 text-[13px]"><Mono>{name} {wait.version}</Mono> from <Mono>{wait.source}</Mono> is {wait.from}'s current on{' '}
         {cells.map((c) => `${c.duckdb} ${c.platform}`).join(', ')}, and newer than what {stage.name} has or had there.</p>
       <SourceLicence source={wait.source} name={name} />
-      {bodies.map((b) => (
-        <section key={b.body_hash} aria-label={`reports of ${b.platform}`} className="flex flex-col gap-1">
-          <h4 className="m-0 text-[13px] font-semibold"><Mono>{b.platform}</Mono></h4>
-          <Reports ext={name} body={b.body_hash} />
+      {builds.map((b) => (
+        <section key={b.what} aria-label={`reports of ${b.what}`} className="flex flex-col gap-1">
+          <h4 className="m-0 text-[13px] font-semibold"><Mono>{b.what}</Mono></h4>
+          <Reports ext={name} body={b.body} />
         </section>
       ))}
       <Link className="text-[13px]" to={`${base}/catalogue/${seg(name)}`}>Every report of {name}, on its page</Link>

@@ -195,8 +195,11 @@ function api(f: Fake = {}) {
     if ((m = /^\/channels\/([^/]+)$/.exec(c.path))) return json({ name: m[1], duckdb_versions: [{ duckdb_version: 'v2.0.0' }] })
     if ((m = /^\/channels\/nightly\/extensions\/(relay|beacon)$/.exec(c.path))) {
       const v = m[1] === 'relay' ? '1.0' : '2.0'
+      // relay 1.0 on osx_arm64 too, for v1.9.0, which staging does not serve: current in no waiting cell
       return json({ releases: [{ version: v, platform: 'linux_amd64', state: 'active', abi: 'cpp', build_duckdb_version: 'v2.0.0',
-        serves: [{ duckdb_version: 'v2.0.0' }], current_for: ['v2.0.0'], body_hash: m[1] === 'relay' && !f.noBody ? 'ab' : undefined }], purged: [] })
+        serves: [{ duckdb_version: 'v2.0.0' }], current_for: ['v2.0.0'], body_hash: m[1] === 'relay' && !f.noBody ? 'ab' : undefined },
+      ...(m[1] === 'relay' ? [{ version: v, platform: 'osx_arm64', state: 'active', abi: 'cpp', build_duckdb_version: 'v1.9.0',
+        serves: [{ duckdb_version: 'v1.9.0' }], current_for: ['v1.9.0'], body_hash: f.noBody ? undefined : 'cd' }] : [])], purged: [] })
     }
     if (c.path === '/channels/staging/extensions/relay') {
       return f.failIndex ? json({ status: 503, title: 'Unavailable' }, 503) : json({ releases: [], purged: f.stagingPurged ?? [] })
@@ -245,7 +248,10 @@ describe('the pipeline', () => {
     const panel = await relayPanel()
     expect(document.activeElement).toBe(panel) // focus moves to the panel
     expect(within(panel).getByText(/is nightly's current on v2.0.0 linux_amd64/)).toBeTruthy()
-    expect(within(panel).getByRole('region', { name: 'reports of linux_amd64' })).toBeTruthy()
+    // the builds current in the waiting cells only, each under its platform and slot
+    expect(within(panel).getAllByRole('region', { name: /^reports of / }).map((r) => r.getAttribute('aria-label'))).toEqual(['reports of linux_amd64 · v2.0.0'])
+    // the button names what it opens
+    expect(screen.getByRole('button', { name: 'Report & licence of relay for staging' }).getAttribute('aria-controls')).toBe(panel.id)
     expect(within(panel).getByRole('link', { name: 'Every report of relay, on its page' }).getAttribute('href')).toBe('/t/acme/catalogue/relay')
     fireEvent.click(within(panel).getByRole('button', { name: 'Promote…' }))
     const dialog = openDialog()
@@ -268,6 +274,8 @@ describe('the pipeline', () => {
     expect(calls.filter((c) => c.path.endsWith('/attachments')).map((c) => c.path + new URLSearchParams(c.search).get('body_hash'))).toEqual(['/extensions/relay/attachmentsab'])
     fireEvent.click(within(panel).getByRole('button', { name: 'Not now' }))
     expect(screen.queryByRole('region', { name: 'relay report and licence' })).toBeNull()
+    // focus returns to the button that opened it
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Report & licence of relay for staging' })))
     cleanup()
     // no body known: no report read, never every report of the extension
     calls = api({ noBody: true })
