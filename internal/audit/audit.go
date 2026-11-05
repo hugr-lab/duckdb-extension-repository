@@ -333,6 +333,11 @@ func SubjectForm(k Kind) string {
 		"follow": "channel:<channel>"}[prefix]
 }
 
+// ServingKinds are the kinds the serving plane writes under a channel's subject, their actor the
+// serving caller (an installing principal, with its name and address): a channel's administrators
+// never read them (spec 0041). internal/serve's events are checked against it by a test.
+var ServingKinds = []Kind{"install", "extension.use", "usage.receive"}
+
 // Known reports whether a kind is in the catalogue.
 func Known(k Kind) bool { _, ok := catalogue[k]; return ok }
 

@@ -200,6 +200,11 @@ func TestChannelAdminEvents(t *testing.T) {
 		{"PUT", T + "/channels/prod2/hold", `{"hold":"1h"}`},
 		{"PUT", T + "/channels/staging/hold", `{"hold":"1h"}`},
 		{"PUT", T + "/channels/prod/sources/acl", `{"source":"tenant","mode":"manual"}`},
+		// the channel's own events: its DuckDB versions, a follow set and cleared
+		{"DELETE", T + "/channels/prod/duckdb-versions/v1.9.0", ""},
+		{"POST", T + "/publishers", `{"name":"ci"}`},
+		{"PUT", T + "/channels/prod/follows/publisher:ci", ""},
+		{"DELETE", T + "/channels/prod/follows/publisher:ci", ""},
 	} {
 		if r := m.call(t, c.method, c.path, ta, c.body); r.status >= 300 {
 			t.Fatalf("%s %s: %d %s", c.method, c.path, r.status, r.body)
@@ -210,6 +215,9 @@ func TestChannelAdminEvents(t *testing.T) {
 	if err := m.st.InTx(ctx, "", func(tx *store.Tx) error {
 		if err := tx.Event(ctx, tid, "principal:acme/x|ivan", "install", "channel:prod/ext:acl/release:r1",
 			map[string]any{"release": "r1", "name": "acl"}); err != nil {
+			return err
+		}
+		if err := tx.Event(ctx, tid, "principal:acme/x|ivan", "usage.receive", "channel:prod", map[string]any{"day": "2026-11-05"}); err != nil {
 			return err
 		}
 		return tx.Event(ctx, tid, "principal:acme/x|ivan", "extension.use", "channel:prod/ext:acl", map[string]any{"version": "1.0"})
@@ -232,12 +240,27 @@ func TestChannelAdminEvents(t *testing.T) {
 	for _, k := range got {
 		_, subject, _ := strings.Cut(k, " ")
 		if subject != "channel:prod" && !strings.HasPrefix(subject, "channel:prod/") || strings.HasPrefix(k, "install ") ||
-			strings.HasPrefix(k, "extension.use ") {
+			strings.HasPrefix(k, "extension.use ") || strings.HasPrefix(k, "usage.receive ") {
 			t.Errorf("in prod's events: %s", k)
 		}
 	}
-	if ids["catalogue.hold channel:prod"] == "" || ids["source.set channel:prod/ext:acl"] == "" {
-		t.Fatalf("prod's events: %v", got)
+	for _, k := range []string{"catalogue.hold channel:prod", "source.set channel:prod/ext:acl", "channel.versions channel:prod",
+		"follow.set channel:prod", "follow.clear channel:prod"} {
+		if ids[k] == "" {
+			t.Fatalf("prod's events without %s: %v", k, got)
+		}
+	}
+	// a channel's administrator sees an actor's id only, never its name or client address
+	for _, e := range call(200, T+"/events?subject=channel:prod", carl).json(t)["events"].([]any) {
+		if e := e.(map[string]any); e["client"] != nil || e["actor_name"] != nil {
+			t.Fatalf("an actor's details to a channel's administrator: %v", e)
+		}
+	}
+	if e := call(200, T+"/events/"+ids["follow.set channel:prod"], carl).json(t); e["client"] != nil || e["actor_name"] != nil || e["actor"] == "" {
+		t.Fatalf("an event by id to a channel's administrator: %v", e)
+	}
+	if e := call(200, T+"/events/"+ids["follow.set channel:prod"], ta).json(t); e["client"] == nil {
+		t.Fatalf("an event's client to a tenant administrator: %v", e)
 	}
 	if got, _ := kinds(call(200, T+"/events?subject=channel:prod/ext:acl&kind=source.*", carl)); len(got) == 0 ||
 		slices.ContainsFunc(got, func(k string) bool { return k != "source.set channel:prod/ext:acl" }) {
@@ -255,6 +278,7 @@ func TestChannelAdminEvents(t *testing.T) {
 	_, all := kinds(call(200, T+"/events", ta))
 	for _, p := range []string{
 		T + "/events?subject=channel:prod&kind=install", T + "/events?subject=channel:prod&kind=extension.use",
+		T + "/events?subject=channel:prod&kind=usage.receive", T + "/events/" + all["usage.receive channel:prod"],
 		T + "/events", T + "/events?subject=channel:", T + "/events?subject=channel:staging", T + "/events?subject=channel:prod2",
 		T + "/events?subject=ext:acl", T + "/events?subject=tenant:acme",
 		T + "/events/" + all["install channel:prod/ext:acl/release:r1"], T + "/events/" + all["extension.use channel:prod/ext:acl"],

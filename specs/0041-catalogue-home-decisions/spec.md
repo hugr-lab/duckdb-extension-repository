@@ -185,12 +185,15 @@ administrators) gain a channel's administrators, for their channel only:
   events (`channel.versions`, the channel's `catalogue.hold`, `follow.set` and `follow.clear`,
   `retention.*` of spec 0042, `key.*`) and those under it (rules, releases, placements,
   `source.waiting`, `decision.*` of the channel).
-- **Two kinds left out**: `install` and `extension.use`, whatever the subject. Their actor is the
+- **The serving plane's kinds left out**: `install`, `extension.use` and `usage.receive`
+  (`audit.ServingKinds`; review fix: `usage.receive` is under `channel:<c>` too), whatever the
+  subject. Their actor is the
   installing principal, with its display name, client address and `User-Agent` (spec 0010, spec
   0012), and a channel's administrators do not see installers today: the statistics answer them
   counts per channel and extension (`stats/downloads`, `stats/usage`, through their `admin` grant),
   never who installed. The service filters them out by kind (an exclusion added to the caller's
-  `kind` list, so an explicit `kind=install` is `404`).
+  `kind` list, so an explicit `kind=install` is `404`). Every event's actor is answered such a
+  caller by its id only, without `actor_name` and `client`.
 - Any other read by such a caller is `404`, as today; `GET …/events/{id}` answers it only an event
   it could list.
 - The API rule admits the caller by the path's tenant; the service checks the subject against the
@@ -325,9 +328,12 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
 - **A channel's administrators' events** are their channel's subject and those under it only,
   checked by the API rule and again by the service, an exact subject or a `/` prefix (no
   `prod` → `prod2`); the tenant's other events (identity, grants, other channels, refusals with
-  `route:` subjects) stay its auditors' and administrators'. `install` and `extension.use` are left
-  out: they name installers, whom a channel's administrators do not see today (their statistics
-  are counts). The rest under the channel is what they already read through its management routes
+  `route:` subjects) stay its auditors' and administrators'. The serving plane's kinds (`install`,
+  `extension.use`, and `usage.receive`, whose subject is `channel:<c>`) are left out: they name
+  installers, whom a channel's administrators do not see today (their statistics are counts). They
+  are one list, `audit.ServingKinds`, which a test checks against every event `internal/serve`
+  writes under a channel's subject. An event's actor is answered a channel's administrators by its
+  id only: `actor_name` and `client` are cleared. The rest under the channel is what they already read through its management routes
   (its rules, follows, hold, releases, keys and their events, `…/keys/events`).
 - **Fail closed**: a tell that fails is tried again and never shown as a failed placement; a
   decision that fails to write leaves the item in the queue.

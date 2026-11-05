@@ -230,10 +230,12 @@ by a server administrator. Events are newest first by default. See [Access](acce
 A channel's administrators read their channel's events too (spec 0041), over the API, naming the
 channel's subject: `subject=channel:<c>` is that subject and those under `channel:<c>/` (its rules,
 releases, placements, `source.waiting`, its decisions), never another channel's such as
-`channel:<c>2`, and a longer prefix (`channel:<c>/ext:<name>`) narrows it. `install` and
-`extension.use` are never answered them, whatever the subject: they name the installers, of whom a
-channel's administrators read counts only ([statistics](#download-statistics)). Without such a
-subject, for another channel, or for one of those kinds, the read is `404`.
+`channel:<c>2`, and a longer prefix (`channel:<c>/ext:<name>`) narrows it. The serving plane's kinds
+(`install`, `extension.use`, `usage.receive`) are never answered them, whatever the subject: they
+name the installers, of whom a channel's administrators read counts only
+([statistics](#download-statistics)); and an event's actor is answered them by its id only, without
+`actor_name` or `client`. Without such a subject, for another channel, or for one of those kinds, the
+read is `404`.
 
 ### Following the events
 

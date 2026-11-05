@@ -197,7 +197,7 @@ func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller,
 	}
 	out := []eventJSON{}
 	for _, e := range evs {
-		out = append(out, eventOf(e, c))
+		out = append(out, readerEvent(e, c, narrow != nil))
 	}
 	ans := list("events", out, next)
 	if f.Ascending {
@@ -229,7 +229,7 @@ func (h *Handler) getEventOf(w http.ResponseWriter, r *http.Request, c caller, t
 			return
 		}
 	}
-	reply(w, r, http.StatusOK, eventOf(e, c), "", noStore)
+	reply(w, r, http.StatusOK, readerEvent(e, c, may != nil), "", noStore)
 }
 
 // refuseRead answers a read the caller may not make 404, recorded as a refusal (as the access
@@ -239,9 +239,26 @@ func refuseRead(w http.ResponseWriter, c caller) {
 	notFound(w)
 }
 
-// channelHidden are the kinds a channel's administrators never read (spec 0041): their actor is
-// the installing principal, whom a channel's administrators do not see.
-var channelHidden = []string{"install", "extension.use"}
+// channelHidden are the kinds a channel's administrators never read (spec 0041): the serving
+// plane's (audit.ServingKinds), whose actor is the installing principal, whom a channel's
+// administrators do not see.
+var channelHidden = func() []string {
+	out := make([]string, len(audit.ServingKinds))
+	for i, k := range audit.ServingKinds {
+		out[i] = string(k)
+	}
+	return out
+}()
+
+// readerEvent is an event for its reader; a channel's administrator reading it (spec 0041) sees an
+// actor's id only, never its display name or client address.
+func readerEvent(e store.Event, c caller, channelReader bool) eventJSON {
+	o := eventOf(e, c)
+	if channelReader {
+		o.ActorName, o.Client = "", ""
+	}
+	return o
+}
 
 // subjectChannel is the channel a subject is of (channel:<c>, or channel:<c>/…); "" for none.
 func subjectChannel(subject string) string {
