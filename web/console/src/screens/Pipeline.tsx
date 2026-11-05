@@ -5,7 +5,7 @@ import { useAction } from '../lib/action'
 import { useLoad, useTenant } from '../lib/context'
 import { useHome } from '../lib/home'
 import { type Client, seg } from '../lib/http'
-import { type IndexRelease, type OrderEdge, type StageWait, cellWaits, chainsOf, previousOf, stageWait } from '../lib/order'
+import { type IndexRelease, type OrderEdge, type PurgedRelease, type StageWait, cellWaits, chainsOf, previousOf, stageWait } from '../lib/order'
 import { type ChannelReads, type Decision, type HomeReads, actsManual } from '../lib/queue'
 import { SourceLicence, modeWords, removedSource } from './Catalogue'
 import { type Promoting, PromoteDialog, promote } from './Promote'
@@ -29,9 +29,11 @@ interface Waiting {
 
 const waitKey = (stage: string, name: string) => `${stage}|${name}`
 
-/** A channel's index of a name (its releases in the full view of a tenant administrator). */
+/** A channel's index of a name: its releases in the full view of a tenant administrator, and those
+ * it purged (an administrator's). */
 const indexOf = (client: Client, api: string, channel: string, name: string) =>
-  client.get<{ releases: IndexRelease[] }>(`${api}/channels/${seg(channel)}/extensions/${seg(name)}`).then((r) => r.data.releases)
+  client.get<{ releases: IndexRelease[]; purged?: PurgedRelease[] }>(`${api}/channels/${seg(channel)}/extensions/${seg(name)}`)
+    .then((r) => ({ releases: r.data.releases, purged: r.data.purged ?? [] }))
 
 /** The stages' DuckDB versions, and each name's wait: for a stage S with a previous stage P, a name
  * S's rule takes from a source P's flat path serves it from, with a current in P. */
@@ -41,7 +43,7 @@ export async function readPipeline(client: Client, api: string, reads: HomeReads
     const d = await client.get<{ duckdb_versions?: { duckdb_version: string }[] }>(`${api}/channels/${seg(c)}`)
     return [c, (d.data.duckdb_versions ?? []).map((v) => v.duckdb_version)] as const
   })))
-  const index = new Map<string, Promise<IndexRelease[]>>()
+  const index = new Map<string, ReturnType<typeof indexOf>>()
   const rows = (c: string, n: string) => {
     const k = waitKey(c, n)
     if (!index.has(k)) index.set(k, indexOf(client, api, c, n))
@@ -56,8 +58,8 @@ export async function readPipeline(client: Client, api: string, reads: HomeReads
       const pr = p.sources.find((x) => x.name === r.name)
       if (!r.source || removedSource(r.source) || pr?.source !== r.source || !pr.current) return
       const [prev, here] = await Promise.all([rows(from, r.name), rows(stage, r.name)])
-      const cells = cellWaits(prev, here, versions.get(stage) ?? [])
-      if (cells.length > 0) waits.set(waitKey(stage, r.name), { from, source: r.source, cells, prev })
+      const cells = cellWaits(prev.releases, here.releases, versions.get(stage) ?? [], here.purged)
+      if (cells.length > 0) waits.set(waitKey(stage, r.name), { from, source: r.source, cells, prev: prev.releases })
     }))
   }))
   return { versions, waits }

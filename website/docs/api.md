@@ -365,7 +365,7 @@ names](publishing.md#reserved-names); `kista duckdb core-extensions <tag>` print
 | `GET tenants/{t}/channels` | public |
 | `GET tenants/{t}/channels/{c}` | public: kind, DuckDB versions and C API maxima, signing keys |
 | `GET tenants/{t}/channels/{c}/extensions[?duckdb_version=&platform=&prefix=&cursor=&limit=]` | public, in the caller's view |
-| `GET tenants/{t}/channels/{c}/extensions/{name}[?duckdb_version=&platform=]` | public, in the caller's view |
+| `GET tenants/{t}/channels/{c}/extensions/{name}[?duckdb_version=&platform=]` | public, in the caller's view; to the name's administrators also `purged`, the releases the channel purged of its selected source, `[{"version", "duckdb_version", "platform"}]` (each on its slot's DuckDB version; a C API build's are left out, as the placement pass counts them), filtered as the rows are (spec 0043) |
 | `GET tenants/{t}/channels/{c}/extensions/{name}/versions/{v}?duckdb_version=&platform=` | public: `available`, `deprecated`, `yanked`, `withdrawn` (only a [withdrawn](upstreams.md#withdrawals) release would serve it: a `withdrawn` list of its rows) or `missing`. An index row of a withdrawn build carries `"withdrawn": true` and `withdrawn_reason`, its DuckDB versions in `would_serve` (spec 0039) |
 | `GET tenants/{t}/channels/{c}/extensions/{name}/attachments[/{id}]` | public, in the caller's view |
 | `GET tenants/{t}/attestation-keys` | public |

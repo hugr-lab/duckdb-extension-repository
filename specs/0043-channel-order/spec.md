@@ -1,6 +1,6 @@
 # Spec 0043: The channels' order, a pipeline from nightly to prod
 
-- **Status**: implemented (the owner's decisions of 2026-11-05; one point open: purged slots, see As built)
+- **Status**: implemented
 - **Date**: 2026-11-01
 - **Author**: vgsml, Claude
 
@@ -215,8 +215,20 @@ Delivered on one branch, `0043-channel-order-impl`.
   source X whose previous stage selects X and has a `current`, the console reads both stages' index
   of the name (`GET …/channels/{c}/extensions/{name}`, a tenant administrator's full view): the
   previous stage's current per cell is a release's `current_for`, and what the stage's cell has or
-  had is its releases' `serves` and `would_serve` (active, deprecated, yanked, withdrawn). A
-  stage's index holds only its selected source, which is X there. Each (channel, name) is read once.
+  had is its releases' `serves` and `would_serve` (active, deprecated, yanked, withdrawn) and its
+  `purged` (below). A stage's index holds only its selected source, which is X there. Each (channel,
+  name) is read once.
+- **Purged releases** (a coordination fix: the Design counts them, no answer carried them). A
+  purge (spec 0016 phase 2) deletes the release and keeps its slot in `purged_slots`, which only the
+  placement pass's look read. The name's index (`GET …/channels/{c}/extensions/{name}`) now
+  answers the name's administrators `purged: [{"version", "duckdb_version", "platform"}]`
+  (`store.PurgedSlots`): the channel's purged slots of its selected source and those purged before
+  slots had a source (`*`), each on its slot's DuckDB version, of the channel's DuckDB versions,
+  filtered by `duckdb_version` and `platform` as the rows are. A C API build's slot names no DuckDB
+  version and is left out, as the pass's `newServed` leaves it out. Install holders and anonymous
+  callers get no such member; it is read-only and bounded as the rows are, one name of one
+  channel. The console counts these versions as had, so a version the stage purged never waits
+  again. Retired versions (spec 0042) are to come with that spec.
 - **The panel.** **Report & licence** shows the entry's licence (`SourceLicence`) and the reports of
   the bodies of the version's builds in the previous stage, then **Promote…** (K4's dialog, made
   `PromoteDialog`, its source the previous stage, its target the stage, the version filled in; with
@@ -224,22 +236,17 @@ Delivered on one branch, `0043-channel-order-impl`.
   rule.
 - **Not shown: the stage's retention** (spec 0042), which is not implemented yet: the card gains it
   with spec 0042's console.
-- **Open (stopped on, for the owner): purged slots.** The Design counts what the stage's cell had
-  "in any state (yanked, retired and purged included)". No answer the console reads carries a
-  channel's purged slots: a purge (spec 0016 phase 2) deletes the release, and `purged_slots` is read
-  by the placement pass's look only (`store.SlotCandidates`, `lookOf`). So the pipeline counts a
-  stage's active, deprecated, yanked and withdrawn releases, and a version the stage purged shows
-  as waiting again (retired versions, spec 0042, are to come). Counting them needs a server answer
-  the spec does not define (for instance the stage's purged versions per cell, or the wait itself
-  computed by the look's function): left to the owner's decision. The console unit tests cover a
-  yanked and a deprecated version, not a purged one.
 - **Tests.** Store (three dialects): `TestChannelOrder` (replacement, the refusals, a reversed
-  chain, another type's order apart, clearing, the migration's `min_reader`), the reaper's.
+  chain, another type's order apart, clearing, the migration's `min_reader`), `TestPurgedSlots`
+  (the source's and `*`, never another source's, name's or channel's), the reaper's.
   API: `TestChannelOrderRoutes` (the readers, `404` and `401`, `If-Match` and `412`, `304`, the
-  refusals, no event for an unchanged order, `channel.order`'s data, the public list unchanged).
+  refusals, no event for an unchanged order, `channel.order`'s data, the public list unchanged);
+  `TestIndexPurged` (`purged` for the name's administrators, filtered by cell, none for an install
+  holder or an anonymous caller).
   `channel.order` in the events registry, `SubjectForm` and `TestCoverage`. CLI: `TestAdminCLI` and
   `TestAdminPackageTypes` (`-type`). Console: `src/screens/pipeline.test.tsx` (the chains and the
-  columns' sequence; the cells; a stage with no release; the newest of two cells; a skip; Promote
+  columns' sequence; the cells, a yanked, deprecated and purged version counted as had; a stage
+  with no release; the newest of two cells; a skip; Promote
   filled in from the previous stage; Skip; the order dialog with its ETag; a channel administrator's
   list); end to end, `e2e/pipeline.spec.ts` on run.sh's fixture (staging, and the tenant's relay and
   beacon placed into nightly under staging's manual rules): the order set, two versions waiting

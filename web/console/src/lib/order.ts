@@ -48,6 +48,14 @@ export interface IndexRelease {
   body_hash?: string
 }
 
+/** A release the channel purged (the index's purged member, for the name's administrators): its
+ * version, on its slot's DuckDB version and platform. */
+export interface PurgedRelease {
+  version: string
+  duckdb_version: string
+  platform: string
+}
+
 /** A cell (a DuckDB version and a platform) and the version that waits there. */
 export interface CellWait {
   duckdb: string
@@ -58,18 +66,20 @@ export interface CellWait {
 /** What waits for a stage S of a name from its previous stage P (spec 0043), per cell: one of S's
  * DuckDB versions on a platform where P's flat path serves a current (P's rows are those of the
  * source S's rule takes the name from), the cell waiting when that current is newer than every
- * version S's rows have or had there (in any state: active, deprecated, yanked, withdrawn). S with
- * no release of the name has had nothing anywhere. The console reads no purged slot: a version S
- * purged is not seen as had. */
-export function cellWaits(prev: IndexRelease[], stage: IndexRelease[], stageVersions: string[]): CellWait[] {
+ * version S's rows have or had there, in any state (active, deprecated, yanked, withdrawn, and the
+ * releases it purged). S with no release of the name has had nothing anywhere. */
+export function cellWaits(prev: IndexRelease[], stage: IndexRelease[], stageVersions: string[], purged: PurgedRelease[] = []): CellWait[] {
   const out: CellWait[] = []
   const platforms = [...new Set(prev.map((r) => r.platform))].sort()
   for (const duckdb of [...stageVersions].sort()) {
     for (const platform of platforms) {
       const cur = prev.find((r) => r.platform === platform && r.current_for.includes(duckdb))
       if (!cur) continue
-      const had = stage.filter((r) => r.platform === platform &&
-        (r.serves.some((s) => s.duckdb_version === duckdb) || (r.would_serve ?? []).includes(duckdb)))
+      const had = [
+        ...stage.filter((r) => r.platform === platform &&
+          (r.serves.some((s) => s.duckdb_version === duckdb) || (r.would_serve ?? []).includes(duckdb))),
+        ...purged.filter((p) => p.platform === platform && p.duckdb_version === duckdb),
+      ]
       if (had.every((r) => compareVersions(cur.version, r.version) > 0)) out.push({ duckdb, platform, version: cur.version })
     }
   }

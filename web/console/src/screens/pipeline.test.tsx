@@ -62,6 +62,9 @@ describe('what waits for a stage', () => {
     // the stage had 1.1, yanked (it would serve the cell), and 1.2 deprecated: neither waits again
     const had = [rel('1.1', 'linux_amd64', { state: 'yanked', serves: [], would_serve: ['v2.0.0'] }), rel('1.2', 'osx_arm64', { state: 'deprecated' })]
     expect(cellWaits(nightly, had, ['v2.0.0'])).toEqual([])
+    // the stage purged 1.1 on linux_amd64 and 1.2 on another DuckDB version: 1.1 waits there no more
+    const purged = [{ version: '1.1', duckdb_version: 'v2.0.0', platform: 'linux_amd64' }, { version: '1.2', duckdb_version: 'v2.1.0', platform: 'osx_arm64' }]
+    expect(cellWaits(nightly, [], ['v2.0.0'], purged)).toEqual([{ duckdb: 'v2.0.0', platform: 'osx_arm64', version: '1.2' }])
     // a cell of another DuckDB version is the stage's only when it serves it
     expect(cellWaits(nightly, [], ['v2.1.0'])).toEqual([])
   })
@@ -89,7 +92,7 @@ const json = (body: unknown, status = 200, etag = '') =>
 
 // nightly → staging → prod; relay 1.0 is nightly's current, staging's rule manual with no release of
 // it; beacon 2.0 is nightly's current too, staging's rule taking it from another source
-function api(decisions: Decision[] = []) {
+function api(decisions: Decision[] = [], stagingPurged: unknown[] = []) {
   const calls: Call[] = []
   const channels: ChannelReads[] = [
     { name: 'nightly', hold: '0s', follows: [], sources: [{ name: 'relay', source: 'tenant', current: '1.0', available: {} },
@@ -123,6 +126,7 @@ function api(decisions: Decision[] = []) {
       const v = m[1] === 'relay' ? '1.0' : '2.0'
       return json({ releases: [{ version: v, platform: 'linux_amd64', state: 'active', serves: [{ duckdb_version: 'v2.0.0' }], current_for: ['v2.0.0'], body_hash: 'ab' }] })
     }
+    if (c.path === '/channels/staging/extensions/relay') return json({ releases: [], purged: stagingPurged })
     if (/^\/channels\/[^/]+\/extensions\/[^/]+$/.test(c.path)) return json({ releases: [] })
     if (c.path.endsWith('/attachments')) return json({ attachments: [] })
     return json({}, 404)
@@ -184,6 +188,13 @@ describe('the pipeline', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Pipeline' }))
     expect(await screen.findByText('Nothing waits for staging')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Report & licence' })).toBeNull()
+  })
+
+  it('counts a version the stage purged as had: it never waits again', async () => {
+    api([], [{ version: '1.0', duckdb_version: 'v2.0.0', platform: 'linux_amd64' }])
+    page('server')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pipeline' }))
+    expect(await screen.findByText('Nothing waits for staging')).toBeTruthy()
   })
 
   it('offers no Promote without promote in the stage and publish in the previous one', async () => {
