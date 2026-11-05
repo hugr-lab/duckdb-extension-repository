@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/signer"
 )
 
@@ -73,6 +74,9 @@ func TestAdminRetention(t *testing.T) {
 	}
 	run(0, "channel", "retention", "acme/prod", "-keep", "default")
 	run(2, "channel", "retention", "acme/prod", "-keep", "many")
+	run(2, "channel", "retention", "acme/prod", "-keep", "0")     // the API refuses keep 0: none is the word
+	run(2, "channel", "retention", "acme/prod", "-grace", "none") // a channel's grace is a duration or default
+	run(2, "tenant", "retention", "acme", "-grace", "default")    // a tenant's is a duration or none
 	run(1, "channel", "retention", "acme/prod", "-grace", "100000h") // above the ceiling
 	// the plan, the dry run, then the pass
 	if got := run(0, "channel", "retention-plan", "acme/prod"); strings.Count(got, "retire") != 2 {
@@ -108,5 +112,18 @@ func TestAdminRetention(t *testing.T) {
 	if got := run(0, "events", "list", "acme"); !strings.Contains(got, "retention.line") || !strings.Contains(got, "release.retire") ||
 		!strings.Contains(got, "retention.pin") || !strings.Contains(got, "retention.run") || !strings.Contains(got, "release.restore") {
 		t.Fatalf("events: %q", got)
+	}
+}
+
+// Spec 0042: the plan says the pass retires but purges nothing while purges are off.
+func TestPrintPlanPurgeOff(t *testing.T) {
+	var out bytes.Buffer
+	(&adminCmd{out: &out}).printPlan("acme/prod", release.RetentionPlan{PurgeOff: true})
+	if !strings.Contains(out.String(), "the pass retires but purges nothing") {
+		t.Fatalf("the plan: %q", out.String())
+	}
+	// the owner's rule (2026-11-05): a restore holds until the next pass unless the rule or a pin keeps it
+	if !strings.Contains(adminUsage, "until the next pass unless the rule or a pin keeps it; pin what must stay") {
+		t.Fatal("release restore's help does not say how long a restore holds")
 	}
 }

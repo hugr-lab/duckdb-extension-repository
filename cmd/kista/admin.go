@@ -161,7 +161,9 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   release add <tenant>/<channel> <file|-> -name <name> [-private] [-not-current] [-unchecked]
   release list <tenant>/<channel> [-name <name>]
   release yank|deprecate|activate|current|public|private <tenant>/<channel> <release-id>
-  release restore <tenant>/<channel> <release-id>   a retired release back to its state before (spec 0042)
+  release restore <tenant>/<channel> <release-id>   a retired release back to its state before (spec 0042):
+                  until the next pass unless the rule or a pin keeps it; pin what must stay
+                  (channel pin, a channel administrator's act)
   release purge <tenant>/<channel> <release-id> [-force]
                   delete a yanked or retired release for good; its slot stays taken (-force while gc.interval is 0)
   release promote <tenant>/<channel> -name <name> -from <channel> (-release <id> | -version <v>)

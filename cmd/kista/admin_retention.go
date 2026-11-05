@@ -17,8 +17,9 @@ import (
 
 // Spec 0042: version retention in channels: the rules, pins, the line act, the plan and the pass.
 
-// ruleFlags applies -keep and -grace to a rule read: a flag not given keeps its field, "default"
-// leaves it out (a channel's: the tenant's), "none" is a channel's no retention (a tenant's: none set).
+// ruleFlags applies -keep and -grace to a rule read: a flag not given keeps its field; at a channel
+// "default" leaves a field out (the tenant's) and keep "none" is no retention there; at a tenant
+// "none" leaves a field out. A keep is a whole number from 1, as the API takes it.
 func ruleFlags(r store.RetentionRule, keep, grace *string, given map[string]bool, channel bool) (store.RetentionRule, error) {
 	if given["keep"] {
 		switch k := *keep; {
@@ -29,18 +30,20 @@ func ruleFlags(r store.RetentionRule, keep, grace *string, given map[string]bool
 			r.Keep = &none
 		default:
 			n, err := strconv.Atoi(k)
-			if err != nil {
-				return r, fmt.Errorf("%w: -keep is a number, none or default", errUsage)
+			if err != nil || n < 1 {
+				return r, fmt.Errorf("%w: -keep is a whole number from 1, none or default", errUsage)
 			}
 			r.Keep = &n
 		}
 	}
 	if given["grace"] {
-		switch g := *grace; g {
-		case "default", "none":
+		switch g := *grace; {
+		case g == "default" && channel || g == "none" && !channel:
 			r.Grace = nil
+		case g == "none" || g == "default":
+			return r, fmt.Errorf("%w: -grace is a duration or %s here", errUsage, map[bool]string{true: "default", false: "none"}[channel])
 		default:
-			d, err := parseHold(g)
+			d, err := parseHold(*grace)
 			if err != nil {
 				return r, fmt.Errorf("%w: -grace is a duration such as 720h or 30d, 0 to purge at the next pass, or default", errUsage)
 			}
@@ -205,7 +208,7 @@ func orAll(line string) string {
 func (a *adminCmd) printPlan(channel string, plan release.RetentionPlan) {
 	fmt.Fprintf(a.out, "%s: in force: %s\n", channel, inForceText(plan.InForce))
 	if plan.PurgeOff {
-		fmt.Fprintln(a.out, "purging is off until gc.interval is set: the pass retires and purges nothing")
+		fmt.Fprintln(a.out, "purging is off until gc.interval is set: the pass retires but purges nothing")
 	}
 	a.table("ACTION\tNAME\tVERSION\tRELEASE\tPLATFORM\tBYTES\tWHEN", func(w io.Writer) {
 		for _, x := range plan.Retire {
