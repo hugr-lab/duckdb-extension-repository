@@ -60,7 +60,7 @@ export function Retention({ channel, versions }: { channel: string; versions: Ch
   const r = rule.data.data
   return (
     <div className="flex flex-col gap-4">
-      <RuleCard key={rule.data.etag} rule={r} etag={rule.data.etag} path={path} purgeOff={plan.data?.purge_off} onChanged={reload} />
+      <RuleCard key={r.etag} rule={r} etag={r.etag} path={path} purgeOff={plan.data?.purge_off} onChanged={reload} />
       {(perms.tenantAdmin || perms.canAudit) && <ChannelRules epoch={epoch} onChanged={reload} />}
       <Pins channel={channel} path={path} versions={versions} pins={pins.data} error={pins.error} onChanged={reload} />
       <Card title="Versions by line">
@@ -146,7 +146,7 @@ function ChannelRules({ epoch, onChanged }: { epoch: number; onChanged: () => vo
         <span>Tenant default: {t ? (t.keep === null && t.grace === null ? 'none (no retention by default)' :
           `keep ${t.keep ?? 'not set'} · grace ${t.grace === null ? 'not set' : graceWords(t.grace)}`) : '…'}</span>
         {perms.tenantAdmin && tenant.data && (
-          <TenantDefault key={tenant.data.etag} rule={tenant.data.data} etag={tenant.data.etag} onChanged={() => {
+          <TenantDefault key={tenant.data.data.etag} rule={tenant.data.data} etag={tenant.data.data.etag} onChanged={() => {
             tenant.reload()
             chs.reload()
             onChanged()

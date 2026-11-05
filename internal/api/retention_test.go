@@ -53,6 +53,13 @@ func TestRetentionRoutes(t *testing.T) {
 		}
 	}
 	must(m.ten.CreateChannel(ctx, admin, "acme", "core", store.ChannelPassthrough, ""))
+	// its GET answers nothing in force, whatever the tenant's default (set above)
+	if r := m.call(t, "GET", T+"/channels/core/retention", ta, ""); r.status != 200 {
+		t.Fatalf("a passthrough channel's rule: %d %s", r.status, r.body)
+	} else if inf := r.json(t)["in_force"].(map[string]any); inf["passthrough"] != true || inf["keep"] != nil || inf["grace"] != nil ||
+		len(inf["missing"].([]any)) != 0 {
+		t.Fatalf("a passthrough channel's in_force: %v", inf)
+	}
 	for _, x := range [][2]string{{"PUT", ""}, {"POST", "/pins"}, {"POST", "/lines"}} {
 		body := map[string]string{"": `{"keep":1}`, "/pins": `{"name":"json","version":"1","reason":"x"}`, "/lines": `{"duckdb_version":"v2.0.0"}`}[x[1]]
 		if r := m.call(t, x[0], T+"/channels/core/retention"+x[1], ta, body); r.status != 400 {
@@ -62,8 +69,9 @@ func TestRetentionRoutes(t *testing.T) {
 }
 
 // Spec 0042: a PUT is the whole rule (a field left out unset; at a tenant "none" is leaving keep
-// out, at a channel no retention there), answering the GET's body with an ETag; If-Match guards it;
-// an unchanged rule writes no event; keep above its column, a fraction, a grace not of whole seconds
+// out, at a channel no retention there), answering the GET's body; the answer's ETag is over its bytes
+// (a change of the tenant's default is never a 304 at a channel), the body's etag the stored rule's,
+// a PUT's If-Match; an unchanged rule writes no event; keep above its column, a fraction, a grace not of whole seconds
 // and one above the ceiling are refused; in_force gives each field's value and where it comes from.
 func TestRetentionRules(t *testing.T) {
 	m := newMgmt(t)
@@ -87,8 +95,13 @@ func TestRetentionRules(t *testing.T) {
 	if got := put(T, `{"keep":3,"grace":"720h"}`, 200); got["keep"] != float64(3) || got["grace"] != "720h" {
 		t.Fatalf("the tenant's: %v", got)
 	}
-	tag := m.call(t, "GET", T, ta, "").header.Get("ETag")
-	put(T, `{"keep":3,"grace":"720h"}`, 200, "If-Match", tag) // unchanged
+	g := m.call(t, "GET", T, ta, "")
+	tag, _ := g.json(t)["etag"].(string)
+	if tag == "" || tag == g.header.Get("ETag") {
+		t.Fatalf("the body's etag %q, the answer's %q", tag, g.header.Get("ETag"))
+	}
+	put(T, `{"keep":3,"grace":"720h"}`, 412, "If-Match", g.header.Get("ETag")) // the answer's tag is no rule's
+	put(T, `{"keep":3,"grace":"720h"}`, 200, "If-Match", tag)                   // unchanged
 	if n := len(m.eventsOf(t, "retention.set")); n != 1 {
 		t.Fatalf("an unchanged rule wrote: %d", n)
 	}
@@ -106,6 +119,14 @@ func TestRetentionRules(t *testing.T) {
 	// the channel: keep from it, grace from the tenant (720h) once set
 	put(T, `{"keep":3,"grace":"720h"}`, 200)
 	got := put(C, `{"keep":5}`, 200)
+	before := m.call(t, "GET", C, ta, "")
+	put(C, `{"keep":5}`, 200, "If-Match", got["etag"].(string))
+	put(T, `{"keep":3,"grace":"360h"}`, 200) // the channel's own rule unchanged, what is in force not
+	if r := m.call(t, "GET", C, ta, "", "If-None-Match", before.header.Get("ETag")); r.status != 200 ||
+		r.json(t)["in_force"].(map[string]any)["grace"].(map[string]any)["value"] != "360h" || r.json(t)["etag"] != got["etag"] {
+		t.Fatalf("a channel's rule after its tenant's changed: %d %s", r.status, r.body)
+	}
+	put(T, `{"keep":3,"grace":"720h"}`, 200)
 	inf := got["in_force"].(map[string]any)
 	if got["keep"] != float64(5) || got["grace"] != nil || inf["keep"].(map[string]any)["from"] != "channel" ||
 		inf["grace"].(map[string]any)["from"] != "tenant" || inf["grace"].(map[string]any)["value"] != "720h" {

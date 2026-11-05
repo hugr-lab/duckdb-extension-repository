@@ -115,9 +115,9 @@ function api() {
     calls.push({ method: init?.method ?? 'GET', path, body, ifMatch: (init?.headers as Record<string, string>)?.['If-Match'] })
     const method = init?.method ?? 'GET'
     if (path === '/channels/prod/retention' && method === 'PUT') return json({ channel: 'prod', keep: body.keep ?? null, grace: body.grace ?? null,
-      in_force: inForceNow, checked_at: null, next_run: null }, 200, '"r5.-"')
+      in_force: inForceNow, checked_at: null, next_run: null, etag: '"r5.-"' }, 200, '"h5"')
     if (path === '/channels/prod/retention') return json({ channel: 'prod', keep: 2, grace: null, in_force: inForceNow,
-      checked_at: '2026-11-05T10:00:00Z', next_run: '2026-11-06T10:00:00Z' }, 200, '"r2.-"')
+      checked_at: '2026-11-05T10:00:00Z', next_run: '2026-11-06T10:00:00Z', etag: '"r2.-"' }, 200, '"h2"')
     if (path === '/channels/prod/retention/plan') {
       const r = { id: 'r1', platform: 'linux_amd64', slot: 'v2.0.0', body_hash: 'ab', bytes: 2048, shared: true, shared_by: ['staging'], others: 1 }
       return json({ in_force: inForceNow, next_run: null, purge_off: false,
@@ -141,7 +141,8 @@ function api() {
     if (path === '/channels/prod/releases') return json({ releases: [rel('r1', 'geo', '1.0', { seq: 1 }), rel('r2', 'geo', '1.1', { seq: 2 }),
       rel('r3', 'geo', '1.2', { seq: 3 }), rel('r8', 'geo', '0.8', { state: 'retired' })] })
     if (/\/releases\/r8\/restore$/.test(path)) return json(rel('r8', 'geo', '0.8'))
-    if (path === '/retention') return json({ keep: 3, grace: '720h' }, 200, '"r3.2592000"')
+    if (path === '/retention' && method === 'PUT') return json({ ...body, etag: '"r4.-"' }, 200, '"h4"')
+    if (path === '/retention') return json({ keep: 3, grace: '720h', etag: '"r3.2592000"' }, 200, '"h3"')
     if (path === '/channels') return json({ channels: [{ name: 'prod', kind: 'signed' }, { name: 'core', kind: 'passthrough' }] })
     return json({}, 404)
   }))
@@ -188,6 +189,16 @@ describe('the Retention tab', () => {
     expect(within(line).getAllByRole('cell').map((c) => c.textContent)).toEqual(['geo', 'v2.0.0', '1.2', '1.2 1.1', '1.0', '0.8'])
     // the passthrough channel is not listed among the channels' rules
     expect(screen.queryByText('core')).toBeNull()
+  })
+
+  it("saves the tenant's default with the stored rule's tag, not the answer's ETag", async () => {
+    const calls = api()
+    page()
+    const keep = await screen.findByRole('textbox', { name: 'default keep' })
+    fireEvent.change(keep, { target: { value: '4' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'default grace' }), { target: { value: '' } })
+    fireEvent.submit(screen.getByRole('group', { name: "the tenant's default rule" }))
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT' && c.path === '/retention')).toMatchObject({ body: { keep: 4 }, ifMatch: '"r3.2592000"' }))
   })
 
   it("saves the channel's whole rule with its ETag, pins and unpins, restores, and retires a line", async () => {

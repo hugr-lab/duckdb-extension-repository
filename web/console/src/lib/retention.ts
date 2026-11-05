@@ -31,12 +31,16 @@ export interface ChannelRetention {
   in_force: InForce
   checked_at: string | null
   next_run: string | null
+  /** the stored rule's tag, a PUT's If-Match (the answer's ETag is over its bytes) */
+  etag: string
 }
 
 /** GET …/tenants/{t}/retention: the tenant's default (null: not set). */
 export interface TenantRetention {
   keep: number | null
   grace: string | null
+  /** the stored rule's tag, a PUT's If-Match */
+  etag: string
 }
 
 export interface PlanRelease {
