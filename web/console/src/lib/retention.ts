@@ -18,6 +18,8 @@ export interface InForce {
   keep: InForceField | null
   grace: InForceField | null
   missing: string[]
+  /** a passthrough channel's: it takes no retention */
+  passthrough?: boolean
 }
 
 /** GET …/channels/{c}/retention: the channel's own rule (keep a number, "none", or null for the
@@ -96,7 +98,7 @@ export interface Pin {
 /** A channel's DuckDB version as its info answers it, with its C API maxima. */
 export interface ChannelVersion {
   duckdb_version: string
-  c_apis?: string[]
+  c_api_maxima?: string[]
 }
 
 /** Whether a rule is in force: a keep that is not none, and a grace. */
@@ -111,6 +113,7 @@ export function graceWords(g: string) {
 /** A rule in force in words, as a stage card and the Retention tab show it. */
 export function retentionWords(f?: InForce): string {
   if (!f) return '…'
+  if (f.passthrough) return 'no retention (a passthrough channel)'
   if (f.keep?.value === 'none') return 'no retention (none in this channel)'
   if (!inForce(f)) return `no retention (no ${f.missing.join(' and no ')} set)`
   return `keep ${f.keep!.value} · grace ${graceWords(String(f.grace!.value))}`
@@ -123,17 +126,40 @@ export function fieldWords(f: InForceField | null, grace = false): string {
   return `${v}, the ${f.from}'s${f.capped ? ' (capped by the server)' : ''}`
 }
 
-/** A PUT's rule from the form's words: keep "" (left out), "none" or a number; grace "" (left out) or
- * a duration, days as hours. */
+/** A PUT's rule from the form's words: keep "" (left out), "none" or a whole number from 1; grace ""
+ * (left out) or a duration, days as hours. A keep that is neither is refused here (an Error), never
+ * sent. */
 export function ruleBody(keep: string, grace: string): Record<string, unknown> {
   const out: Record<string, unknown> = {}
   const k = keep.trim()
   if (k === 'none') out.keep = 'none'
-  else if (k !== '') out.keep = Number(k)
+  else if (/^[0-9]+$/.test(k) && Number(k) >= 1) out.keep = Number(k)
+  else if (k !== '') throw new Error(`keep is a whole number from 1, or none: "${k}" is neither`)
   const g = grace.trim()
   const d = /^(\d+)d$/.exec(g)
   if (g !== '') out.grace = d ? `${Number(d[1]) * 24}h` : g
   return out
+}
+
+/** What a retired release's grace means, as the line act's confirmation and the plan say it. */
+export function graceMeaning(f: InForce): string {
+  if (!inForce(f)) return 'kept retired (restorable) while no rule is in force'
+  const g = String(f.grace!.value)
+  return /^0[a-z]*$/.test(g) ? 'purged at the next pass' : `restorable for ${graceWords(g)}, then purged`
+}
+
+/** What a restore does, in the console's words (the owner's rule, 2026-11-05). */
+export const restoreWords = 'A restored release holds until the next pass unless the rule or a pin keeps it; pin what must stay (a channel administrator\'s act).'
+
+/** Follows a list's pages to the end: fetch answers a page's items and the next cursor. */
+export async function allPages<T>(fetch: (cursor: string) => Promise<{ items: T[]; next?: string }>): Promise<T[]> {
+  const out: T[] = []
+  for (let cursor = ''; ;) {
+    const p = await fetch(cursor)
+    out.push(...p.items)
+    if (!p.next) return out
+    cursor = p.next
+  }
 }
 
 const capi = (s?: string) => {
@@ -147,7 +173,7 @@ export function linesOf(r: Pick<Release, 'abi' | 'build_duckdb_version' | 'build
   if (r.abi !== 'c_struct') return versions.some((v) => v.duckdb_version === r.build_duckdb_version) ? [r.build_duckdb_version!] : []
   const b = capi(r.build_c_api)
   if (!b) return []
-  return versions.filter((v) => (v.c_apis ?? []).some((m) => {
+  return versions.filter((v) => (v.c_api_maxima ?? []).some((m) => {
     const x = capi(m)
     return x !== null && x[0] === b[0] && (b[1] < x[1] || b[1] === x[1] && b[2] <= x[2])
   })).map((v) => v.duckdb_version)
@@ -158,6 +184,8 @@ export function linesOf(r: Pick<Release, 'abi' | 'build_duckdb_version' | 'build
 export interface LineRow {
   name: string
   line: string
+  /** the line's newest version is older than the name's newest in another line (the spec's label) */
+  notBuilt: boolean
   current: string[]
   kept: string[]
   retire: string[]
@@ -171,7 +199,7 @@ export function lineRows(releases: Release[], versions: ChannelVersion[], retire
   const add = (set: string[], v: string) => { if (!set.includes(v)) set.push(v) }
   const row = (name: string, line: string) => {
     const k = `${name}|${line}`
-    if (!rows.has(k)) rows.set(k, { name, line, current: [], kept: [], retire: [], retired: [] })
+    if (!rows.has(k)) rows.set(k, { name, line, notBuilt: false, current: [], kept: [], retire: [], retired: [] })
     return rows.get(k)!
   }
   for (const p of retire) for (const l of p.lines) add(row(p.name, l).retire, p.version)
@@ -192,6 +220,13 @@ export function lineRows(releases: Release[], versions: ChannelVersion[], retire
     add(row(name, line).current, r.version)
   }
   const desc = (a: string, b: string) => compareVersions(b, a)
-  return [...rows.values()].map((x) => ({ ...x, current: x.current.sort(desc), kept: x.kept.sort(desc), retire: x.retire.sort(desc),
+  const out = [...rows.values()].map((x) => ({ ...x, current: x.current.sort(desc), kept: x.kept.sort(desc), retire: x.retire.sort(desc),
     retired: x.retired.sort(desc) })).sort((a, b) => a.name.localeCompare(b.name) || compareVersions(b.line, a.line))
+  const newest = (x: LineRow) => [...x.kept, ...x.retire, ...x.retired].sort(desc)[0]
+  for (const x of out) {
+    const mine = newest(x)
+    x.notBuilt = mine !== undefined && out.some((y) => y.name === x.name && y.line !== x.line && newest(y) !== undefined &&
+      compareVersions(newest(y), mine) > 0)
+  }
+  return out
 }

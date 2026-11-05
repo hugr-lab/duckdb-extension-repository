@@ -1,7 +1,8 @@
 // Command fixture writes an extension file the console's end-to-end test adds (spec 0015): a body,
 // DuckDB's metadata footer, an empty signature. With a name, the body is an x86-64 ELF exporting the
 // name's entry point (spec 0008's checks pass), and with a public key too, a key block declaring the
-// key (spec 0021). With -icon, it writes an entry's icon instead (spec 0036).
+// key (spec 0021). With -icon, it writes an entry's icon instead (spec 0036). With -capi <v> first,
+// the build is a C API one for that C API version (spec 0042: a build serving several DuckDB versions).
 package main
 
 import (
@@ -39,12 +40,19 @@ func main() {
 		}
 		return
 	}
+	md := extfile.Metadata{Platform: "linux_amd64", DuckDBVersion: "v2.0.0", ABI: extfile.ABICPP}
+	entry := "_duckdb_cpp_init"
+	if len(os.Args) > 2 && os.Args[1] == "-capi" {
+		md = extfile.Metadata{Platform: "linux_amd64", CAPIVersion: os.Args[2], ABI: extfile.ABICStruct}
+		entry = "_init_c_api"
+		os.Args = append(os.Args[:1], os.Args[3:]...)
+	}
 	if len(os.Args) < 4 || len(os.Args) > 6 {
-		fmt.Fprintln(os.Stderr, "usage: fixture <file> <version> <seed byte> [<name> [<licence key PEM>]] | fixture -icon <file> <side>")
+		fmt.Fprintln(os.Stderr, "usage: fixture [-capi <c api>] <file> <version> <seed byte> [<name> [<licence key PEM>]] | fixture -icon <file> <side>")
 		os.Exit(2)
 	}
-	block, err := extfile.EncodeMetadata(extfile.Metadata{Platform: "linux_amd64", DuckDBVersion: "v2.0.0", ExtensionVersion: os.Args[2],
-		ABI: extfile.ABICPP})
+	md.ExtensionVersion = os.Args[2]
+	block, err := extfile.EncodeMetadata(md)
 	if err != nil {
 		fail(err)
 	}
@@ -61,7 +69,7 @@ func main() {
 		body = append(keys, body...)
 	}
 	if len(os.Args) >= 5 {
-		body = append(symtest.ELF(os.Args[4]+"_duckdb_cpp_init"), body...)
+		body = append(symtest.ELF(os.Args[4]+entry), body...)
 	}
 	body = append(append(body, extfile.MetadataPrefix...), block[:]...)
 	if err := os.WriteFile(os.Args[1], append(body, make([]byte, extfile.SignatureSize)...), 0o600); err != nil {
