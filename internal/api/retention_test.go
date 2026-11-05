@@ -101,7 +101,7 @@ func TestRetentionRules(t *testing.T) {
 		t.Fatalf("the body's etag %q, the answer's %q", tag, g.header.Get("ETag"))
 	}
 	put(T, `{"keep":3,"grace":"720h"}`, 412, "If-Match", g.header.Get("ETag")) // the answer's tag is no rule's
-	put(T, `{"keep":3,"grace":"720h"}`, 200, "If-Match", tag)                   // unchanged
+	put(T, `{"keep":3,"grace":"720h"}`, 200, "If-Match", tag)                  // unchanged
 	if n := len(m.eventsOf(t, "retention.set")); n != 1 {
 		t.Fatalf("an unchanged rule wrote: %d", n)
 	}

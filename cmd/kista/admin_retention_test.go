@@ -74,9 +74,9 @@ func TestAdminRetention(t *testing.T) {
 	}
 	run(0, "channel", "retention", "acme/prod", "-keep", "default")
 	run(2, "channel", "retention", "acme/prod", "-keep", "many")
-	run(2, "channel", "retention", "acme/prod", "-keep", "0")     // the API refuses keep 0: none is the word
-	run(2, "channel", "retention", "acme/prod", "-grace", "none") // a channel's grace is a duration or default
-	run(2, "tenant", "retention", "acme", "-grace", "default")    // a tenant's is a duration or none
+	run(2, "channel", "retention", "acme/prod", "-keep", "0")        // the API refuses keep 0: none is the word
+	run(2, "channel", "retention", "acme/prod", "-grace", "none")    // a channel's grace is a duration or default
+	run(2, "tenant", "retention", "acme", "-grace", "default")       // a tenant's is a duration or none
 	run(1, "channel", "retention", "acme/prod", "-grace", "100000h") // above the ceiling
 	// the plan, the dry run, then the pass
 	if got := run(0, "channel", "retention-plan", "acme/prod"); strings.Count(got, "retire") != 2 {
