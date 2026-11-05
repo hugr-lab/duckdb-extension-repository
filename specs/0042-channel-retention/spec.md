@@ -501,13 +501,23 @@ the pass or the line act.
   force), the lines and the pins, through `store.PurgeRelease`, with `release.purge`'s `reason:
   "retention"`. Nothing is purged while `PurgeOff` (`gc.interval` 0). `retention.run` and
   `retention_checked_at` (the look's start) are written in one transaction at the end, the event
-  only when something was retired, purged or failed; a failure's text goes to the log. No rule in
-  force: nothing retired or purged, the look recorded. `retention.interval` is `0` or at least
-  `1m`.
+  only when something was retired, purged or failed; a failure's text goes to the log. A pass whose
+  lease is lost stops, still writes `retention.run` for what it did, and records no look (review
+  fix). No rule in force: nothing retired or purged, the look recorded. `retention.interval` is `0`
+  or at least `1m`.
 - **Pins** are bounded by what the channel holds, as the spec says. A purge (an administrator's or
   the pass's) removes the version's pins left without a release in their line (for a pin of every
   line, in the channel); this writes no event of its own (the purge's `release.purge` records the
-  act).
+  act). Whether a release serves a pin's DuckDB version is read, for a version the channel no longer
+  serves, by that version's own C API maxima (or a build of its slot), as the line act reads a line:
+  a pin of a line removed from the channel still keeps a retired release of it from the purge, and
+  goes only once no release of its version serves that line (review fix).
+- **A restore lasts until the next pass** unless something keeps the version: a restored release
+  is active or deprecated again with its first release unchanged, so a version outside the newest
+  N, not current and not pinned is retired again by the next pass (a new grace). This follows the
+  rule as written (a pin keeps a version, a restore only undoes a retirement); the docs, the
+  release page's Restore and the CLI's docs say to pin what must stay. An open point for the owner:
+  the extension's administrators restore, but only a channel's administrators pin.
 - **The line act** is one transaction under the channel lock. The line's maxima come from
   `duckdb_versions` by name (`DuckDBVersionCAPIs`; an unknown version is `400`); "another line
   keeps it" is the computation above over the channel's other lines, and with no rule in force
@@ -543,6 +553,9 @@ the pass or the line act.
   purge only); the releases' state filter has `retired`; the upstream cells' filter `retired`. The
   pipeline's stage cards read each stage's `GET …/retention` and show its `in_force` (`retention:
   keep 3 · grace 720h`), "not read" when the read fails.
+- **Known**: a mirror's cell whose release was retired keeps the outcome `retired` (it is
+  conditional, its ETag kept) after a restore, until its upstream's answer changes; serving is not
+  affected.
 
 ## Follow-ups
 

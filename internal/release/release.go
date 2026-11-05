@@ -1350,7 +1350,11 @@ func (s *Service) Purge(ctx context.Context, a authz.Actor, tenant, channel, nam
 		if err != nil {
 			return err
 		}
-		if err := dropPins(ctx, tx, ch.ID, c.Name, c.PackageVersion, capis, pins); err != nil {
+		pl, err := pinLines(capis, pins, func(v string) ([]store.CAPI, error) { return tx.DuckDBVersionCAPIs(ctx, v) })
+		if err != nil {
+			return err
+		}
+		if err := dropPins(ctx, tx, ch.ID, c.Name, c.PackageVersion, pl, pins); err != nil {
 			return err
 		}
 		out = c

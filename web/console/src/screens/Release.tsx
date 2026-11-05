@@ -31,7 +31,7 @@ const explain: Record<Change, string> = {
   public: 'Anyone may install the release.',
   private: 'Only callers granted install may install the release.',
   restore:
-    'The retired release returns to the state it had, keeping its sequence number: it is current again only if nothing newer is.',
+    'The retired release returns to the state it had, keeping its sequence number: it is current again only if nothing newer is. A version the channel\'s rule does not keep is retired again by the next pass: pin it on the channel\'s Retention tab to keep it.',
   purge:
     'The release and its signatures are deleted for good. Its slot stays taken: this version, platform and build can never be released again in this channel, with this body or another.',
 }

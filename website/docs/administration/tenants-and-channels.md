@@ -347,7 +347,9 @@ ka release restore acme/prod <release-id>
   a lowered ceiling caps a stored grace. A passthrough channel takes no rule, pin or line act.
 - **Pins** keep a version in one DuckDB version, or in every one, whatever the rule: an active one
   from retirement, a retired one from the purge (a pin does not restore it). A purge of a version's
-  last release in a pinned line removes the pin.
+  last release in a pinned line removes the pin (a DuckDB version the channel no longer serves
+  counts by its own C API maxima). A **restore** alone does not keep a version: one the rule still
+  does not keep is retired again by the next pass, so pin what must stay.
 - **The pass** runs every `retention.interval` (default `24h`, `0` for none) over the signed
   channels of active tenants, one replica at a time per channel. Each retirement and purge is its
   own short transaction, re-checked under the channel's lock: a release made current, pinned or

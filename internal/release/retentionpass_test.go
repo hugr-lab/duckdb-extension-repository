@@ -1,6 +1,7 @@
 package release_test
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"slices"
@@ -464,6 +465,84 @@ func TestRetentionRules(t *testing.T) {
 		}
 		if evs := en.events(t, "retention.set"); len(evs) != 4 || !strings.Contains(evs[0].Data, `"in_force"`) || evs[0].Subject != "channel:prod" {
 			t.Fatalf("retention.set: %+v", evs)
+		}
+	})
+}
+
+// Spec 0042 review: a pin of a DuckDB version the channel no longer serves still keeps a retired
+// release of it from the purge, and a purge of one of its releases drops the pin only once none is
+// left in that version; a pass whose lease is lost sums up what it did and records no look.
+func TestRetentionPinsAndLease(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		en.clock()
+		must(t, func() error {
+			_, _, err := en.ten.AddVersion(ctx, admin, "v1.5.2", "release", []string{"v1.2.0"}, tenants.CoreExtensions{Names: []string{"json"}})
+			return err
+		})
+		must(t, func() error {
+			_, err := en.ten.SetChannelVersions(ctx, admin, "acme", "prod", []string{"v1.5.2"}, nil)
+			return err
+		})
+		var lts []store.Release
+		for i, p := range []string{"linux_amd64", "linux_arm64"} {
+			m := extfile.Metadata{Platform: p, DuckDBVersion: "v1.5.2", ExtensionVersion: "1.0", ABI: extfile.ABICPP}
+			r, _, err := en.add(t, ext(t, 1000, uint64(i+1), m), release.AddOptions{Unchecked: true, Name: "tresor"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			en.retire(t, "prod", r.ID)
+			lts = append(lts, r)
+		}
+		if _, _, err := en.rel.Pin(ctx, admin, "acme", "prod", store.RetentionPin{Name: "tresor", PackageVersion: "1.0", DuckDBVersion: "v1.5.2",
+			Reason: "LTS"}); err != nil {
+			t.Fatal(err)
+		}
+		must(t, func() error {
+			_, err := en.ten.SetChannelVersions(ctx, admin, "acme", "prod", nil, []string{"v1.5.2"})
+			return err
+		})
+		if _, err := en.rel.SetChannelRetention(ctx, admin, "acme", "prod", rule(1, 0), ""); err != nil {
+			t.Fatal(err)
+		}
+		if res := en.retain(t); res.Purged != 0 {
+			t.Fatalf("a pin of a line no longer served did not keep it: %+v", res)
+		}
+		if _, err := en.rel.Purge(ctx, admin, "acme", "prod", "", lts[0].ID, 0); err != nil {
+			t.Fatal(err)
+		}
+		if ps, _ := en.rel.Pins(ctx, admin, "acme", "prod", "", "", 10); len(ps) != 1 {
+			t.Fatalf("the pin dropped while a release of its line is left: %+v", ps)
+		}
+		if _, err := en.rel.Purge(ctx, admin, "acme", "prod", "", lts[1].ID, 0); err != nil {
+			t.Fatal(err)
+		}
+		if ps, _ := en.rel.Pins(ctx, admin, "acme", "prod", "", "", 10); len(ps) != 0 {
+			t.Fatalf("the pin kept with no release of its line: %+v", ps)
+		}
+
+		// the lease lost after the first retirement
+		for i, v := range []string{"2.0", "2.1", "2.2"} {
+			if _, _, err := en.add(t, ext(t, 1000, uint64(10+i), cpp(v)), release.AddOptions{Unchecked: true, Name: "acl"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, before, _ := en.st.ChannelRetention(ctx, mustChannel(t, en, "prod").ID)
+		calls := 0
+		lost := errors.New("lost")
+		_, err := en.rel.RetainChannel(ctx, mustChannel(t, en, "prod").ID, func(context.Context) error {
+			if calls++; calls > 1 {
+				return lost
+			}
+			return nil
+		})
+		if !errors.Is(err, lost) || en.states(t, "prod", "acl") != "2.0:retired 2.1:active 2.2:active" {
+			t.Fatalf("the lease lost: %v %s", err, en.states(t, "prod", "acl"))
+		}
+		if evs := en.events(t, "retention.run"); len(evs) == 0 || !strings.Contains(evs[0].Data, `"retired":1`) {
+			t.Fatalf("no summary of what the pass did: %+v", evs)
+		}
+		if _, checked, _ := en.st.ChannelRetention(ctx, mustChannel(t, en, "prod").ID); before.IsZero() || !checked.Equal(before) {
+			t.Fatalf("an unfinished look recorded: %v, before %v", checked, before)
 		}
 	})
 }

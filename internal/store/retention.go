@@ -381,23 +381,30 @@ func chunked[T any](s []T, n int) func(func([]T) bool) {
 // may no longer serve); the legacy column for a version an older binary added. ErrNotFound for a
 // version the server does not have.
 func (s *Store) DuckDBVersionCAPIs(ctx context.Context, name string) ([]CAPI, error) {
+	var out []CAPI
+	err := s.InTx(ctx, "", func(tx *Tx) error {
+		var err error
+		out, err = tx.DuckDBVersionCAPIs(ctx, name)
+		return err
+	})
+	return out, err
+}
+
+// DuckDBVersionCAPIs is the transactional form (under the channel lock: a purge's pins).
+func (t *Tx) DuckDBVersionCAPIs(ctx context.Context, name string) ([]CAPI, error) {
 	var id string
 	var legacy sql.NullString
-	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT id, c_api_version FROM duckdb_versions WHERE name = ?"), name).Scan(&id, &legacy)
+	err := t.queryRow(ctx, "SELECT id, c_api_version FROM duckdb_versions WHERE name = ?", name).Scan(&id, &legacy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: DuckDB version %s", ErrNotFound, name)
 	}
 	if err != nil {
 		return nil, err
 	}
-	out := []CAPI{}
-	err = s.eachRow(ctx, "SELECT major, max_minor, max_patch FROM duckdb_version_c_apis WHERE duckdb_version_id = ? ORDER BY major", []any{id},
-		func(sc func(...any) error) error {
-			var c CAPI
-			err := sc(&c.Major, &c.Minor, &c.Patch)
-			out = append(out, c)
-			return err
-		})
+	out, err := t.VersionCAPIs(ctx, id)
+	if out == nil {
+		out = []CAPI{}
+	}
 	if err == nil && len(out) == 0 && legacy.Valid {
 		if c, perr := ParseCAPI(strings.TrimSpace(legacy.String)); perr == nil {
 			out = append(out, c)
