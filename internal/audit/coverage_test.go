@@ -106,7 +106,9 @@ var writes = map[string]map[string][]audit.Kind{
 		"SetSource": {"source.set", "license.public_warning"}, "ClearSource": {"source.clear"}, "Sources": nil, "Source": nil, "Apply": {"release.yank",
 			"release.deprecate", "release.activate", "release.current", "release.public", "release.private", "license.public_warning"},
 		"Block": {"block.add"}, "Unblock": {"block.remove"}, "Ingest": {"upstream.release", "source.set", "license.public_warning"}, "Resign": {"key.resign"},
-		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "DuckDBCore": nil,
+		"Purge": {"release.purge"}, "List": nil, "ListBlocks": nil, "GetBlock": nil, "BlockBuilds": nil, "DuckDBCore": nil,
+		// spec 0041: the decisions on the decision queue
+		"SetDecision": {"decision.set"}, "ClearDecision": {"decision.clear"}, "Decisions": nil, "ChannelDecisions": nil,
 		"Place":     {"release.place", "shadow.add", "source.set", "license.public_warning"},
 		"PlaceRule": {"release.place", "shadow.add", "license.public_warning"}, "Catalogue": nil,
 		"CatalogueVersions": nil, "NewBodyRoom": nil, "AddToCatalogue": {"catalogue.arrival"}, "PurgeEntry": {"catalogue.purge"}, "TrimLanded": nil,
@@ -474,6 +476,17 @@ func TestCoverage(t *testing.T) {
 		_, _, err := en.rel.Place(rctx, admin, "acme", "prod", "acl", release.PlaceOptions{Source: "tenant", Version: "1.0"})
 		return err
 	}), "source.set", "release.place")
+	// spec 0041: an administrator's decision on the queue, and its Undo
+	var decision release.DecisionView
+	en.expect("release.Service.SetDecision", do(func() error {
+		var err error
+		decision, _, err = en.rel.SetDecision(rctx, admin, "acme", release.DecisionInput{Kind: "skip", Channel: "prod", Source: "tenant",
+			Name: "acl", Version: "1.0"})
+		return err
+	}), "decision.set")
+	en.expect("release.Service.ClearDecision", do(func() error {
+		return en.rel.ClearDecision(rctx, admin, "acme", decision.ID, decision.Version)
+	}), "decision.clear")
 	en.expect("release.Service.Add", do(func() error {
 		_, _, err := en.rel.Add(rctx, admin, "acme", "staging", bytes.NewReader(ext(t, nil, "acl", "2.0")), release.AddOptions{Name: "acl"})
 		return err

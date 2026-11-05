@@ -22,6 +22,9 @@ type catalogueEntryJSON struct {
 	Rules       map[string]string `json:"rules"`    // the channels whose rule takes the source, with its mode
 	// Held are the versions with a held build (spec 0033 phase A2), newest first; omitted for none
 	Held []string `json:"held,omitempty"`
+	// HeldUntil is each held version's end of hold, the moment it leaves held (spec 0041); omitted
+	// for none
+	HeldUntil map[string]string `json:"held_until,omitempty"`
 	// Revoked are the versions with a revoked build (spec 0033 phase A2: kept by a purge, placed
 	// automatically nowhere), newest first; omitted for none
 	Revoked []string `json:"revoked,omitempty"`
@@ -49,9 +52,16 @@ func (h *Handler) catalogue(w http.ResponseWriter, r *http.Request, c caller, p 
 	}
 	out := []catalogueEntryJSON{}
 	for _, e := range es {
-		out = append(out, catalogueEntryJSON{PackageType: shownType(reqType(r)), Source: e.Source, Name: e.Name, Versions: e.Versions, Rules: e.Rules,
+		ej := catalogueEntryJSON{PackageType: shownType(reqType(r)), Source: e.Source, Name: e.Name, Versions: e.Versions, Rules: e.Rules,
 			Held: e.Held, Revoked: e.Revoked, Withdrawn: e.Withdrawn, PublisherID: e.PublisherID, Distributor: e.Distributor,
-			Summary: e.Meta.Summary, Icon: iconOf(e.Meta)})
+			Summary: e.Meta.Summary, Icon: iconOf(e.Meta)}
+		for v, at := range e.HeldUntil {
+			if ej.HeldUntil == nil {
+				ej.HeldUntil = map[string]string{}
+			}
+			ej.HeldUntil[v] = timeOf(at)
+		}
+		out = append(out, ej)
 	}
 	reply(w, r, http.StatusOK, map[string]any{"entries": out}, "", noStore)
 }

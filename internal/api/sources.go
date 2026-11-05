@@ -21,6 +21,10 @@ type sourceJSON struct {
 	Newest    string `json:"newest,omitempty"`
 	Outcome   string `json:"outcome,omitempty"`
 	OutcomeAt string `json:"outcome_at,omitempty"`
+	// spec 0041: the newest version the rule could take that the channel has not had, and when its
+	// next automatic placement can happen while it waits for a hold; omitted for none
+	Waiting    string `json:"waiting,omitempty"`
+	WaitsUntil string `json:"waits_until,omitempty"`
 }
 
 func sourceOf(v release.SourceView, c caller) sourceJSON {
@@ -28,6 +32,7 @@ func sourceOf(v release.SourceView, c caller) sourceJSON {
 	if v.Source != "" {
 		o.SetBy, o.SetAt = createdBy(v.SetBy, c), timeOf(v.SetAt)
 		o.Mode, o.Current, o.Newest, o.Outcome = v.Mode, v.Current, v.Newest, v.Outcome
+		o.Waiting, o.WaitsUntil = v.Waiting, timeOf(v.WaitsUntil)
 		if v.Outcome != "" {
 			o.OutcomeAt = timeOf(v.OutcomeAt)
 		}

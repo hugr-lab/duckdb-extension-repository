@@ -104,6 +104,8 @@ are all the kinds in `internal/audit`:
 | | `catalogue.meta` | `ext:<name>` | `source`, `name`, `summary` (the new text, `""` when cleared), `icon` and `icon_before` (the icons' hashes, `""` for none), `key` (a signed write's key fingerprint), `package_type`: an entry's [icon and summary](catalogue.md#give-an-entry-an-icon-and-a-summary) written; the same metadata again writes none (spec 0036). A write refused as `stale`, or failed after its icon was uploaded, is the same kind with the outcome `refused` or `failed`, a `reason` and a `count` (the refusals coalesced). A distribution admin's write shows under the generic `distribution-admin` actor in sinks unless unmasked; alert on one by a distribution admin or a newly added key |
 | | `follow.set`, `follow.clear` | `channel:<channel>` | `source`: a channel follows a whole source, or no longer does (spec 0033) |
 | | `release.place` | `channel:<channel>/ext:<name>` | `releases`, `name`, `version`, `source`, `placed` (`hand`, or the rule's mode `auto` or `manual`, or `home`, a mirror's held version in its own channel: the placement pass, actor `system:placement`), `early` (a held version placed early by hand) (spec 0033) |
+| | `source.waiting` | `channel:<channel>/ext:<name>` | `source`, `version`, `current` (the newest version the channel holds from the source), `mode` (`manual`, or `follow` once the channel no longer follows the source), `package_type` (omitted for the default): a version waiting under a manual rule, told once per version by the placement pass (actor `system:placement`; spec 0041). kista delivers it to no one itself: alert on it through a sink |
+| | `decision.set`, `decision.clear` | `channel:<channel>/ext:<name>` (a channel's decision) or `ext:<name>` (the tenant's) | `id`, `kind` (`skip`, `dismiss`), `source`, `version` (a skip's) or `situation` (a dismissal's), `package_type` (omitted for the default); `decision.set` with `before` when it replaced one: an administrator's [decision](catalogue.md#know-what-waits) on the console's queue written or removed (spec 0041) |
 | | `release.yank`, `release.deprecate`, `release.activate`, `release.current`, `release.public`, `release.private` | the release | `release`, `name`, `version`, `platform` |
 | | `release.purge` | the release | `release`, `name`, `version`, `platform`, `slot`, `body_hash` |
 | | `block.add` | `block:<body hash>` | `body_hash`, `reason` |
@@ -224,6 +226,14 @@ GET /api/v1/events[…], GET /api/v1/events/{id}     the server's events (server
 A tenant's events are read with the `audit` verb on the tenant (`admin` on the tenant implies it), or
 by a server administrator. Events are newest first by default. See [Access](access.md) for granting
 `audit`, and the console's **Events** section in [Console](console.md).
+
+A channel's administrators read their channel's events too (spec 0041), over the API, naming the
+channel's subject: `subject=channel:<c>` is that subject and those under `channel:<c>/` (its rules,
+releases, placements, `source.waiting`, its decisions), never another channel's such as
+`channel:<c>2`, and a longer prefix (`channel:<c>/ext:<name>`) narrows it. `install` and
+`extension.use` are never answered them, whatever the subject: they name the installers, of whom a
+channel's administrators read counts only ([statistics](#download-statistics)). Without such a
+subject, for another channel, or for one of those kinds, the read is `404`.
 
 ### Following the events
 

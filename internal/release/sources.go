@@ -19,7 +19,10 @@ import (
 // its count. Spec 0033: the rule's mode, the newest version of the source the channel holds
 // (Current, an active or deprecated release) and the newest available in the catalogue (Newest: a
 // version with a held build is not, phase A2, nor one withdrawn, phase B, nor one revoked, which the
-// pass never places either, phase C), and the placement pass's last outcome.
+// pass never places either, phase C), and the placement pass's last outcome. Spec 0041: what waits
+// under a rule with a mode (Waiting: the newest version it could take that the channel has not had,
+// as the pass's candidates), and, under a rule placing automatically, when its next placement can
+// happen while it waits for a hold (WaitsUntil, zero for none).
 type SourceView struct {
 	Name      string
 	Source    string
@@ -31,6 +34,9 @@ type SourceView struct {
 	Newest    string
 	Outcome   string
 	OutcomeAt time.Time
+	// spec 0041
+	Waiting    string
+	WaitsUntil time.Time
 }
 
 // mayAdminChannel allows a channel's administrators (admin on the channel; tenant administrators).
@@ -99,6 +105,14 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 			current[r.Name] = r.PackageVersion
 		}
 	}
+	following := map[string]bool{} // a follow's rules place automatically while the channel follows the source
+	fs, err := s.Store.Follows(ctx, ch.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range fs {
+		following[f.Source] = true
+	}
 	names := map[string]bool{}
 	for n := range sel {
 		names[n] = true
@@ -114,7 +128,7 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 			v.Mode, v.Outcome, v.OutcomeAt, v.Current = x.Mode, x.Outcome, x.OutcomeAt, current[n]
 			for _, ver := range catalogue[[2]string{x.Source, n}] {
 				k := [2]string{x.Source, n}
-				if slices.Contains(held[k], ver) || slices.Contains(withdrawn[k], ver) || slices.Contains(revoked[k], ver) {
+				if _, h := held[k][ver]; h || slices.Contains(withdrawn[k], ver) || slices.Contains(revoked[k], ver) {
 					continue
 				}
 				if v.Newest == "" || CompareVersions(ver, v.Newest) > 0 {
@@ -125,10 +139,33 @@ func (s *Service) Sources(ctx context.Context, a authz.Actor, tenant, channel st
 		for src, k := range avail[n] {
 			v.Available[store.Label(labels, src)] += k
 		}
+		if x, ok := sel[n]; ok && x.Mode != store.RuleNone {
+			if err := s.waits(ctx, ch, x, &v, following); err != nil {
+				return nil, err
+			}
+		}
 		out = append(out, v)
 	}
 	slices.SortFunc(out, func(x, y SourceView) int { return strings.Compare(x.Name, y.Name) })
 	return out, nil
+}
+
+// waits fills a rule's Waiting and WaitsUntil (spec 0041), from the look the placement pass makes
+// (lookAt): WaitsUntil only for a rule placing automatically (auto, or a follow's while the channel
+// follows its source), since a channel's hold applies to automatic placements only.
+func (s *Service) waits(ctx context.Context, ch store.Channel, rule store.ChannelSource, v *SourceView, following map[string]bool) error {
+	now := s.Store.Now()
+	lk, err := s.lookAt(ctx, ch, rule.Source, rule.Name, now)
+	if err != nil {
+		return err
+	}
+	if v.Waiting, err = s.waitingOf(ctx, ch.TenantID, rule.Source, lk, now); err != nil {
+		return err
+	}
+	if rule.Mode == store.RuleAuto || rule.Mode == store.RuleFollow && following[rule.Source] {
+		v.WaitsUntil = lk.waitsUntil(now)
+	}
+	return nil
 }
 
 // Source is one name's view (Sources); a name with neither a source nor a release is not found.

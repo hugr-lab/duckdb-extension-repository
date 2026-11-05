@@ -366,7 +366,9 @@ func TestAdminCLI(t *testing.T) {
 	}
 	run(2, "block", "add", "acme", f.Hash.String()) // no -reason
 	run(0, "block", "add", "acme", f.Hash.String(), "-reason", "CVE-1")
-	if got := run(0, "block", "list", "acme"); !strings.Contains(got, f.Hash.String()) || !strings.Contains(got, "CVE-1") {
+	// spec 0041: what the body is
+	if got := run(0, "block", "list", "acme"); !strings.Contains(got, f.Hash.String()) || !strings.Contains(got, "CVE-1") ||
+		!strings.Contains(got, "WHAT") || !strings.Contains(got, "tenant tresor ") {
 		t.Fatalf("block list: %q", got)
 	}
 	run(0, "channel", "create", "acme/staging", "-kind", "signed")
@@ -579,6 +581,13 @@ func TestAdminCLI(t *testing.T) {
 	if got := run(0, "catalogue", "show", "acme", "publisher:enterest-ci", "geo"); !strings.Contains(got, "CVE-2026-0001") {
 		t.Fatalf("catalogue show with a withdrawn version: %q", got)
 	}
+	// spec 0041: a held version with its end of hold
+	run(0, "publisher", "hold", "acme", "plain-ci", "2h")
+	withdrawable(t, filepath.Join(dir, "k.db"), "acme", "plain-ci", "tiles", "0.5")
+	if got := run(0, "catalogue", "list", "acme", "-name", "tiles"); !strings.Contains(got, "0.5(until 20") {
+		t.Fatalf("catalogue list with a held version: %q", got)
+	}
+	run(0, "publisher", "hold", "acme", "plain-ci", "0")
 	if got := run(0, "grant", "list", "acme"); strings.Contains(got, "publisher:acl-ci") {
 		t.Fatalf("a removed publisher's grant: %q", got)
 	}

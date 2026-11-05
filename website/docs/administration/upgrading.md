@@ -104,6 +104,8 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0047_tenant_limits` | 47 | an older replica would insert builds without their body's length, and check no tenant limit |
 | `0048_upstream_revocations` | 48 | an older replica would take a body an upstream blocked from that upstream again, and run a switched-on mirror without its revocations |
 | `0049_upstream_names` | 49 | an older replica would run a `*` mirror of a kista with no names, and count none of them in a tenant's cells |
+| `0050_event_pruned` | 50 | an older replica's pruner would delete events without recording `pruned_through` |
+| `0051_decisions` | 51 | the decisions table references channels: an older replica's tenant reaper does not know it, and would fail deleting a tenant's channels |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -174,7 +176,20 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 49)
+## Upgrading to the next release (schema 51)
+
+### The catalogue as the console's home, and decisions (spec 0041)
+
+- **Migration `0051_decisions`** adds `channel_sources.told_version` (the version a rule's last
+  `source.waiting` named) and the table `decisions`. It raises `min_reader` to 51: stop every older
+  replica first (its tenant reaper does not know the table, which references channels).
+- **What changes.** New: `held_until` in the catalogue's list, `waiting` and `waits_until` on a
+  channel's rules, `builds` on the blocks' reads, the event `source.waiting` (the placement pass,
+  once per version waiting under a manual rule), the decision routes and their `decision.set` and
+  `decision.clear` events, and a channel's administrators reading their channel's events. Nothing
+  served changes.
+- **After the upgrade.** The first look at each manual rule with a version waiting writes one
+  `source.waiting`: a sink alerting on it sees a burst once.
 
 ### Configured ceilings (spec 0038, amended)
 

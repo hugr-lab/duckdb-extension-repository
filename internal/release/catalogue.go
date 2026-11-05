@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
@@ -22,6 +24,8 @@ type CatalogueEntry struct {
 	Held         []string          // the versions with a held build (spec 0033 phase A2), newest first
 	Revoked      []string          // the versions with a revoked build (spec 0033 phase A2), newest first
 	Withdrawn    []string          // the versions with a withdrawn build (spec 0033 phase B), newest first
+	// HeldUntil is each held version's end of hold: the latest of its builds held now (spec 0041)
+	HeldUntil map[string]time.Time
 	// PublisherID is a distributor's publisher's id, for a distribution admin (spec 0033 phase B: a
 	// name two of them had is publisher-id:<id> as a source)
 	PublisherID string
@@ -143,11 +147,11 @@ func (s *Service) Catalogue(ctx context.Context, a authz.Actor, tenant, packageT
 		if source != "" && label != source || name != "" && k[1] != name {
 			continue
 		}
-		hv, rv, wv := held[k], revoked[k], withdrawn[k]
+		hv, rv, wv := slices.Collect(maps.Keys(held[k])), revoked[k], withdrawn[k]
 		for _, l := range [][]string{vs, hv, rv, wv} {
 			slices.SortFunc(l, newestFirst)
 		}
-		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, Revoked: rv, Withdrawn: wv,
+		e := &CatalogueEntry{Source: label, Name: k[1], Versions: vs, Rules: map[string]string{}, Held: hv, HeldUntil: held[k], Revoked: rv, Withdrawn: wv,
 			PublisherID: ids[k[0]].PublisherID, Distributor: dists[k[0]].Distributor, Meta: metas[k]}
 		byKey[k] = e
 		out = append(out, e)

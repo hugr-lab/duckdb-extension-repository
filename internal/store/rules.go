@@ -19,6 +19,8 @@ import (
 type DueRule struct {
 	TenantID, ChannelID, Name, Source, Mode string
 	PackageType                             string
+	// Told is the version the rule's last source.waiting named (spec 0041), as DueRules read it
+	Told string
 }
 
 // DueRules lists the rules with a mode, of signed channels of active tenants, that the placement
@@ -29,7 +31,7 @@ type DueRule struct {
 // has entries of the name held at their arrival (available_at set: its hold, or its home channel's),
 // which its runs left to the pass (Home).
 func (s *Store) DueRules(ctx context.Context, sweep bool) ([]DueRule, error) {
-	q := `SELECT c.tenant_id, cs.channel_id, cs.name, cs.source, cs.mode, c.package_type FROM channel_sources cs
+	q := `SELECT c.tenant_id, cs.channel_id, cs.name, cs.source, cs.mode, c.package_type, cs.told_version FROM channel_sources cs
 JOIN channels c ON c.id = cs.channel_id JOIN tenants t ON t.id = c.tenant_id
 WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.source <> 'tenant' AND (cs.mode IN ('auto', 'manual', 'follow')
 	OR cs.mode = '' AND cs.source LIKE 'upstream:%' AND EXISTS (SELECT 1 FROM builds l WHERE l.tenant_id = c.tenant_id
@@ -43,9 +45,11 @@ WHERE c.kind = 'signed' AND t.state = 'active' AND t.deleting_at IS NULL AND cs.
 	var rules []DueRule
 	if err := s.eachRow(ctx, q+" ORDER BY c.tenant_id, cs.channel_id, cs.name", args, func(sc func(...any) error) error {
 		var r DueRule
-		if err := sc(&r.TenantID, &r.ChannelID, &r.Name, &r.Source, &r.Mode, &r.PackageType); err != nil {
+		var told sql.NullString
+		if err := sc(&r.TenantID, &r.ChannelID, &r.Name, &r.Source, &r.Mode, &r.PackageType, &told); err != nil {
 			return err
 		}
+		r.Told = told.String
 		if pkgtype.Known(r.PackageType) { // spec 0034: a channel of a type this binary does not know places nothing
 			rules = append(rules, r)
 		}
@@ -174,6 +178,34 @@ WHERE channel_id = ? AND name = ? AND source = ? AND mode = ? AND set_at <= ?`,
 	})
 }
 
+// TellWaiting records that a look at a rule, begun at start, found version waiting under it (spec
+// 0041): told_version and the event (event, in the same transaction), by an update that requires
+// what the look read: the rule's source and mode unchanged, set_at not after start, and told_version
+// still r.Told. Of two looks that read the same told_version only the first to commit tells; told
+// reports whether this one did.
+func (s *Store) TellWaiting(ctx context.Context, r DueRule, start time.Time, version string, event func(*Tx) error) (told bool, err error) {
+	err = s.InTx(ctx, "", func(tx *Tx) error {
+		told = false
+		q, args := `UPDATE channel_sources SET told_version = ? WHERE channel_id = ? AND name = ? AND source = ? AND mode = ? AND set_at <= ?`,
+			[]any{version, r.ChannelID, r.Name, r.Source, r.Mode, tx.s.d.timeArg(start)}
+		if r.Told == "" {
+			q += " AND told_version IS NULL"
+		} else {
+			q, args = q+" AND told_version = ?", append(args, r.Told)
+		}
+		res, err := tx.exec(ctx, q, args...)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			return err
+		}
+		told = true
+		return event(tx)
+	})
+	return told && err == nil, err
+}
+
 // PurgedBuilds are a tenant's builds of a package (type, name) from a source that are released
 // nowhere and whose body a purge took out of some channel of the type (spec 0016: for good): never
 // placed again.
@@ -238,9 +270,26 @@ GROUP BY source, name, package_version`, []any{tenantID, packageType}, func(sc f
 }
 
 // HeldVersions are a tenant's catalogue of a type's held versions (spec 0033 phase A2): those of each
-// (source, name) with a build held now.
-func (s *Store) HeldVersions(ctx context.Context, tenantID, packageType string) (map[[2]string][]string, error) {
-	return s.versionsWhere(ctx, tenantID, packageType, "available_at > ?", s.d.timeArg(s.Now()))
+// (source, name) with a build held now, each with the latest end of hold of its builds held now, the
+// moment it leaves held (spec 0041: held_until).
+func (s *Store) HeldVersions(ctx context.Context, tenantID, packageType string) (map[[2]string]map[string]time.Time, error) {
+	out := map[[2]string]map[string]time.Time{}
+	err := s.eachRow(ctx, `SELECT source, name, package_version, MAX(available_at) FROM builds WHERE tenant_id = ? AND package_type = ?
+AND available_at > ? GROUP BY source, name, package_version`, []any{tenantID, packageType, s.d.timeArg(s.Now())},
+		func(sc func(...any) error) error {
+			var src, name, v string
+			var until time.Time
+			if err := sc(&src, &name, &v, scanTime{&until}); err != nil {
+				return err
+			}
+			k := [2]string{src, name}
+			if out[k] == nil {
+				out[k] = map[string]time.Time{}
+			}
+			out[k][v] = until
+			return nil
+		})
+	return out, err
 }
 
 // RevokedVersions are a tenant's catalogue of a type's revoked versions (spec 0033 phase A2): those of
@@ -467,6 +516,10 @@ func (t *Tx) DeleteEntry(ctx context.Context, tenantID, id string) (Build, error
 		if t.s.d.foreignKey(err) { // a placement released it meanwhile
 			return Build{}, fmt.Errorf("%w: the build was just released", ErrConflict)
 		}
+		return Build{}, err
+	}
+	// spec 0041: the last build of a (source, name) takes its decisions with it
+	if err := t.dropEntryDecisions(ctx, b.TenantID, b.PackageType, b.Source, b.Name); err != nil {
 		return Build{}, err
 	}
 	// a mirror's cell that landed it fetches it again at its next run

@@ -152,6 +152,7 @@ type Service struct {
 	afterBuild       func(store.Build)     // tests: between finding the Build and inserting the release
 	beforeResign     func([]store.Release) // tests: between reading a re-sign batch and inserting it
 	beforeMetaCommit func()                // tests: between a metadata write's checks (and upload) and its transaction
+	beforeTell       func() error          // tests: before a tell's transaction (spec 0041); an error fails the tell
 }
 
 // CredentialOf is the private upstream credential a release came through (its provenance's

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/audit"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -143,10 +145,20 @@ func eventCursor(at time.Time, id string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(at.UTC().Format(time.RFC3339Nano) + "|" + id))
 }
 
-func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller, tenantID string) {
+func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller, tenantID string, narrow func(*store.EventFilter) (bool, error)) {
 	f, ok := eventFilter(w, r)
 	if !ok {
 		return
+	}
+	if narrow != nil {
+		switch ok, err := narrow(&f); {
+		case err != nil:
+			h.fail(w, err)
+			return
+		case !ok:
+			refuseRead(w, c)
+			return
+		}
 	}
 	// spec 0040: an ascending read stops events.settle behind now (an event can commit after a later
 	// one is readable), and covers the time up to there
@@ -197,7 +209,7 @@ func (h *Handler) listEventsOf(w http.ResponseWriter, r *http.Request, c caller,
 	reply(w, r, http.StatusOK, ans, "", noStore)
 }
 
-func (h *Handler) getEventOf(w http.ResponseWriter, r *http.Request, c caller, tenantID, id string) {
+func (h *Handler) getEventOf(w http.ResponseWriter, r *http.Request, c caller, tenantID, id string, may func(store.Event) (bool, error)) {
 	e, err := h.o.Store.GetEvent(r.Context(), tenantID, id)
 	if errors.Is(err, store.ErrNotFound) {
 		notFound(w)
@@ -207,23 +219,128 @@ func (h *Handler) getEventOf(w http.ResponseWriter, r *http.Request, c caller, t
 		h.fail(w, err)
 		return
 	}
+	if may != nil {
+		switch ok, err := may(e); {
+		case err != nil:
+			h.fail(w, err)
+			return
+		case !ok:
+			refuseRead(w, c)
+			return
+		}
+	}
 	reply(w, r, http.StatusOK, eventOf(e, c), "", noStore)
 }
 
+// refuseRead answers a read the caller may not make 404, recorded as a refusal (as the access
+// rules' refusals).
+func refuseRead(w http.ResponseWriter, c caller) {
+	note(w, func(sw *statusWriter) { sw.refused, sw.actor = true, c })
+	notFound(w)
+}
+
+// channelHidden are the kinds a channel's administrators never read (spec 0041): their actor is
+// the installing principal, whom a channel's administrators do not see.
+var channelHidden = []string{"install", "extension.use"}
+
+// subjectChannel is the channel a subject is of (channel:<c>, or channel:<c>/…); "" for none.
+func subjectChannel(subject string) string {
+	rest, ok := strings.CutPrefix(subject, "channel:")
+	if !ok {
+		return ""
+	}
+	ch, _, _ := strings.Cut(rest, "/")
+	return ch
+}
+
+// channelReader reports whether the caller reads the tenant's events as a channel's administrator
+// (spec 0041): it may not audit the tenant, so it reads its channels' events only.
+func (h *Handler) channelReader(r *http.Request, c caller, tenant string) (bool, error) {
+	a, ok := c.actor()
+	if !ok {
+		return true, nil
+	}
+	err := h.o.Authz.Allow(r.Context(), a, authz.VerbAudit, authz.Resource{Tenant: tenant})
+	if errors.Is(err, authz.ErrDenied) {
+		return true, nil
+	}
+	return false, err
+}
+
+// adminsChannel reports whether the caller holds admin on a channel of the tenant.
+func (h *Handler) adminsChannel(r *http.Request, c caller, tenant, channel string) (bool, error) {
+	a, ok := c.actor()
+	if !ok || channel == "" {
+		return false, nil
+	}
+	err := h.o.Authz.Allow(r.Context(), a, authz.VerbAdmin, authz.Resource{Tenant: tenant, Channel: channel})
+	if errors.Is(err, authz.ErrDenied) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (h *Handler) tenantEvents(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	h.listEventsOf(w, r, c, c.tenant.ID)
+	reader, err := h.channelReader(r, c, p["t"])
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if !reader {
+		h.listEventsOf(w, r, c, c.tenant.ID, nil)
+		return
+	}
+	// spec 0041: a channel's administrator names its channel's subject (channel:<c>: that subject
+	// and those under channel:<c>/; or a longer prefix), and never reads the installers' kinds
+	h.listEventsOf(w, r, c, c.tenant.ID, func(f *store.EventFilter) (bool, error) {
+		ch := subjectChannel(f.Subject)
+		if ok, err := h.adminsChannel(r, c, p["t"], ch); err != nil || !ok {
+			return false, err
+		}
+		f.SubjectTree = f.Subject == "channel:"+ch
+		switch {
+		case len(f.Kinds) > 0 && !f.NotKinds:
+			f.Kinds = slices.DeleteFunc(f.Kinds, func(k string) bool { return slices.Contains(channelHidden, k) })
+			if len(f.Kinds) == 0 {
+				return false, nil
+			}
+		default:
+			for _, k := range channelHidden {
+				if !slices.Contains(f.Kinds, k) {
+					f.Kinds = append(f.Kinds, k)
+				}
+			}
+			f.NotKinds = true
+		}
+		return true, nil
+	})
 }
 
 func (h *Handler) tenantEvent(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	h.getEventOf(w, r, c, c.tenant.ID, p["id"])
+	reader, err := h.channelReader(r, c, p["t"])
+	if err != nil {
+		h.fail(w, err)
+		return
+	}
+	if !reader {
+		h.getEventOf(w, r, c, c.tenant.ID, p["id"], nil)
+		return
+	}
+	// spec 0041: an event a channel's administrator could list only
+	h.getEventOf(w, r, c, c.tenant.ID, p["id"], func(e store.Event) (bool, error) {
+		if slices.Contains(channelHidden, e.Kind) {
+			return false, nil
+		}
+		return h.adminsChannel(r, c, p["t"], subjectChannel(e.Subject))
+	})
 }
 
 func (h *Handler) serverEvents(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	h.listEventsOf(w, r, c, audit.ServerTenant)
+	h.listEventsOf(w, r, c, audit.ServerTenant, nil)
 }
 
 func (h *Handler) serverEvent(w http.ResponseWriter, r *http.Request, c caller, p params) {
-	h.getEventOf(w, r, c, audit.ServerTenant, p["id"])
+	h.getEventOf(w, r, c, audit.ServerTenant, p["id"], nil)
 }
 
 // eventKinds is the catalogue: each kind with its data fields.

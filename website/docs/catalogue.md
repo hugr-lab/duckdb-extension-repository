@@ -106,6 +106,48 @@ Placing needs `promote` on the name in the channel, which `admin` does not imply
 DuckDB versions or platforms that arrive later follow it. A held version is placed only with `-early`,
 by a channel administrator; the choice is recorded in the `release.place` event.
 
+### Know what waits
+
+kista says what waits for an administrator, and when what waits for a hold arrives (spec 0041):
+
+- **A held version's end.** `GET …/catalogue` lists, beside each entry's `held` versions,
+  `held_until`: each held version with the moment it leaves held (the latest end of hold of its
+  builds held now). `kista admin catalogue list` shows it in its `HELD` column. That is the source's
+  hold; a channel's own hold is per rule, below.
+- **What a rule waits for.** A channel's `GET …/sources` answers, per rule with a mode, `waiting`:
+  the newest version the rule could take that the channel has not had, as the placement pass reads
+  its candidates (an available entry, its body not blocked, for a DuckDB version the channel serves,
+  newer than everything its cells have or had from the source, yanked and purged releases included).
+  Under an `auto` rule it is what the next look places; under a `manual` one, what you may place. A
+  rule that places automatically also answers `waits_until` while its next placement waits for a
+  hold: the earliest end of the source's and the channel's holds among its candidates.
+- **A tell.** When the placement pass finds a version waiting under a `manual` rule (or a follow's
+  rule once the channel no longer follows the source), it writes the event `source.waiting`, once
+  per version: subject `channel:<c>/ext:<name>`, data the source, the version, the channel's current
+  version and the rule's mode. A version arriving held is told when its source's hold ends. The
+  tenant's own source is never the pass's: what waits under its rules is in the sources answer, and
+  no event tells of it. kista delivers the event to no one itself: the tenant's administrators and
+  auditors read it, a channel's administrators read their channel's (see
+  [Observability](observability.md#reading-events)), and an operator's
+  [sinks](observability.md) carry it to whatever alerts people.
+
+What the console's **Needs a decision** queue shows is computed from these reads; an
+administrator's answer to an item is a **decision**, kept in kista so every administrator sees the
+same queue:
+
+| Kind | Scope | The item comes back when |
+| --- | --- | --- |
+| `skip` | a channel, a source, a name: the waiting version skipped | a newer version waits |
+| `dismiss` (a follow's skip) | a channel, a source, a name: the skip's reason | the follow skips the name for another reason |
+| `dismiss` (no channel, or some channels only) | the tenant, a source, a name: the channels whose rules take the name | that set of channels changes |
+
+A decision changes nothing else: a skipped version can still be placed or promoted, and a dismissal
+changes no follow. The tenant's administrators write them (`PUT …/decisions`) and remove them
+(`DELETE …/decisions/{id}` with `If-Match`); they and the tenant's auditors read every decision
+(`GET …/decisions`), a channel's administrators their channel's (`GET …/channels/{c}/decisions`).
+A decision goes with its source, and with the last build of its name from that source. The routes
+are in the [API reference](api.md#decisions).
+
 ### Roll back, or stay on a version
 
 Yank the bad release ([Changing a release](publishing.md#changing-a-release)): the previous one is

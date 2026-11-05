@@ -96,8 +96,8 @@ func (t *Tx) SetChannelSource(ctx context.Context, channelID, name, source, acto
 
 // SetChannelRule sets a channel's rule for a name: its source and mode ("": the rule's mode, none
 // for a new one), and returns the rule it had (Source "": none). A changed source or mode is looked
-// at again by the placement pass; an unchanged rule is left as it is. The caller holds the channel's
-// lock.
+// at again by the placement pass, and tells of what waits under it afresh (spec 0041: told_version
+// cleared); an unchanged rule is left as it is. The caller holds the channel's lock.
 func (t *Tx) SetChannelRule(ctx context.Context, channelID, name, source, mode, actor string) (ChannelSource, error) {
 	if !ValidSource(source) || mode != RuleNone && mode != RuleAuto && mode != RuleManual && mode != RuleFollow {
 		return ChannelSource{}, ErrInvalid
@@ -115,7 +115,7 @@ func (t *Tx) SetChannelRule(ctx context.Context, channelID, name, source, mode, 
 	now := t.s.d.timeArg(t.Now())
 	if had {
 		_, err = t.exec(ctx, `UPDATE channel_sources SET source = ?, mode = ?, set_by = ?, set_at = ?, checked_at = NULL, outcome = NULL,
-outcome_at = NULL, due_at = NULL WHERE channel_id = ? AND name = ?`, source, mode, actor, now, channelID, name)
+outcome_at = NULL, due_at = NULL, told_version = NULL WHERE channel_id = ? AND name = ?`, source, mode, actor, now, channelID, name)
 	} else {
 		_, err = t.exec(ctx, `INSERT INTO channel_sources (channel_id, name, source, mode, set_by, set_at) VALUES (?, ?, ?, ?, ?, ?)`,
 			channelID, name, source, mode, actor, now)

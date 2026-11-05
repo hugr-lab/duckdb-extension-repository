@@ -1060,6 +1060,33 @@ func (s *Store) ListBlocks(ctx context.Context, tenantID string) ([]Block, error
 	return out, rows.Err()
 }
 
+// BlockedBuild is a tenant's catalogue build with a blocked body (spec 0041: what a block is), any
+// state.
+type BlockedBuild struct {
+	BodyHash, PackageType, Source, Name, Version, Platform, Slot string
+}
+
+// BlockedBuilds lists the tenant's catalogue builds of its blocked bodies (of one, hash; every one,
+// ""), by body hash: one query joining the blocks to the builds.
+func (s *Store) BlockedBuilds(ctx context.Context, tenantID, hash string) (map[string][]BlockedBuild, error) {
+	q := `SELECT bl.body_hash, b.package_type, b.source, b.name, b.package_version, b.platform, b.slot FROM blocks bl
+JOIN builds b ON b.tenant_id = bl.tenant_id AND b.body_hash = bl.body_hash WHERE bl.tenant_id = ?`
+	args := []any{tenantID}
+	if hash != "" {
+		q, args = q+" AND bl.body_hash = ?", append(args, hash)
+	}
+	out := map[string][]BlockedBuild{}
+	err := s.eachRow(ctx, q, args, func(sc func(...any) error) error {
+		var b BlockedBuild
+		if err := sc(&b.BodyHash, &b.PackageType, &b.Source, &b.Name, &b.Version, &b.Platform, &b.Slot); err != nil {
+			return err
+		}
+		out[b.BodyHash] = append(out[b.BodyHash], b)
+		return nil
+	})
+	return out, err
+}
+
 // ProvidedNames lists the names of a type a tenant's upstreams provide (spec 0009): an upstream's
 // names are of its home channel's type (spec 0034).
 func (s *Store) ProvidedNames(ctx context.Context, tenantID, packageType string) (map[string]bool, error) {

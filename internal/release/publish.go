@@ -1,11 +1,14 @@
 package release
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
+	"strings"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/blob"
@@ -298,6 +301,37 @@ func (s *Service) ListBlocks(ctx context.Context, a authz.Actor, tenant string) 
 		return nil, err
 	}
 	return s.Store.ListBlocks(ctx, t.ID)
+}
+
+// BlockBuilds says what blocked bodies are (spec 0041): the tenant's catalogue builds of each (of one,
+// hash; every one, ""), any state, by body hash, their sources as answers name them, by source,
+// name, version (newest first), platform and slot. A body nothing in the tenant holds has none.
+func (s *Service) BlockBuilds(ctx context.Context, a authz.Actor, tenant, hash string) (map[string][]store.BlockedBuild, error) {
+	if err := s.Authz.Allow(ctx, a, authz.VerbAdmin, authz.Resource{Tenant: tenant}); err != nil {
+		return nil, err
+	}
+	t, err := s.Store.GetTenant(ctx, tenant)
+	if err != nil {
+		return nil, err
+	}
+	out, err := s.Store.BlockedBuilds(ctx, t.ID, hash)
+	if err != nil || len(out) == 0 {
+		return out, err
+	}
+	labels, err := s.Store.SourceLabels(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, bs := range out {
+		for i := range bs {
+			bs[i].Source = store.Label(labels, bs[i].Source)
+		}
+		slices.SortFunc(bs, func(x, y store.BlockedBuild) int {
+			return cmp.Or(strings.Compare(x.Source, y.Source), strings.Compare(x.Name, y.Name), CompareVersions(y.Version, x.Version),
+				strings.Compare(x.Platform, y.Platform), strings.Compare(x.Slot, y.Slot))
+		})
+	}
+	return out, nil
 }
 
 // GetBlock reads one block.

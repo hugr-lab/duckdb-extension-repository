@@ -1,6 +1,6 @@
 # Spec 0041: The catalogue as the console's home, and the decision queue
 
-- **Status**: accepted (the owner's decisions of 2026-11-05)
+- **Status**: accepted (the owner's decisions of 2026-11-05); phase 1 (the API) implemented
 - **Date**: 2026-11-01
 - **Author**: vgsml, Claude
 
@@ -423,6 +423,48 @@ console. The website: `catalogue.md` (`held_until`, `waiting`, the waiting event
 home, the queue, decisions), `api.md` (the routes), `observability.md` (`source.waiting`,
 `decision.*`, a channel's administrators reading their channel's events), `access.md` (the same),
 `administration/upgrading.md` (the migration's `min_reader`).
+
+Delivered as two phases on one branch, `0041-catalogue-home-impl`: phase 1 the API, phase 2 the
+console.
+
+### As built (phase 1: the API)
+
+- **One look, two readers.** `lookAt` (`internal/release/place.go`) reads a rule's candidates as the
+  pass always did (checked, servable, not purged for good, a slot that never had the version, neither
+  revoked nor withdrawn), each with its `AvailableIn(ch.Hold)` and whether it is newer than every
+  cell it serves has or had (`served.newest`, the pass's `newer`: every cell of the build, not some
+  cell). The pass places from it; the sources answer's `waiting` (`waitingOf`) and `waits_until`
+  (`ruleLook.waitsUntil`) read the same look.
+- **Blocked bodies.** `waiting` leaves out a candidate whose body the tenant blocked, or its upstream
+  blocked for an upstream source (spec 0039). The pass still tries such a build: its insert refuses
+  it and the refusal is the rule's `outcome`, which the queue's "Placements that failed" group (Open
+  the block) relies on. So the pass's candidates and `waiting` differ by the blocked bodies only.
+- **`waits_until`** is the earliest `AvailableIn(ch.Hold)` after now among the candidates newer than
+  their cells had, for an `auto` rule and a follow's rule while the channel follows the source. The
+  pass's `due_at` is unchanged for an automatic rule (it also wakes for a completion's hold); under a
+  manual rule it is also the earliest end of the source's hold among the newer held candidates (not
+  only the newest's), so a version is told when it starts waiting.
+- **The tell** is written after the look's `SetRuleChecked`, by `store.TellWaiting`: one transaction
+  updating `told_version` where the source, the mode, `set_at <= start` and the `told_version` read
+  by `DueRules` still hold, and writing the event only when a row changed. Its error is logged; the
+  rule's outcome is never touched. `current` is the newest active or deprecated (not withdrawn)
+  version of the source in the channel.
+- **Decisions.** `before` in `decision.set` is the replaced decision's version or situation.
+  `package_type` is in the answers and the events when not the default. A channel's decision
+  (dismissals too) is on a signed channel; a follow skip's `situation` is 1 to 400 bytes. On the
+  tenant's list `?type=` absent lists every type, and an unknown `?channel=` is `404`. A catalogue
+  purge (`DELETE …/catalogue/builds/{id}`) of a (source, name)'s last build deletes its decisions as
+  the collector's does, so neither path leaves decisions behind.
+- **A publisher's signed request** on the decision routes is `401`, as on every management route
+  that does not admit publishers (it is not a token there), rather than the `404` the Testing list
+  names; an install holder, a distribution admin and the other refusals are `404`.
+- **A channel's administrators' events.** The route rule admits a tenant principal without `audit`
+  (`channelAdmins`), and the handler checks the subject's channel against `admin` on it. In a `kind`
+  list that names other kinds too, `install` and `extension.use` are dropped; a list naming only them
+  is `404`. The store's subject filter gained `SubjectTree` (the exact subject, or the prefix
+  `subject/`).
+- **Docs.** `administration/upgrading.md` lists `0050_event_pruned` too, which spec 0040's change
+  had left out of the `min_reader` table.
 
 ## Follow-ups
 

@@ -46,10 +46,11 @@ func (t *Tx) RemoveFollow(ctx context.Context, channelID, source string) error {
 	return err
 }
 
-// dropFollows removes every follow of a source, with its skipped names: the source is gone. The
-// rules they wrote stay (mode follow, acting as manual).
+// dropFollows removes every follow of a source, with its skipped names, and the decisions on its
+// names (spec 0041): the source is gone. The rules they wrote stay (mode follow, acting as manual).
 func (t *Tx) dropFollows(ctx context.Context, source string) error {
-	for _, q := range []string{"DELETE FROM follow_skips WHERE source = ?", "DELETE FROM channel_follows WHERE source = ?"} {
+	for _, q := range []string{"DELETE FROM follow_skips WHERE source = ?", "DELETE FROM channel_follows WHERE source = ?",
+		"DELETE FROM decisions WHERE source = ?"} {
 		if _, err := t.exec(ctx, q, source); err != nil {
 			return err
 		}

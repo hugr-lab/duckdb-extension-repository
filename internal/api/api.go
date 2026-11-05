@@ -591,7 +591,10 @@ type rule struct {
 	// distributor tells "suspended, wait" from "gone"; its distributors' catalogue entries and their
 	// withdrawal); to everyone else but server administrators it is unknown
 	suspended bool
-	handle    handler
+	// channelAdmins admits a tenant principal without the verbs on a pathVerbs route (spec 0041: the
+	// events, which a channel's administrators read for their channel; the handler checks the subject)
+	channelAdmins bool
+	handle        handler
 }
 
 type params map[string]string
@@ -631,6 +634,10 @@ var auditors = []authz.Verb{authz.VerbAudit}
 // groupReaders read an extension group (spec 0017: its administrators; spec 0040: the tenant's
 // auditors).
 var groupReaders = []authz.Verb{authz.VerbAdmin, authz.VerbAudit}
+
+// decisionReaders read a channel's decisions (spec 0041: its administrators; the tenant's
+// administrators and auditors).
+var decisionReaders = []authz.Verb{authz.VerbAdmin, authz.VerbAudit}
 
 func init() {
 	idx := func(f handler) map[string]rule { return map[string]rule{http.MethodGet: {access: public, handle: f}} }
@@ -806,10 +813,19 @@ func init() {
 			http.MethodGet: {access: pathVerbs, verbs: readers, manage: true, publishers: true, handle: (*Handler).getRelease},
 			// spec 0016 phase 2: purging a yanked release
 			http.MethodDelete: m(pathAdmin, (*Handler).purgeRelease)}},
-		// spec 0010: events, read with audit on the tenant (admin implies it) or by server administrators
-		{"tenants/{t}/events", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, closed: true, handle: (*Handler).tenantEvents}}},
+		// spec 0010: events, read with audit on the tenant (admin implies it) or by server administrators;
+		// spec 0041: and a channel's administrators, their channel's
+		{"tenants/{t}/events", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, closed: true, channelAdmins: true,
+			handle: (*Handler).tenantEvents}}},
 		{"tenants/{t}/events/{id}", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: auditors, manage: true, closed: true,
-			handle: (*Handler).tenantEvent}}},
+			channelAdmins: true, handle: (*Handler).tenantEvent}}},
+		// spec 0041: the decisions on the decision queue, written by the tenant's administrators, read by
+		// them and its auditors (a channel's, by its administrators too)
+		{"tenants/{t}/decisions", map[string]rule{http.MethodGet: audited((*Handler).tenantDecisions),
+			http.MethodPut: mb(pathAdmin, (*Handler).setDecision)}},
+		{"tenants/{t}/decisions/{id}", map[string]rule{http.MethodDelete: m(pathAdmin, (*Handler).clearDecision)}},
+		{"tenants/{t}/channels/{c}/decisions", map[string]rule{http.MethodGet: {access: pathVerbs, verbs: decisionReaders, manage: true,
+			handle: (*Handler).channelDecisions}}},
 		{"events", map[string]rule{http.MethodGet: m(serverAdmin, (*Handler).serverEvents)}},
 		// spec 0010 phase 2a: download statistics
 		{"tenants/{t}/stats/downloads", map[string]rule{http.MethodGet: m(tenantPrincipal, (*Handler).statsDownloads)}},
@@ -1261,6 +1277,9 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 				allowed = allowed || m.Publisher.Distributor != ""
 			}
 		}
+		if !allowed && ru.channelAdmins && c.principals != nil && c.pub == nil {
+			allowed = true // spec 0041: by the path's tenant; the handler checks the caller's channels
+		}
 		if !allowed {
 			return refuse()
 		}
@@ -1330,7 +1349,7 @@ func takesType(pattern, method string) bool {
 		strings.HasPrefix(pattern, "tenants/{t}/stats/"), strings.HasPrefix(pattern, "tenants/{t}/licenses"),
 		strings.HasPrefix(pattern, "tenants/{t}/license-keys"), pattern == "distributor-stats/downloads":
 		return true
-	case pattern == "tenants/{t}/grants", pattern == "tenants/{t}/extension-groups":
+	case pattern == "tenants/{t}/grants", pattern == "tenants/{t}/extension-groups", pattern == "tenants/{t}/decisions":
 		return get
 	}
 	return false
