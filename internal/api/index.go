@@ -520,15 +520,17 @@ func (h *Handler) extension(w http.ResponseWriter, r *http.Request, c caller, p 
 }
 
 type purgedOut struct {
-	Version       string `json:"version"`
+	Version  string `json:"version"`
+	Platform string `json:"platform"`
+	Slot     string `json:"slot"`
+	// DuckDBVersion is the DuckDB version the slot is ("" for a C API build's, capi:<major>)
 	DuckDBVersion string `json:"duckdb_version"`
-	Platform      string `json:"platform"`
 }
 
 // purgedOf is the channel's purged releases of a name from its selected source (spec 0016 phase 2:
-// their slots stay taken), each on the DuckDB version its slot is, as the placement pass counts them
-// in what a cell had (a C API build's slot names no DuckDB version: left out, as the pass does), of
-// the channel's DuckDB versions; optionally of one DuckDB version and platform.
+// their slots stay taken), each with its slot and, but for a C API build's, the DuckDB version the
+// slot is: what the placement pass counts as had (a slot that had the version, any cell that had a
+// version); optionally of one DuckDB version (a C API build's whatever it is) and platform.
 func (h *Handler) purgedOf(ctx context.Context, snap *release.Snapshot, name, version, platform string) ([]purgedOut, error) {
 	out := []purgedOut{}
 	source := snap.Selected[name]
@@ -540,11 +542,14 @@ func (h *Handler) purgedOf(ctx context.Context, snap *release.Snapshot, name, ve
 		return nil, err
 	}
 	for _, p := range slots {
-		if _, served := snap.CAPIs[p.Slot]; p.ABI == store.ABICStruct || !served ||
-			version != "" && (p.Slot != version || p.Platform != platform) {
+		o := purgedOut{Version: p.PackageVersion, Platform: p.Platform, Slot: p.Slot}
+		if p.ABI != store.ABICStruct {
+			o.DuckDBVersion = p.Slot
+		}
+		if version != "" && (p.Platform != platform || o.DuckDBVersion != "" && o.DuckDBVersion != version) {
 			continue
 		}
-		out = append(out, purgedOut{Version: p.PackageVersion, DuckDBVersion: p.Slot, Platform: p.Platform})
+		out = append(out, o)
 	}
 	return out, nil
 }

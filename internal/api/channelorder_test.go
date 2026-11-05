@@ -38,7 +38,7 @@ func TestIndexPurged(t *testing.T) {
 	if r := m.call(t, "DELETE", E+"/releases/"+id, ta, "", "If-Match", "*"); r.status != 204 {
 		t.Fatalf("purge: %d %s", r.status, r.body)
 	}
-	want := `[{"duckdb_version":"` + v + `","platform":"linux_amd64","version":"1.0"}]` // as decoded and marshalled again
+	want := `[{"duckdb_version":"` + v + `","platform":"linux_amd64","slot":"` + v + `","version":"1.0"}]` // as decoded and marshalled again
 	for who, tok := range map[string]string{"tenant admin": ta, "ext admin": m.toks["ext admin"], "channel adm": m.toks["channel adm"]} {
 		got, _ := json.Marshal(m.call(t, "GET", E, tok, "").json(t)["purged"])
 		if string(got) != want {
@@ -52,6 +52,21 @@ func TestIndexPurged(t *testing.T) {
 	got, _ = json.Marshal(m.call(t, "GET", E+"?duckdb_version="+v+"&platform=osx_arm64", ta, "").json(t)["purged"])
 	if string(got) != `[]` {
 		t.Errorf("of another cell: %s", got)
+	}
+	// a C API build's purged slot: its slot, no DuckDB version, kept by a cell's filter on its platform
+	demo := m.ids["demo-v1"]
+	const D = "/api/v1/tenants/acme/channels/prod/extensions/demo"
+	if r := m.call(t, "POST", D+"/releases/"+demo+"/yank", ta, "", "If-Match", "*"); r.status != 200 {
+		t.Fatalf("yank demo: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "DELETE", D+"/releases/"+demo, ta, "", "If-Match", "*"); r.status != 204 {
+		t.Fatalf("purge demo: %d %s", r.status, r.body)
+	}
+	for _, q := range []string{"", "?duckdb_version=" + v + "&platform=linux_amd64"} {
+		got, _ := json.Marshal(m.call(t, "GET", D+q, ta, "").json(t)["purged"])
+		if string(got) != `[{"duckdb_version":"","platform":"linux_amd64","slot":"capi:1","version":"0.1"}]` {
+			t.Errorf("demo's purged C API slot%s: %s", q, got)
+		}
 	}
 	for who, tok := range map[string]string{"install": m.toks["install"], "anonymous": ""} {
 		if r := m.call(t, "GET", E, tok, ""); r.status != 200 || strings.Contains(string(r.body), "purged") {
