@@ -76,6 +76,14 @@ func TestDecisions(t *testing.T) {
 		if n, err := store.CountRaw(ctx, s, "schema_migrations", "version = 51 AND min_reader = 51"); err != nil || n != 1 {
 			t.Fatalf("migration 51 raises min_reader: %d %v", n, err)
 		}
+		// a source's deletes, and a tenant's list, reaper and foreign key, each have an index
+		idx := map[string][2]string{"sqlite": {"sqlite_master", "type = 'index' AND name = ?"}, "postgres": {"pg_indexes", "indexname = ?"},
+			"sqlserver": {"sys.indexes", "name = ?"}}[e.Name]
+		for _, name := range []string{"ix_decisions_entry", "ix_decisions_tenant"} {
+			if n, err := store.CountRaw(ctx, s, idx[0], idx[1], name); err != nil || n != 1 {
+				t.Fatalf("the index %s: %d %v", name, n, err)
+			}
+		}
 		tn, ch := fixture(t, s)
 		p := store.Publisher{TenantID: tn.ID, Name: "ci"}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertPublisher(ctx, &p) })

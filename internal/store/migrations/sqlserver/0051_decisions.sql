@@ -27,3 +27,6 @@ CREATE UNIQUE INDEX ux_decisions_tenant ON decisions (tenant_id, package_type, k
 -- +statement
 -- a source's delete (WHERE source = ?), and the deletes of a (source, name)'s once its last build goes
 CREATE INDEX ix_decisions_entry ON decisions (source, tenant_id, package_type, name)
+-- +statement
+-- a tenant's list by id, the reaper's batched deletes, and the tenant's foreign key
+CREATE INDEX ix_decisions_tenant ON decisions (tenant_id, id)

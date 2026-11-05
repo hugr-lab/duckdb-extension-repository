@@ -282,7 +282,8 @@ decisions         id, tenant_id, package_type, channel_id NULL (fk channels), ki
                   decided_by, decided_at
                   unique (channel_id, kind, source, name)              where channel_id IS NOT NULL
                   unique (tenant_id, package_type, kind, source, name) where channel_id IS NULL
-                  index  (tenant_id, package_type, source, name)       -- the collector's and a source's deletes
+                  index  (source, tenant_id, package_type, name)       -- a source's and the collector's deletes
+                  index  (tenant_id, id)                               -- the list, the reaper, the tenant's key
 ```
 
 - The two unique keys are partial (filtered on SQL Server), as the catalogue's slot key is (spec
@@ -486,7 +487,9 @@ console.
   tenant's row (shared) first, which a source's removal takes for update first, and then the source
   row and the builds, which no deleter takes in the other order: no lock cycle. A store test starts
   the delete between the check and the insert on each dialect. The index is
-  `(source, tenant_id, package_type, name)`, which a source's delete (`WHERE source = ?`) uses.
+  `(source, tenant_id, package_type, name)`, which a source's delete (`WHERE source = ?`) uses, and
+  `ix_decisions_tenant (tenant_id, id)` serves the tenant's list, the reaper's batched deletes and the
+  tenant's foreign key.
 - **A publisher's signed request** on the decision routes is `401`, as on every management route
   that does not admit publishers (it is not a token there), rather than the `404` the Testing list
   names; an install holder, a distribution admin and the other refusals are `404`.
