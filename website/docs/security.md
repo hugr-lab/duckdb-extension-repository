@@ -312,6 +312,35 @@ Key sources and object stores are configured by the server administrator and use
 clients, with the same rules: TLS 1.2 or later, no proxy from the environment, no redirects. See
 [Configuration](configuration.md).
 
+### The host list
+
+The address rules stop SSRF into private networks and cloud metadata, but not kista fetching from
+any public host a tenant's administrator names. `egress.hosts` (spec 0044) narrows the tenants'
+client to listed host names, wildcard subdomains and IP literals:
+
+- **Fail-closed when on, never off by accident.** It is on only with `egress.hosts_enforce: true`;
+  then a missing or `null` list is a configuration error and `[]` refuses every host. Without the
+  switch, nothing changes.
+- **Checked on the name first**, in kista (a NetworkPolicy has no names, and kista asks its proxy to
+  `CONNECT` to checked addresses): before resolution, any connection or a proxy request, in the
+  dial itself. Names are compared IDNA-mapped, lowercase and without a trailing dot, addresses as
+  addresses; a wildcard never matches its apex; TLS still verifies the name.
+- **No new reach.** The list never admits an address, a port, plain `http`, a redirect or the own
+  `serve.public_url` host that the address rules refuse: both must pass. It only removes names.
+- **Operator destinations are not narrowed**: server issuers, credential token endpoints, OTLP sinks
+  and the community sync, whose URLs are in the same file-only configuration. No API or variable
+  sets the list, and a server administrator's token never widens it.
+- **DNS of listed names.** Whoever controls a listed name's DNS chooses the addresses kista connects
+  to (within the address rules). List names whose DNS you trust, and avoid wildcards over domains
+  your customers control (`*.customer-subdomains.example`).
+- **Source-restricted hosts.** kista's requests to a tenant destination carry no credential of the
+  operator's; the real risk is a host that trusts requests by their source address. Such hosts (an
+  operations realm, an admin console) must not allow kista's egress addresses (its NAT gateway or
+  egress IPs); restrict them to the operators' networks.
+- **What a tenant learns.** The `egress-host` answer says a name is not on the list: a fact about the
+  configuration, decided before resolution. A tenant can probe whether a guessed host is listed;
+  each refused add is an audited refusal (`authz.refused`, reason `egress-host`).
+
 ## Storage integrity
 
 The object store is not trusted. Every chunk of a body is checked against a digest held in the
@@ -432,7 +461,7 @@ send events to a store the database administrators do not control. See
 | Upstream repositories | signatures against pinned keys, footers, entry points, size limits |
 | Publishers' uploads | footers, entry points, reserved names, grants |
 | The object store | chunk digests and content hashes in the database |
-| Tenants' issuer records and feed URLs | the egress guard |
+| Tenants' issuer records, upstream prefixes and feed URLs | the egress guard; with `egress.hosts_enforce`, the host list too |
 | Feed sources | pinned keys, signed fields, content hashes |
 | Bundles and their media | pinned bundle keys, then every file against the pinned source keys, freshness per upstream and cell |
 | Clients | grants, constant `401` / `404`, download and rate limits |
@@ -456,6 +485,8 @@ send events to a store the database administrators do not control. See
 - On Kubernetes, follow the chart's hardening list ([Kubernetes](deployment/kubernetes.md#hardening)):
   the NetworkPolicy on, egress to `169.254.169.254` blocked where no metadata identity is used,
   and the namespace's RBAC treated as the administration boundary.
+- On a hosted service, turn on `egress.hosts_enforce` and list the hosts tenants may reach; never let
+  a source-restricted host trust kista's egress addresses.
 
 ## Reporting a vulnerability
 

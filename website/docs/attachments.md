@@ -346,7 +346,10 @@ sequenceDiagram
    `prefixes` must cover the feed URL. Its principal holds `feed` at the source.
 2. **Egress.** The source's address and port must be reachable through egress (see
    [Configuration](configuration.md)). Requests go without redirects, and the credential is sent
-   only to the feed URL.
+   only to the feed URL. With `egress.hosts_enforce` (spec 0044), the feed URL's host must also be
+   on `egress.hosts`: feed add answers `400` with the problem type `egress-host`, naming the host,
+   and a run fails before asking for a token (status `failing`, `feed.run` error class
+   `egress-host`). A bundle-mode feed contacts nothing and is not checked.
 3. **Pinned keys.** The fingerprints (`sha256:<64 hex>`) of the source's attestation keys, read from
    `GET <feed URL>/attestation-keys` and checked with the source's operator.
 
@@ -478,7 +481,7 @@ site's import takes them into its bundle-mode feeds
 **A bundle-mode feed** (`-mode bundle`, `"mode": "bundle"`), at the site:
 
 - its URL is only the identity its statements name: it must be https, but kista never contacts it,
-  so egress need not reach it, and it takes no credential (`400`);
+  so egress need not reach it (nor `egress.hosts` list its host), and it takes no credential (`400`);
 - it never runs: it is not scheduled, adding or resuming it requests no run, and `sync` answers
   `409`;
 - its status is `new` until an import takes it as a target, then that import's (`ok` or `failing`);

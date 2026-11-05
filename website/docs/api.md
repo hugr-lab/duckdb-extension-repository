@@ -147,6 +147,7 @@ Errors are `application/problem+json`:
 | `retired` | `409`: a publication, promotion or placement into the slot of a [retired](administration/tenants-and-channels.md#retention) release, of its body or another (spec 0042); restore it instead |
 | `stale` | `409`: a signed metadata write older than the entry's last one, or of its second with another body ([spec 0036](publishing.md#an-entrys-icon-and-summary)); read the metadata again |
 | `publisher-taken` | `409`: a distribution admin's new [distributor's publisher](publishing.md#distributors-publishers) whose name a tenant's own publisher holds (spec 0037); it says nothing else about that publisher |
+| `egress-host` | `400`: an upstream, issuer or feed add naming a host that is off the server's [`egress.hosts`](upstreams.md#the-host-list) (spec 0044): the problem's `host` member names it (a prefix's or a duckdb-core or duckdb-community upstream's built-in host, an issuer's URL or JWKS host, discovered included, a feed URL's), with the detail `<host> is not among the hosts this server may reach (egress.hosts); the server's operator adds it`. It wins over the generic `invalid`, and each is recorded as an audited refusal (`authz.refused`, reason `egress-host`) |
 | `not-computed` | `400`: a [distributor's statistics](observability.md#a-distributors-statistics) query before any week is computed, or with `from` after the newest week computed (spec 0036); the same query is answered once its weeks are |
 | `precondition-failed` | `412` |
 | `precondition-required` | `428` |

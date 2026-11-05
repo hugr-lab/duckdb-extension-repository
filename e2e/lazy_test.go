@@ -6,10 +6,12 @@ import (
 	"crypto/rsa"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,13 +60,18 @@ func TestUpstreamLazy(t *testing.T) {
 	}
 	dst.release("httpfs", release.AddOptions{})
 
-	// dst: a lazy mirror of src, nothing eager; its puller serves first requests
+	// dst: a lazy mirror of src, nothing eager; its puller serves first requests. Its egress has
+	// egress.hosts on (spec 0044), listing src's host
 	_, srcPort, _ := net.SplitHostPort(src.addr)
-	eg, err := egress.New(egress.Config{AllowLoopbackHTTP: true, OwnHost: "127.0.0.1"})
+	listed, err := egress.NewHosts([]string{"localhost"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	up := &upstream.Service{Store: dst.st, Releases: dst.rel, Blob: dst.blob, Fetch: eg, Authz: authz.ServerAdmin{},
+	eg, err := egress.New(egress.Config{AllowLoopbackHTTP: true, OwnHost: "127.0.0.1", Hosts: listed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := &upstream.Service{Store: dst.st, Releases: dst.rel, Blob: dst.blob, Fetch: eg, Hosts: eg, Authz: authz.ServerAdmin{},
 		MaxBody: 256 << 20, MaxIngests: 2, TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler),
 		Config: upstream.Config{Interval: 6 * time.Hour}}
 	if _, err := up.Add(ctx, serveAdmin, "acme", upstream.Spec{Name: "src", Kind: store.UpstreamRepo, Prefix: "http://localhost:" + srcPort + "/acme/prod",
@@ -181,5 +188,89 @@ func TestUpstreamLazy(t *testing.T) {
 	mustOK(t, res)
 	if got := res[len(res)-1].Rows[0][0]; got != "e2e-2" {
 		t.Fatalf("after dst's next run DuckDB installs version %v", got)
+	}
+}
+
+// Spec 0044: a lazy mirror whose host egress.hosts leaves out (TestUpstreamLazy's list holds it).
+// kista dst mirrors src lazily, added while its list held src's host; restarted with a list that
+// leaves it out, a cell never fetched is a fetch that cannot start: recorded failed, and DuckDB's
+// first INSTALL is answered 503, then 404.
+func TestUpstreamLazyHostOff(t *testing.T) {
+	b := needBuild(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const demo = "loadable_extension_demo"
+	src := startKista(t, b)
+	src.release(demo, release.AddOptions{})
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	idp := &e2eIDP{key: key}
+	dst := startKistaWith(t, b, &auth.Verifier{Fetch: idp})
+	adm := &tenants.AuthAdmin{Store: dst.st, Authz: authz.ServerAdmin{}, Fetch: idp, PublicURL: "https://" + dst.addr}
+	if _, err := adm.AddIssuer(ctx, serveAdmin, "acme", store.Issuer{Name: "corp", URL: e2eIssuer}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adm.AddAudience(ctx, serveAdmin, "acme", "api://kista-dst"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adm.AddGrant(ctx, serveAdmin, "acme", "subject:corp|alice", []string{"install"}, tenants.GrantOn{Channel: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	dst.release("httpfs", release.AddOptions{})
+
+	_, srcPort, _ := net.SplitHostPort(src.addr)
+	client := func(hosts ...string) *egress.Client {
+		t.Helper()
+		h, err := egress.NewHosts(hosts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, err := egress.New(egress.Config{AllowLoopbackHTTP: true, OwnHost: "127.0.0.1", Hosts: h, Log: slog.New(slog.DiscardHandler)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	service := func(c *egress.Client) *upstream.Service {
+		return &upstream.Service{Store: dst.st, Releases: dst.rel, Blob: dst.blob, Fetch: c, Hosts: c, Authz: authz.ServerAdmin{},
+			MaxBody: 256 << 20, MaxIngests: 2, TempDir: t.TempDir(), Log: slog.New(slog.DiscardHandler),
+			Config: upstream.Config{Interval: 6 * time.Hour}}
+	}
+	if _, err := service(client("localhost")).Add(ctx, serveAdmin, "acme", upstream.Spec{Name: "src", Kind: store.UpstreamRepo,
+		Prefix: "http://localhost:" + srcPort + "/acme/prod", Channel: "prod", Keys: []string{src.activeKey(t).Fingerprint},
+		Platforms: []string{b.platform}, Visibility: store.Private, FetchMode: store.FetchLazy,
+		Entries: []store.UpstreamEntry{{Name: demo}}}); err != nil {
+		t.Fatal(err)
+	}
+	// after the restart: the list leaves localhost out
+	up := service(client("extensions.duckdb.org"))
+	puller := &upstream.Puller{Service: up, Holder: "dst", Log: slog.New(slog.DiscardHandler)}
+	dst.puller.p.Store(puller)
+	running := make(chan struct{})
+	go func() { puller.Run(ctx); close(running) }()
+	t.Cleanup(func() { cancel(); <-running })
+
+	pemKey := dst.pem(t, dst.activeKey(t))
+	mark := dst.mark()
+	res := newSession(t, b, nil).exec(
+		createRepo("boot", dst.httpURL(), pemKey),
+		"INSTALL httpfs FROM boot",
+		"LOAD httpfs FROM boot",
+		"SET ca_cert_file = "+sqlString(testCA(t).caFile),
+		createRepo("m", dst.httpsURL(), pemKey),
+		"CREATE SECRET s (TYPE http, BEARER_TOKEN "+sqlString(idp.token(t, "alice", "api://kista-dst"))+", SCOPE "+sqlString(dst.httpsURL()+"/")+")",
+		"INSTALL "+demo+" FROM m")
+	mustOK(t, res[:len(res)-1])
+	mustFail(t, res[len(res)-1], "failed to install")
+	// the first request answered 503 (the build is coming), DuckDB's retry 404
+	if got, _ := puller.Asks(ctx); got[upstream.Ask503] != 1 || got[upstream.AskFetched] != 0 {
+		t.Fatalf("dst's asks: %v", got)
+	}
+	if st := dst.statuses("/"+demo+".duckdb_extension", mark); len(st) == 0 || st[len(st)-1] != http.StatusNotFound {
+		t.Fatalf("DuckDB's last request for a cell whose fetch cannot start: %v, want 404", st)
+	}
+	cells, err := up.Cells(ctx, serveAdmin, "acme", "src", "", [3]string{}, 10)
+	if err != nil || len(cells) != 1 || cells[0].Name != demo || cells[0].Outcome != store.CellFailed ||
+		!strings.Contains(cells[0].Detail, "localhost is not on this server's egress host list") {
+		t.Fatalf("the cell of a host off egress.hosts: %+v %v", cells, err)
 	}
 }

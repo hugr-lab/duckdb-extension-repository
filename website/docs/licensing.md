@@ -289,7 +289,9 @@ and a channel whose rule is switched to that entry serves it. Short lifetimes bo
 
 `kista admin upstream licenses <tenant> <upstream> [-sync]` shows the last relay run (received,
 stored, replaced, unchanged, removed, refused with reasons) and with `-sync` asks for one now;
-the API has `GET` and `POST …/upstreams/{name}/licenses[/sync]`.
+the API has `GET` and `POST …/upstreams/{name}/licenses[/sync]`. With `egress.hosts_enforce` (spec
+0044), a relay to an upstream whose host is off `egress.hosts` asks for no token: its result's error
+is `egress: refused: <host> is not on this server's egress host list`.
 
 **In the console**, tenant administrators have **Licences**: the tenant's licences with plan,
 holder, how each arrived, visibility, expiry, status (one expiring within 30 days, or in its grace,
@@ -529,6 +531,9 @@ POST <upstream prefix>/-/usage     Authorization: Bearer <the credential's token
   stop the others, so the upstream may hold a partial day until the next run.
 - An upstream answering `404` takes no usage: the day is skipped. Each run is a `usage.forward`
   event with the days sent, skipped and failed (with why).
+- An upstream whose host is off `egress.hosts` (with `egress.hosts_enforce`, spec 0044) is asked
+  for no token and sent nothing: each day fails with the reason `egress-host: <host>` (not
+  `unreachable`), in the result `GET …/upstreams/{name}/usage` shows.
 
 **Receiving.** `POST <prefix>/-/usage` is kista's own route too:
 
