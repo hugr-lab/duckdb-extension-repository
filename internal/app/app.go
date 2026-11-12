@@ -376,9 +376,9 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 	rel.PurgeOff = cfg.GCSettings().Interval == 0
 	rel.RetentionInterval = cfg.Retention.IntervalOrDefault() // spec 0042: a channel's next run
 	at := &attachment.Service{Store: s, Authz: az, MaxSize: cfg.Attachments.MaxSize, Keys: ks, PublicURL: cfg.Serve.PublicURL}
-	feeds := &attachment.Feeds{Store: s, Authz: az, Attachments: at, Fetch: eg, Credentials: creds,
+	feeds := &attachment.Feeds{Store: s, Authz: az, Attachments: at, Fetch: eg, Hosts: eg, Credentials: creds,
 		Interval: cfg.Attachments.FeedIntervalOrDefault(), Log: slog.Default(), TempDir: filepath.Join(cfg.SpoolDir(), "feeds")}
-	lic := &licenses.Service{Store: s, Authz: az, Enabled: cfg.Licenses.On(), Refuse: cfg.Licenses.Refused(), Fetch: eg, Credentials: creds,
+	lic := &licenses.Service{Store: s, Authz: az, Enabled: cfg.Licenses.On(), Refuse: cfg.Licenses.Refused(), Fetch: eg, Hosts: eg, Credentials: creds,
 		Interval: cfg.Licenses.RefreshOrDefault(), Log: slog.Default()}
 	return &Services{
 		Store:    s,
@@ -386,10 +386,10 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 		Tenants:  &tenants.Service{Store: s, Authz: az, HasDomain: cfg.HasBlobDomain},
 		Keys:     ks,
 		Releases: rel,
-		Auth: &tenants.AuthAdmin{Store: s, Authz: az, Fetch: eg, PublicURL: cfg.Serve.PublicURL,
+		Auth: &tenants.AuthAdmin{Store: s, Authz: az, Fetch: eg, Hosts: eg, PublicURL: cfg.Serve.PublicURL,
 			AllowHTTP: cfg.Egress.AllowLoopbackHTTP, ServerAudiences: cfg.ServerAudiences(),
 			ServerIssuerURLs: serverIssuerURLs(cfg)},
-		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
+		Upstreams: &upstream.Service{Store: s, Releases: rel, Fetch: eg, Hosts: eg, Authz: az, MaxBody: maxBody, MaxIngests: maxIngests,
 			TempDir: filepath.Join(cfg.SpoolDir(), "upstream"), Log: slog.Default(),
 			Config: upstream.Config{Concurrency: ul.Concurrency, FetchTimeout: ul.FetchTimeout, MinRate: int64(ul.MinRate),
 				Interval: ul.Interval}, Credentials: creds, Feeds: feeds, Uploads: uploadSettings(cfg), Licenses: lic},
@@ -403,7 +403,7 @@ func NewServices(cfg config.Config, s *store.Store, az authz.Authorizer) (*Servi
 // through egress with egress.allow and the credential's own allowlist; the platform's identity for
 // client_auth azure. Nothing is contacted here.
 func Credentials(cfg config.Config) (credential.Registry, error) {
-	d := credential.Deps{Poster: func(c config.Credential) (credential.Poster, error) { return egressWith(cfg, c.Allow, 0) }}
+	d := credential.Deps{Poster: func(c config.Credential) (credential.Poster, error) { return egressWith(cfg, c.Allow, 0, nil) }}
 	if cfg.Azure.Identity.Kind != "" {
 		id := cfg.Azure.Identity
 		cloudName := cfg.Azure.Cloud

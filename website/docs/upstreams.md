@@ -1278,6 +1278,40 @@ used to reach a refused address. Errors are one message per class (refused, cann
 too large) with the host only, so adding an upstream or an issuer is not a port scanner. Upstream
 file downloads use `upstreams.fetch_timeout` and `upstreams.min_rate` instead of `egress.timeout`.
 
+### The host list
+
+With `egress.hosts_enforce: true`, the tenants' client fetches only from hosts on `egress.hosts`
+(spec 0044; see [Configuration](configuration.md#egress)). Both rules apply: the host's name is
+checked first, before DNS, any connection or a request to the proxy; a listed host then meets every
+address rule above, on every address it resolves to. Ports stay with `egress.allow`: a listed host
+on a public address is still dialed on 443 only. A `duckdb-core` upstream is fetched from
+`extensions.duckdb.org` and a `duckdb-community` one from `community-extensions.duckdb.org`, which
+are not listed implicitly: an operator who turns the list on lists them.
+
+```yaml title="kista.yaml"
+egress:
+  hosts_enforce: true
+  hosts: [extensions.duckdb.org, community-extensions.duckdb.org, repo.example.com]
+```
+
+A host off the list:
+
+- **upstream add** answers `400` with the problem type `egress-host`, naming the host (the prefix's,
+  or the kind's built-in one), checked before any fetch. A bundle-mode upstream contacts nothing and
+  is not checked;
+- **a run** fails before its cells: `last_run.error` is
+  `the run failed: egress: refused: <host> is not on this server's egress host list`, the `upstream.run` event's
+  `error` is `egress-host`, no cell record is touched, and the run counts as failed (the next one is
+  at the next interval). Adding the host and restarting is enough;
+- **a lazy mirror's** first request records the cell `failed` with that error as its detail, and
+  DuckDB is answered `404` (its retry after the first request's `503`), as for any fetch that cannot
+  start;
+- **a pull-through** miss is answered as any miss, and nothing is recorded;
+- **a bundle export's** read of a source's `.well-known` fails that source, naming the host.
+
+The licence relay and usage forwarding check the host too, before asking for a token (see
+[Licensing](licensing.md)).
+
 Upstream changes, runs, releases and rejected cells are recorded as events (`upstream.add`,
 `upstream.change`, `upstream.run`, `upstream.release`, `upstream.rejected`, ...; see
 [Observability](observability.md)).

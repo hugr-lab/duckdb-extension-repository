@@ -143,8 +143,10 @@ func (w *Writer) Refusal(ctx context.Context, tenantID, actor string, kind audit
 		who = "client:" + audit.ReduceClient(req.Client, audit.ClientTruncated)
 	}
 	op, _ := fields["operation"].(string)
-	if op == "" && kind == "authz.refused" {
-		op, _ = fields["reason"].(string) // spec 0037: a taken publisher name or key, told apart
+	if op == "" && (kind == "authz.refused" || kind == "auth.failure") {
+		// spec 0037: a taken publisher name or key, told apart; spec 0044: an issuer whose host is
+		// off egress.hosts (issuer_host_not_allowed) is not counted into invalid (a fixed set each)
+		op, _ = fields["reason"].(string)
 	}
 	k := limitKey{tenantID, who, string(kind), op}
 	l := w.limits[k]

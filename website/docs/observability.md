@@ -124,7 +124,7 @@ are all the kinds in `internal/audit`:
 | | `upstream.change` | `upstream:<name>` | `name`, `change`, `value`, `versions`, `allow_reserved`, `eager`, `visibility`, `state` |
 | | `upstream.release` | `channel:<channel>/ext:<name>/release:<id>` | `upstream`, `release`, `name`, `version`, `platform`, `slot`, `body_hash`, `url`, `key`, `bundle` (an import's manifest), `trigger` (`run`; `sync`, a bundle export's `-sync` too; or `ask`: a caller's miss, pull-through or a lazy mirror's first request; none on a bundle import) |
 | | `upstream.rejected` | `upstream:<name>` | `upstream`, `duckdb_version`, `platform`, `name`, `outcome` |
-| | `upstream.run` | `upstream:<name>` | `upstream`, `dry_run`, `counts`, `error`, `bundle` (an import's manifest) |
+| | `upstream.run` | `upstream:<name>` | `upstream`, `dry_run`, `counts`, `error` (a class: `paused`, `egress-host`, `keys`, `credential`, `failed`, `interrupted`, `error`), `bundle` (an import's manifest) |
 | | `bundle.import` | `tenant:<name>` | `import`, `manifest`, `created_at`, `exporter`, `bundle_key`, `input_sha256`, `dry_run`, `state`, `targets` (counts per upstream, and per feed as `feed:<name>`), `licenses` (when the bundle carried licences: `counts` received, stored, replaced, unchanged, refused; `refused`, the first 20 with `name`, `id`, `rule`, `reason`; `error`) |
 | | `bundle.upload`, `bundle.upload_complete`, `bundle.upload_abort`, `bundle.upload_fail`, `bundle.upload_expire` | `tenant:<name>` | `upload`; created: `size`, `sha256`, `chunk_size`, `dry_run`, `upstreams`, `feeds`, `any_tenant`; complete: `retry`; fail (the system's): `import`, `error` (a class: `sha256`, `storage`, `interrupted`, `busy`, `another tenant`, `bundle key not pinned`, `refused`, `not found`, `malformed`, `failed`); expire (the collector's): `state` (the one it left) |
 | | `bundle.reset` | `upstream:<name>` or `feed:<name>` | `upstream` or `feed`, `manifest`, `created_at` (the mark it cleared; a feed's cursors are reset too) |
@@ -142,9 +142,9 @@ are all the kinds in `internal/audit`:
 | | `feed.add` | `feed:<name>` | `name`, `url`, `credential`, `kinds`, `readers`, `offer`, `channels`, `keys`, `mode`, `export` |
 | | `feed.change` | `feed:<name>` | `name`, `change` (with `export`, `cursors: reset` or `kept: dropped`) |
 | | `feed.remove` | `feed:<name>` | `name`, `documents`, `export` |
-| | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `bundle` and `dry_run` (an import's), `error` (a class: `unauthorized`, `refused`, `unreachable`, `credential`, `token`, `keys`, `limits`, `failed`) |
+| | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `bundle` and `dry_run` (an import's), `error` (a class: `unauthorized`, `egress-host`, `refused`, `unreachable`, `credential`, `token`, `keys`, `limits`, `failed`) |
 | Access | `auth.failure` | `route:<route>` | `reason`, `route`, `count` |
-| | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count`; for a tenant administrator's write on a distributor's licence entry (spec 0037), `name` (with `name_unverified` when read from an import's token before it was verified), `source` (the entry as named), `entry` (resolved, `upstream-id:<id>` or `publisher-id:<id>`) and `operation` (`import`, `remove`, `public`, `private`; refusals are coalesced per operation); for a distribution admin's `409` on a name or a key one of the tenant's publishers holds (spec 0037), `reason` (`publisher-taken`, `key-taken`; coalesced per reason) |
+| | `authz.refused` | `route:<route>` | `route`, `verb`, `status`, `count`; for a tenant administrator's write on a distributor's licence entry (spec 0037), `name` (with `name_unverified` when read from an import's token before it was verified), `source` (the entry as named), `entry` (resolved, `upstream-id:<id>` or `publisher-id:<id>`) and `operation` (`import`, `remove`, `public`, `private`; refusals are coalesced per operation); for a distribution admin's `409` on a name or a key one of the tenant's publishers holds (spec 0037), `reason` (`publisher-taken`, `key-taken`; coalesced per reason); for an upstream, issuer or feed add on a host off `egress.hosts` (spec 0044), `reason` `egress-host` and `host` (coalesced per reason: the first event names its host, a burst within a second becomes one count naming the last host; every refused host is in the WARN log) |
 | | `install` | `channel:<channel>/ext:<name>/release:<id>` | `release`, `source` (the release's, as builds store it: `upstream:<id>`, `publisher:<id>`, `tenant`; spec 0036), `name`, `version`, `platform`, `duckdb_version`, `body_hash`, `user_agent` |
 | | `extension.use` | `channel:<channel>/ext:<name>` | `version`, `platform`, `duckdb_version`, `license`, `status`, `events` |
 | | `usage.forward` | `upstream:<name>` | `upstream`, `sent`, `skipped`, `failed` |
@@ -167,13 +167,15 @@ Notes on some kinds:
   ([Kubernetes Secrets](signing-keys.md#kubernetes-secrets)). `key.add` carries the key's
   `protection` tier (`file`, `kubesecret`, `software` or `kms`).
 - `auth.failure` is recorded for a `401` given to a request that sent a credential; `reason` is
-  `malformed`, `invalid`, `publisher_route`, `stale_token` or `unnamed_writer`, or for a publisher's
+  `malformed`, `invalid`, `issuer_host_not_allowed` (the token's issuer's discovery or JWKS host is
+  off `egress.hosts`, spec 0044), `publisher_route`, `stale_token` or `unnamed_writer`, or for a publisher's
   signed request `signed_stale` (`signed-at` more than five minutes away), `signed_key` (not a key of
   the tenant, or expired) or `signed_signature`.
   `authz.refused` is a known caller refused. These two, `request.failed` and `license.refused`
   are rate-limited per tenant, actor and kind to one a second (an `authz.refused` that names its
-  `operation` or its `reason`, spec 0037, per operation or reason too), each carrying `count`, the
-  requests it stands for.
+  `operation` or its `reason`, spec 0037, per operation or reason too; an `auth.failure` per
+  `reason`, spec 0044, so `issuer_host_not_allowed` is never counted into `invalid`), each carrying
+  `count`, the requests it stands for.
 - `install` is an authenticated download by a principal holding `install` on it: the first per
   (principal, release, client network, day) on a replica, at most 1,000 a day per principal.
 - `extension.use` is a usage report by a principal holding `install` on the extension
@@ -543,6 +545,12 @@ Metrics never carry a principal or a client address.
 - Header values, query strings and bodies are never logged.
 - API writes add an `api: write` line, and refusals of an authenticated caller an `api: refused`
   line, with the actor, route template, resource ids, status and client.
+- At start, serve logs `egress: host list off`, or with `egress.hosts_enforce` (spec 0044)
+  `egress: host list on` (with `entries`) and, once serving, one warning per stored host off the
+  list (`host` in its normalised form, `records`, `tenants`). Each refused fetch is logged once at WARN,
+  `egress: refused: the host is not on egress.hosts`, with `host` and, where the caller knows them,
+  `tenant` and the record (`upstream`, `issuer`, `feed`). A token of an issuer whose host is off the
+  list fails with the reason `issuer host not allowed` in the token-failure line.
 
 The `kista admin` commands write their messages to stderr.
 

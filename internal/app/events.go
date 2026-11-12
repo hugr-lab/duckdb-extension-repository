@@ -33,7 +33,7 @@ func EventSinks(cfg config.Config, instance string) ([]sinks.Sink, error) {
 		sk := sinks.Sink{Name: s.Name, Selection: sinks.SelectionOf(s), Unmasked: s.Unmasked}
 		switch s.Kind {
 		case "otlp":
-			c, err := egressWith(cfg, s.Allow, cmp.Or(s.Timeout, 10*time.Second))
+			c, err := egressWith(cfg, s.Allow, cmp.Or(s.Timeout, 10*time.Second), nil)
 			if err != nil {
 				return nil, fmt.Errorf("app: events sink %s: %w", s.Name, err)
 			}

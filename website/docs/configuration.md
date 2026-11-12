@@ -421,8 +421,53 @@ feeds, OTLP sinks, and the community sync (`reserved.community_sync`). The whole
 | `egress.proxy` | URL | none | An explicit `http://host:port` proxy. `HTTP_PROXY` and friends are never read. |
 | `egress.ca_file` | absolute path | system roots | Trust only this CA bundle (a private IdP). Owned by root or kista's user. |
 | `egress.timeout` | duration | `10s` | Per request; `1s..60s`. |
+| `egress.hosts_enforce` | boolean | `false` | Turns the host list on (spec 0044): the tenants' client then fetches only from `egress.hosts`. |
+| `egress.hosts` | list | none | With `hosts_enforce: true`, the only hosts the tenants' client reaches. `[]` refuses every host. |
 
 The deployment's own `public_url` host is always refused.
+
+**The host list** (spec 0044) narrows what kista fetches on a tenant's behalf: upstreams (add, runs,
+lazy and pull-through fetches, a bundle export's `.well-known` reads, the licence relay, usage
+forwarding), tenants' issuers (discovery and JWKS) and feeds. It is checked on the URL's host name
+before any DNS resolution, connection or proxy request; a listed host then meets the address rules
+above on every address, as without the list. Server issuers, credential token endpoints, OTLP sinks
+and the community sync are not narrowed: their URLs are already in this file.
+
+```yaml
+egress:
+  hosts_enforce: true
+  hosts:
+    - extensions.duckdb.org           # duckdb-core upstreams
+    - community-extensions.duckdb.org # duckdb-community upstreams
+    - login.microsoftonline.com       # Entra issuers (discovery and JWKS)
+    - "*.okta.com"                    # any subdomain, at any depth; not okta.com itself
+    - 203.0.113.10                    # an IP literal, matched exactly
+  allow:
+    - { cidr: 10.20.0.0/16, ports: [443, 8443] } # private networks, and ports other than 443
+```
+
+- An entry is a host name, matched exactly after normalisation (IDNA-mapped, lowercase, a trailing
+  dot dropped); a wildcard `*.<domain>`, which matches any name under the domain at any depth but
+  never the domain itself (the domain has at least two labels and a last label that is not all
+  digits: `*`, `*.com` and `*.0.10` are refused); or an IP address, without brackets, compared as an
+  address (`::ffff:203.0.113.10` matches `203.0.113.10`). A URL host that is an address matches
+  address entries only.
+- No ports (they stay with `egress.allow`), no CIDRs, no schemes or paths. A host that fails the
+  IDNA mapping is refused.
+- The switch is explicit: `hosts_enforce: true` with `hosts` missing or `null`, and `hosts` without
+  `hosts_enforce: true` (even `[]`), are configuration errors. Without the switch nothing changes.
+- With the list on, the bootstrap's issuer (its URL and an explicit `jwks_uri`) and upstreams (a
+  prefix, or `extensions.duckdb.org` and `community-extensions.duckdb.org` for `duckdb-core` and
+  `duckdb-community`) must name listed hosts, or the configuration is refused naming the entry. A
+  discovered `jwks_uri` on a host off the list makes the bootstrap's issuer item `refused` when it
+  runs, without retries.
+- Changes apply at restart. At start kista logs `egress: host list on` (with its entries) or
+  `egress: host list off`, and, once serving, one warning per stored host that is off the list,
+  with how many records and tenants name it (bundle-mode upstreams and feeds are skipped; a
+  discovered `jwks_uri` shows only when it is fetched).
+- When the operator's own token service is the tenants' issuer, list its host. Server issuers and
+  endpoints kista never fetches for a tenant need no entry. kista adds no host to the list
+  implicitly; the only host it refuses on its own is `serve.public_url`'s.
 
 ## auth
 
@@ -907,6 +952,8 @@ bootstrap:
   - the network;
   - a busy database.
 
+  A host off `egress.hosts` is never one of these: its item is `refused` at once.
+
   The record is `pending` from before its first write. The next start goes on with the tenant it
   made, and creates only what is still absent.
 - **Once.** The record (table `bootstrap`) keeps the applied section and its digest. The digest is
@@ -929,6 +976,8 @@ bootstrap:
   - the domain must be a configured blob domain;
   - an audience may be neither under `serve.public_url` nor a server audience;
   - the issuer passes the checks of `issuer add` (https, `max_lifetime` within 1m to 7d);
+  - with `egress.hosts_enforce`, the issuer's URL and explicit `jwks_uri`, and each upstream's
+    prefix or built-in host, are on `egress.hosts`;
   - grants name principals of the bootstrap's issuer only, and never `issuer:` (every account),
     `admin` to a client, or an extension group (the bootstrap makes none);
   - a grant's channel must be one of the section's channels;

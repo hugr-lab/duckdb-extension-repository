@@ -158,19 +158,45 @@ WHERE tenant_id = ? ORDER BY name`, tenantID)
 	return out, rows.Err()
 }
 
-// IssuerURLs lists every tenant's issuer records as (tenant id, name, URL): kista serve warns about
-// records at GitHub Actions' URL, which are never used (spec 0008, 0023).
-func (s *Store) IssuerURLs(ctx context.Context) ([][3]string, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT tenant_id, name, url FROM issuers ORDER BY tenant_id, name")
+// IssuerURLs lists every tenant's issuer records as (tenant id, name, URL, explicit jwks_uri or ""):
+// kista serve warns about records at GitHub Actions' URL, which are never used (spec 0008, 0023), and
+// about hosts off egress.hosts (spec 0044).
+func (s *Store) IssuerURLs(ctx context.Context) ([][4]string, error) {
+	return textRows[[4]string](ctx, s, "SELECT tenant_id, name, url, jwks_uri FROM issuers ORDER BY tenant_id, name")
+}
+
+// UpstreamPrefixes lists every tenant's upstreams as (tenant id, name, kind, mode, prefix or ""):
+// kista serve warns about hosts off egress.hosts (spec 0044).
+func (s *Store) UpstreamPrefixes(ctx context.Context) ([][5]string, error) {
+	return textRows[[5]string](ctx, s, "SELECT tenant_id, name, kind, mode, prefix FROM upstreams ORDER BY tenant_id, name")
+}
+
+// FeedURLs lists every tenant's feeds as (tenant id, name, mode, URL): kista serve warns about hosts
+// off egress.hosts (spec 0044).
+func (s *Store) FeedURLs(ctx context.Context) ([][4]string, error) {
+	return textRows[[4]string](ctx, s, "SELECT tenant_id, name, mode, url FROM feeds ORDER BY tenant_id, name")
+}
+
+// textRows reads a query's rows of text columns, as many as R holds (NULL as "").
+func textRows[R [4]string | [5]string](ctx context.Context, s *Store, query string) ([]R, error) {
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out [][3]string
+	var out []R
 	for rows.Next() {
-		var r [3]string
-		if err := rows.Scan(&r[0], &r[1], &r[2]); err != nil {
+		var r R
+		ns := make([]sql.NullString, len(r))
+		dst := make([]any, len(r))
+		for i := range ns {
+			dst[i] = &ns[i]
+		}
+		if err := rows.Scan(dst...); err != nil {
 			return nil, err
+		}
+		for i := range ns {
+			r[i] = ns[i].String
 		}
 		out = append(out, r)
 	}

@@ -93,6 +93,7 @@ var writes = map[string]map[string][]audit.Kind{
 		"ChangePackageGroupMembers": {"extension_group.members"},
 		"RemovePackageGroup":        {"extension_group.members", "extension_group.remove"},
 		"ListPackageGroups":         nil, "GetPackageGroup": nil, "PackageGroupMembers": nil,
+		"IssuerJWKS": nil, // spec 0044: the hosts checked, discovery read
 	},
 	"keys.Service": {
 		"Add": {"key.add"}, "Activate": {"key.activate"}, "Retire": {"key.retire"},

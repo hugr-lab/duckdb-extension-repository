@@ -86,6 +86,17 @@ When a record is added, discovery (unless `jwks_uri` is given) and the JWKS are 
 [egress client](upstreams.md#egress); the discovered `issuer` must equal the record's URL and the JWKS
 must hold a usable signing key. Issuers on a private network need `egress.allow`.
 
+**The host list.** With `egress.hosts_enforce` (spec 0044, see
+[Upstreams](upstreams.md#the-host-list)), an issuer works only when both its URL's host and its
+JWKS's host are on `egress.hosts`. They often differ: Google's discovery is on `accounts.google.com`
+and its JWKS on `www.googleapis.com`; Entra serves both from `login.microsoftonline.com`. Issuer add
+checks the URL's host and an explicit `jwks_uri`'s first, and a discovered `jwks_uri`'s before it is
+fetched; a host off the list answers `400` with the problem type `egress-host`, naming that host.
+The list changes only at restart, and nothing is cached across one, so an issuer whose host was
+removed fails at once: each of its tokens fails with the reason `issuer host not allowed` (the
+token-failure log line; `issuer_host_not_allowed` in the `auth.failure` event). Server issuers are
+not narrowed: their URLs are the configuration's own.
+
 **Required claims matter** for issuers that let anyone choose the audience (GitHub Actions, Google,
 a shared Keycloak realm): without them, any account of the issuer could present a token. For Entra,
 also set "assignment required" on the app registration.

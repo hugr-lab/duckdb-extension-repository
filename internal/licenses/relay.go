@@ -167,6 +167,10 @@ func (s *Service) RunUpstream(ctx context.Context, upstreamID string) (Result, e
 // fetch reads the upstream's licences for this kista's credential: found false for a 404 (the
 // upstream serves none). A 401 forgets the token and tries once more.
 func (s *Service) fetch(ctx context.Context, tenant string, u store.Upstream) ([]string, bool, error) {
+	// spec 0044: a host off egress.hosts is asked for no token
+	if err := egress.CheckHost(s.Hosts, u.Prefix, s.Log, "tenant", tenant, "upstream", u.Name); err != nil {
+		return nil, false, err
+	}
 	cred, err := s.Credentials.For(u.Credential, tenant, u.Prefix)
 	if err != nil {
 		return nil, false, errors.New("upstream.auth: the credential is not configured for this upstream")

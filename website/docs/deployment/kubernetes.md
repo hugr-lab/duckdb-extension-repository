@@ -475,6 +475,14 @@ Each `dns.ipBlocks` entry takes `ports` (default `dns.ports`), UDP and TCP each.
 
 ### Notes
 
+- **Host names.** A NetworkPolicy has no host names, and kista asks its proxy to `CONNECT` to the
+  address it checked, so neither the policy nor a filtering proxy can narrow kista to named hosts.
+  `egress.hosts` with `egress.hosts_enforce: true` does it in kista
+  ([Upstreams](../upstreams.md#the-host-list)): the hosts tenants' upstreams, issuers and feeds may
+  reach, checked by name before any connection, beside this policy's address rules.
+- **Egress addresses are not an identity.** A host that trusts requests by their source address (an
+  operations realm, an admin console) must not allow the cluster's egress IPs or NAT gateway that
+  kista's requests leave from; restrict it to the operators' networks.
 - **A peer in the cluster** is best named by its pods, for the same reason: an `ipBlock` with a
   Service's ClusterIP may match nothing.
 - **The probes need nothing**: the kubelet's requests are ingress, and their answers belong to
@@ -587,6 +595,8 @@ pods turn unready. The order and the rules are in [Upgrading](../administration/
   blocks `169.254.169.254` unless the identity needs it. On EKS, set the
   instance metadata hop limit to 1 so pods cannot use the node's role, unless kista's AWS
   identity is `kind: imds` (IRSA and Pod Identity do not use the instance metadata).
+- When tenants are customers, narrow what they make kista fetch with `egress.hosts_enforce` and
+  `egress.hosts`.
 - Deploy by digest, and verify signatures at admission ([Deployment](index.md#verifying)).
 - Limit who may `exec`, create Jobs and read Secrets in the namespace (above).
 - `serve.resign` only on pods that may sign.

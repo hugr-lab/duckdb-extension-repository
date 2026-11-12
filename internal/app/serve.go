@@ -69,6 +69,13 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// spec 0044: the host list's state (the stored records it refuses are warned about once serving)
+	hostsOn, hostEntries := eg.HostsOn()
+	if hostsOn {
+		log.Info("egress: host list on", "entries", hostEntries)
+	} else {
+		log.Info("egress: host list off")
+	}
 	verifier := &auth.Verifier{Fetch: eg}
 	server, err := ServerAuth(ctx, cfg, st)
 	if err != nil {
@@ -76,10 +83,12 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	}
 	auths, snaps := &auth.TenantAuths{Store: st}, &release.Snapshots{Store: st}
 	grants := authz.Grants{Store: st, Auths: auths}
-	if recs, err := st.IssuerURLs(ctx); err != nil {
-		log.Error("serve: reading issuer records", "error", err)
+	// one read of the issuer records: the CI issuer warning here, the host list's below
+	issuerRecs, ierr := st.IssuerURLs(ctx)
+	if ierr != nil {
+		log.Error("serve: reading issuer records", "error", ierr)
 	} else {
-		for _, r := range recs {
+		for _, r := range issuerRecs {
 			if auth.RefusedIssuer(r[2]) {
 				log.Warn("serve: an issuer record has a CI token issuer's URL (GitHub Actions, GitHub Enterprise) and is not used; a publisher signs its requests with a key (spec 0023)",
 					"tenant_id", r[0], "issuer", r[1], "url", r[2])
@@ -301,7 +310,11 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	go func() { defer wg.Done(); daily.Run(bg) }()
 	// spec 0030 part 3: duckdb/community-extensions' new names, reserved as community (off by default)
 	if cs := cfg.CommunitySyncSettings(); cs.Enabled {
-		sync := &reservedsync.Sync{Store: st, Fetch: eg, URL: cs.URL, Every: cs.Interval, Holder: instance, Log: log}
+		ceg, err := CommunityEgress(cfg) // its own client: egress.hosts does not narrow it (spec 0044)
+		if err != nil {
+			return err
+		}
+		sync := &reservedsync.Sync{Store: st, Fetch: ceg, URL: cs.URL, Every: cs.Interval, Holder: instance, Log: log}
 		wg.Add(1)
 		go func() { defer wg.Done(); sync.Run(bg) }()
 	}
@@ -318,7 +331,7 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	wg.Add(1)
 	go func() { defer wg.Done(); lr.Run(bg) }()
 	// usage forwarded daily to the upstreams that supplied the versions used (spec 0012 phase 1c)
-	fw := &usage.Forwarder{Store: st, Post: eg, Credentials: svc.Upstreams.Credentials, Holder: instance, Log: log}
+	fw := &usage.Forwarder{Store: st, Post: eg, Hosts: eg, Credentials: svc.Upstreams.Credentials, Holder: instance, Log: log}
 	wg.Add(1)
 	go func() { defer wg.Done(); fw.Run(bg) }()
 	if !svc.Licenses.Enabled {
@@ -341,6 +354,10 @@ func Serve(ctx context.Context, cfg config.Config, log *slog.Logger) error {
 	go func() { defer wg.Done(); br.Run(bg) }()
 	go func() { defer wg.Done(); puller.Run(bg) }()
 	go func() { defer wg.Done(); reaper.Run(bg) }()
+	if hostsOn { // spec 0044: stored records off the list, read beside serving, never before it
+		wg.Add(1)
+		go func() { defer wg.Done(); warnEgressHosts(bg, st, cfg.EgressHosts(), issuerRecs, log) }()
+	}
 	return srv.Run(ctx)
 }
 

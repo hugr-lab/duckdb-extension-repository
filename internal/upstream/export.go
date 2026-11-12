@@ -19,6 +19,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/keys"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/licenses"
@@ -588,7 +589,11 @@ func (x *exporter) source(ctx context.Context, src *xsource, ups []store.Upstrea
 		}
 		src.wk = wk
 	default:
-		// as a mirror's key check fetches it: public by design, through egress
+		// as a mirror's key check fetches it: public by design, through egress (and egress.hosts,
+		// spec 0044)
+		if err := egress.CheckHost(x.s.Hosts, ps.Prefix, x.s.Log, "source", ps.Prefix); err != nil {
+			return fmt.Errorf("the .well-known file: %w", err)
+		}
 		wk, _, err := x.s.Fetch.Get(ctx, ps.Prefix+"/.well-known/duckdb-extension-repo.json")
 		if err != nil {
 			return fmt.Errorf("the .well-known file: %w", err)

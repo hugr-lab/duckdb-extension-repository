@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
 
@@ -36,6 +37,8 @@ const (
 	ReasonTime      = "time"
 	ReasonAudience  = "audience"
 	ReasonClaims    = "required claims"
+	// ReasonIssuerHost is an issuer whose discovery or JWKS host is not on egress.hosts (spec 0044).
+	ReasonIssuerHost = "issuer host not allowed"
 )
 
 // Failure is why a token is not valid.
@@ -46,6 +49,16 @@ type Failure struct {
 
 func (f *Failure) Error() string { return "auth: no valid token (" + f.Reason + ")" }
 func (f *Failure) Unwrap() error { return ErrToken }
+
+// EventReason is a token failure's reason in its auth.failure event (spec 0010): invalid, or
+// issuer_host_not_allowed for an issuer whose host is off egress.hosts (spec 0044), which its
+// tenant's administrator tells apart.
+func EventReason(err error) string {
+	if f := (*Failure)(nil); errors.As(err, &f) && f.Reason == ReasonIssuerHost {
+		return "issuer_host_not_allowed"
+	}
+	return "invalid"
+}
 
 // Key is one principal: an issuer record, a kind, a value (empty for issuer:).
 type Key struct{ IssuerID, Kind, Value string }
@@ -83,6 +96,7 @@ type jwksEntry struct {
 	fetched     bool      // keys hold a successful fetch
 	expires     time.Time // after expires+staleGrace the keys are not used at all
 	lastAttempt time.Time
+	lastErr     error         // the last fetch's error, nil after a success
 	done        chan struct{} // non-nil while a refresh runs
 }
 
@@ -91,6 +105,7 @@ type discoEntry struct {
 	fetched     bool
 	expires     time.Time
 	lastAttempt time.Time
+	lastErr     error
 	done        chan struct{}
 }
 
@@ -136,8 +151,11 @@ func (v *Verifier) VerifyIdentity(ctx context.Context, ta store.TenantAuth, cano
 	if !slices.Contains(rec.Algorithms, t.alg) {
 		return fail(ReasonSignature)
 	}
-	k, ok := v.key(ctx, *rec, t.kid)
+	k, ok, cause := v.key(ctx, *rec, t.kid)
 	if !ok {
+		if errors.Is(cause, egress.ErrHostNotAllowed) { // spec 0044: its discovery or JWKS host is off egress.hosts
+			return fail(ReasonIssuerHost)
+		}
 		return fail(ReasonKey)
 	}
 	if err := t.verify(k); err != nil {
@@ -264,13 +282,15 @@ func claimValues(claims map[string]any, path []string) []string {
 
 // key finds a record's key by kid. A refresh (on an unknown kid or expired keys) starts at most once
 // a minute per URL, in the background; only the very first fetch of a URL is waited for (bounded
-// by the request), and nobody waits for a refresh another request started.
-func (v *Verifier) key(ctx context.Context, rec store.Issuer, kid string) (jwk, bool) {
+// by the request), and nobody waits for a refresh another request started. A missing key comes with
+// the last fetch's error, when there is one (spec 0044: a host off egress.hosts).
+func (v *Verifier) key(ctx context.Context, rec store.Issuer, kid string) (jwk, bool, error) {
 	url := rec.JWKSURI
 	if url == "" {
 		var ok bool
-		if url, ok = v.discover(ctx, rec.URL); !ok {
-			return jwk{}, false
+		var cause error
+		if url, ok, cause = v.discover(ctx, rec.URL); !ok {
+			return jwk{}, false, cause
 		}
 	}
 	v.mu.Lock()
@@ -297,16 +317,16 @@ func (v *Verifier) key(ctx context.Context, rec store.Issuer, kid string) (jwk, 
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return jwk{}, false
+			return jwk{}, false, nil
 		}
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	k, known := e.keys[kid]
 	if !known || !e.fetched || !v.now().Before(e.expires.Add(staleGrace)) {
-		return jwk{}, false
+		return jwk{}, false, e.lastErr
 	}
-	return k, true
+	return k, true, nil
 }
 
 func (v *Verifier) refreshJWKS(url string, e *jwksEntry) {
@@ -315,7 +335,7 @@ func (v *Verifier) refreshJWKS(url string, e *jwksEntry) {
 	keys, ttl, err := v.fetchJWKS(ctx, url)
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if err == nil {
+	if e.lastErr = err; err == nil {
 		e.keys, e.fetched, e.expires = keys, true, v.now().Add(ttl)
 	}
 	close(e.done)
@@ -371,7 +391,7 @@ func cacheTTL(h http.Header) time.Duration {
 
 // discover returns an issuer's jwks_uri from its OIDC discovery document, cached for 6 hours and
 // refreshed like JWKS: in the background, at most once a minute, the first fetch waited for.
-func (v *Verifier) discover(ctx context.Context, issuer string) (string, bool) {
+func (v *Verifier) discover(ctx context.Context, issuer string) (string, bool, error) {
 	v.mu.Lock()
 	if v.disco == nil || len(v.disco) >= maxEntries {
 		v.disco = map[string]*discoEntry{}
@@ -390,7 +410,7 @@ func (v *Verifier) discover(ctx context.Context, issuer string) (string, bool) {
 			uri, err := Discover(cctx, v.Fetch, issuer)
 			v.mu.Lock()
 			defer v.mu.Unlock()
-			if err == nil {
+			if e.lastErr = err; err == nil {
 				e.jwksURI, e.fetched, e.expires = uri, true, v.now().Add(discoveryTTL)
 			}
 			close(e.done)
@@ -403,12 +423,12 @@ func (v *Verifier) discover(ctx context.Context, issuer string) (string, bool) {
 		select {
 		case <-wait:
 		case <-ctx.Done():
-			return "", false
+			return "", false, nil
 		}
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return e.jwksURI, e.fetched
+	return e.jwksURI, e.fetched, e.lastErr
 }
 
 // Discover reads an issuer's OIDC discovery document: its issuer must be exactly the record's URL,

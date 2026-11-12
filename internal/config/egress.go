@@ -1,10 +1,13 @@
 package config
 
 import (
+	"errors"
 	"net/netip"
 	"net/url"
 	"path/filepath"
 	"time"
+
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 )
 
 // Egress configures the outbound client for requests made on a tenant's behalf (spec 0006). The
@@ -15,6 +18,11 @@ type Egress struct {
 	Proxy             string        `yaml:"proxy"`               // an explicit proxy; never from the environment
 	CAFile            string        `yaml:"ca_file"`             // trust only this CA bundle (a private IdP)
 	Timeout           time.Duration `yaml:"timeout"`
+	// HostsEnforce turns the host list on (spec 0044): the tenants' client then reaches only Hosts.
+	HostsEnforce bool `yaml:"hosts_enforce"`
+	// Hosts are the host names (exact, or *.<domain>) and IP addresses the tenants' client may
+	// reach, with HostsEnforce; [] refuses every host. Ports stay with Allow.
+	Hosts []string `yaml:"hosts"`
 }
 
 // EgressAllow lets a private network be reached: CIDRs, never host names.
@@ -32,6 +40,29 @@ func (c Config) EgressAllowPrefixes() []netip.Prefix {
 		}
 	}
 	return out
+}
+
+// EgressHosts is egress.hosts as a matcher (spec 0044): nil when hosts_enforce is off, never nil
+// (an empty list included) when it is on. The configuration is validated.
+func (c Config) EgressHosts() *egress.Hosts {
+	if !c.Egress.HostsEnforce {
+		return nil
+	}
+	h, err := egress.NewHosts(c.Egress.Hosts)
+	if err != nil { // validated at load; a list that is no list refuses everything
+		h, _ = egress.NewHosts(nil)
+	}
+	return h
+}
+
+// egressHostRefused is a URL's host the tenants' client would refuse by egress.hosts ("" when it
+// is listed, or the list is off).
+func (c Config) egressHostRefused(raw string) string {
+	var he *egress.HostError
+	if errors.As(c.EgressHosts().Check(raw), &he) {
+		return he.Host
+	}
+	return ""
 }
 
 func validateEgress(bad func(string, ...any), c Config) {
@@ -60,5 +91,17 @@ func validateEgress(bad func(string, ...any), c Config) {
 	}
 	if e.Timeout != 0 && (e.Timeout < time.Second || e.Timeout > time.Minute) {
 		bad("egress.timeout must be within 1s..60s")
+	}
+	// spec 0044: the switch is explicit, so the narrowing never fails open by accident
+	switch {
+	case e.HostsEnforce && e.Hosts == nil:
+		bad("egress.hosts_enforce is true but egress.hosts is missing or null: list the hosts the tenants' egress may reach ([] for none)")
+	case !e.HostsEnforce && e.Hosts != nil:
+		bad("egress.hosts is set without egress.hosts_enforce: true: turn the host list on, or remove it")
+	}
+	for i, h := range e.Hosts {
+		if err := egress.CheckHostEntry(h); err != nil {
+			bad("egress.hosts[%d] %q: %v", i, h, err)
+		}
 	}
 }

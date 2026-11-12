@@ -1,6 +1,6 @@
 # Spec 0044: Egress hosts, a server-wide host allowlist for what kista fetches for tenants
 
-- **Status**: accepted
+- **Status**: implemented
 - **Date**: 2026-11-05
 - **Author**: vgsml, Claude
 
@@ -198,7 +198,9 @@ alone, before DNS, so naming it tells the tenant nothing about internal names.
   its cells, with an error that wraps `errFailed`, so it is scheduled as a failed run (the next
   interval), not as an interrupted one. `last_run.error` is the error above, the `upstream.run`
   event's `error` class is `egress-host`, and no cell record is touched, so adding the host and
-  restarting is enough. A feed run fails the same way (`feed.run` class `egress-host`).
+  restarting is enough. A feed run fails the same way (`feed.run` class `egress-host`), status
+  `failing`, and is scheduled at the feed interval (as an unauthorized run is), not after a failing
+  run's 5 minutes.
 - **Lazy mirror and pull-through.** `Puller.fetch` checks the host at its start. For a lazy mirror
   the cell is recorded `failed` with the error as its detail, and the client is answered `404`, as
   spec 0032 does for a fetch that cannot start. A pull-through upstream answers its usual miss and
@@ -208,9 +210,10 @@ alone, before DNS, so naming it tells the tenant nothing about internal names.
   own, `egress-host: <host>` (not `unreachable`), in its result on `GET …/upstreams/{name}/usage`.
 - **Issuer refresh.** The list changes only at restart, and after a restart nothing is cached, so an
   issuer whose host was removed from the list fails at once: its discovery or JWKS fetch is refused,
-  and every token of it fails with the reason `issuer host not allowed` (in the token-failure log
-  line and the `auth.failure` event, spec 0010). The verifier keeps the last fetch error in
-  `jwksEntry` and `discoEntry`, and `key()` returns the cause with the missing key.
+  and every token of it fails: the token-failure log line says `issuer host not allowed`, and the
+  `auth.failure` event (spec 0010) has the reason `issuer_host_not_allowed`. The verifier keeps the
+  last fetch error in `jwksEntry` and `discoEntry`, and `key()` returns the cause with the missing
+  key.
 
 ### Operator interface
 
@@ -223,15 +226,17 @@ shows as a changed digest. A server administrator's token can never widen what k
 
 - No new event kind. Each refused add is an audited refusal (reason `egress-host`, the host). The
   `upstream.run` and `feed.run` events gain the class `egress-host`; an `auth.failure` gains the
-  reason `issuer host not allowed`.
+  reason `issuer_host_not_allowed` (its log line says `issuer host not allowed`).
 - Each refusal is logged once, at warn, with the host (and the tenant and record where the caller
   knows them), by the code that refuses: the pre-check's caller, or egress's `checkURL` and `dial`.
-- At start, `serve` logs one warning per distinct stored host that is not on the list, with the
-  number of records and tenants that name it. It reads, across tenants, `Store.IssuerURLs` (which
-  exists, for spec 0023's warning, and is extended with the explicit `jwks_uri`), and two new reads,
-  `Store.UpstreamPrefixes` (tenant, name, kind, mode, prefix) and `Store.FeedURLs` (tenant, name,
-  mode, URL). It covers stored hosts only: a discovered `jwks_uri` is not stored, so a refused one
-  shows only when it is fetched. Bundle-mode records are skipped.
+- At start, `serve` logs one warning per distinct stored host (two spellings of a host are one)
+  that is not on the list, with the number of records and tenants that name it, from a goroutine
+  started once the listeners are bound, so the reads never delay serving. It reads, across
+  tenants, `Store.IssuerURLs` (which exists, for spec 0023's warning, and is extended with the
+  explicit `jwks_uri`; serve reads it once for both), and two new reads, `Store.UpstreamPrefixes`
+  (tenant, name, kind, mode, prefix) and `Store.FeedURLs` (tenant, name, mode, URL). It covers
+  stored hosts only: a discovered `jwks_uri` is not stored, so a refused one shows only when it is
+  fetched. Bundle-mode records are skipped.
 - The list's own history is the configuration's (GitOps, the Helm values) and the `server.start`
   digest.
 
@@ -391,6 +396,70 @@ relay and usage reasons), `security.md` (the egress guard, DNS of listed names, 
 hosts, the threat table), `observability.md` (the class, the reason, the audited refusal, the
 warnings), `api.md` (`egress-host`), and `deployment/kubernetes.md` (the NetworkPolicy cannot filter
 by name; `egress.hosts` does it in kista; egress IPs never trusted by source-restricted hosts).
+
+### As built
+
+- **egress.** `internal/egress/hosts.go`: `NewHosts` (never nil), `CheckHostEntry` (the entry
+  rules, for the configuration's messages), `(*Hosts).Check(url)` (nil on a nil matcher),
+  `ErrHostNotAllowed` and `*HostError`. `Config` gains `Hosts` and `Log`; `checkURL` and `dial`
+  both call one `refusedHost`, which logs the refusal at warn with the host; `doErr` (now also
+  `Download`'s mapping) returns the `*HostError` unchanged. `Client.HostAllowed` logs nothing;
+  `egress.CheckHost(checker, url, log, args...)` is the callers' pre-check (nil checker: off),
+  logging with the caller's tenant and record, so a refusal is logged once either way.
+  `Client.HostsOn()` is the start log's.
+- **config.** `Egress.HostsEnforce` and `Egress.Hosts`; `Config.EgressHosts()` is the matcher (nil
+  when off). `hosts: []` decodes as an empty, non-nil list, so `[]` and `null` stay apart. The
+  bootstrap check names the field: `bootstrap.issuer.url`, `bootstrap.issuer.jwks_uri`,
+  `bootstrap.upstreams[i]`. DuckDB's two URLs moved to `upspec` (`CoreURL`, `CommunityURL`,
+  `BuiltIn(kind)`), which the configuration already imports; `upstream.CoreURL` and `CommunityURL`
+  are the same constants.
+- **app.** `egressWith` takes the matcher: `Egress` passes `cfg.EgressHosts()`; `ServerEgress`, the
+  credential posters, the sinks and the new `CommunityEgress` pass nil. The services' `Hosts` is the
+  tenants' client itself (`app.NewServices`; `serve` for the forwarder).
+- **Issuers.** `tenants.AuthAdmin.IssuerJWKS` checks the URL's host and an explicit `jwks_uri`'s,
+  discovers, and checks the discovered one's; issuer add and the bootstrap's plan both use it. In the
+  plan, a refused host is the issuer item `refused` (its detail the `HostError`), so `apply` answers
+  `ErrRefused` without retrying; `transient()` is false for `ErrHostNotAllowed` before the other
+  classes (it may be wrapped in `ErrIssuerFetch`), and `classify` makes a bootstrap upstream refused
+  by host a refused item.
+- **Upstreams.** The check is in `CheckSource` (so `CheckAddAll` and the bootstrap have it), at the
+  start of `run` (wrapping `errFailed`: `last_run.error` reads `the run failed: egress: refused:
+  <host> …`, as other run failures carry that prefix), in `Puller.fetch` once the cell's lease is
+  held (where the keys' failure is), and before a bundle export's `.well-known` read. A refused
+  lazy or pull-through fetch is the outcome `failed` to the puller, so the cell is not offered again
+  for a minute (`failedTTL`) and a miss storm logs no line per request.
+- **Feeds, relay, usage.** `attachment.Feeds.Add` checks an online feed's URL before its
+  credential; `run` checks before the credential's token, and `RunFeed` schedules such a run at
+  `Interval` (it stays `FeedFailing`). `licenses.Service.fetch` checks before
+  `Credentials.For`; the forwarder before any day, and `post` maps a `*HostError` from egress to the
+  same reason `egress-host: <host>`.
+- **Tokens.** `jwksEntry` and `discoEntry` keep `lastErr`; `key()` returns it with a missing key,
+  and `VerifyIdentity` fails with `auth.ReasonIssuerHost` (`issuer host not allowed`, the log
+  line's) when it is `ErrHostNotAllowed`. In the `auth.failure` event the reason is
+  `issuer_host_not_allowed` (`auth.EventReason`): the event's reasons are one token, as
+  `stale_token` and `unnamed_writer` are. The event writer keys `auth.failure`'s limit by `reason`
+  too (as spec 0037 does `authz.refused`'s), so these failures are never counted into `invalid`.
+- **API.** `serviceErr` maps a `*HostError` first (after the limit problems): `400 egress-host` with
+  `host`, noted as a refusal with `reason: egress-host` and `host`; `authz.refused` gains the field
+  `host` in the events catalogue.
+- **Start.** `serve` logs `egress: host list on` (`entries`) or `egress: host list off`, and
+  `warnEgressHosts` one warning per host off the list (`host`, `records`, `tenants`), keyed by
+  `egress.HostKey` (the list's normalised form), from serve's one `Store.IssuerURLs` read (now with
+  `jwks_uri`, shared with spec 0023's warning), `Store.UpstreamPrefixes` and `Store.FeedURLs`,
+  skipping bundle-mode records. It runs in a goroutine started beside `srv.Run`, after `Bind`.
+- **e2e.** `TestUpstreamLazy`'s mirror runs with the list on (`localhost` listed). The refusal is a
+  case of its own, `TestUpstreamLazyHostOff`, on a fresh pair: every cell of the first case's
+  mirror is fetched by its end. DuckDB's first request is answered `503` (the ask), its retry `404`.
+- **Refusals coalesce.** The event writer coalesces an actor's refusals per reason (as for
+  `publisher-taken`): the first event names its host; a burst within a second becomes one count
+  naming the last host. Every refused host is in the WARN log.
+
+**Implemented 2026-11-12.** The code (egress, config, app, upstreams, issuers and the verifier,
+the bootstrap, feeds, the relay, usage, the API, the store reads, the start-time warning), every
+test the Testing section lists, the e2e lazy-mirror cases, and the website pages. The full
+`make test` passes with SQLite, PostgreSQL and SQL Server all required (`KISTA_TEST_REQUIRE_DBS=1`),
+`make lint` is clean over the whole tree, and the full `make e2e` passes on DuckDB at
+`e2e/DUCKDB_PIN`.
 
 ## Follow-ups
 

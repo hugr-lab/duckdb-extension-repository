@@ -199,6 +199,9 @@ const (
 	// typePublisherTaken: a distribution admin's new publisher whose name a tenant's own publisher
 	// holds (spec 0037): the name is taken, and nothing else is said about that publisher
 	typePublisherTaken = "publisher-taken"
+	// typeEgressHost: an upstream, issuer or feed on a host the server's egress.hosts leaves out (spec
+	// 0044): its operator adds it; the problem names the host
+	typeEgressHost = "egress-host"
 	// typeNotComputed: a distributor-stats query with no week computed in its range yet, before the
 	// first week is or from after the newest (spec 0036): the same query answers once its weeks are
 	typeNotComputed = "not-computed"
@@ -210,7 +213,8 @@ var titles = map[string]string{typeUnauthorized: "Unauthorized", typeNotFound: "
 	typeRateLimited: "Rate Limited", typeUploadSlots: "Upload Slots Taken", typeIngestBusy: "Ingest Busy", typeChunksBusy: "Chunks Busy",
 	typeCatalogueFull: "Catalogue Full", typeIssuerBusy: "Issuer Busy", typeUnavailable: "Service Unavailable", typeSource: "Another Source Holds the Name",
 	typeHeld: "Held", typeWithdrawn: "Withdrawn", typeRetired: "Retired", typeDistributorsEntry: "A Distributor's Entry", typeStale: "Stale",
-	typePublisherTaken: "Publisher Name Taken", typeNotComputed: "Not Computed Yet", typeTenantLimit: "Tenant Limit Reached"}
+	typePublisherTaken: "Publisher Name Taken", typeNotComputed: "Not Computed Yet", typeTenantLimit: "Tenant Limit Reached",
+	typeEgressHost: "Host Not Allowed"}
 
 // problem writes application/problem+json. 401 and 404 have constant bytes.
 func problem(w http.ResponseWriter, status int, typ, detail string) {
@@ -536,7 +540,7 @@ func (h *Handler) identifyTenant(ctx context.Context, t store.Tenant, tok string
 	id, err := h.o.Verifier.VerifyIdentity(ctx, ta, canonical, tok)
 	if err != nil {
 		h.failures.Record(t, "api", err)
-		return c, errToken
+		return c, errors.Join(errToken, err) // the failure's reason, for its event
 	}
 	c.principals, c.ta, c.id, c.verified = id.Principals, ta, id, true
 	return c, nil
@@ -1146,7 +1150,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request, rt route, ru ru
 		case sent && !isServer:
 			if c, err = h.identifyTenant(ctx, t, tok); err != nil {
 				if errors.Is(err, errToken) {
-					failed("invalid")
+					failed(auth.EventReason(err))
 					unauthorized(w)
 				} else {
 					h.fail(w, err)

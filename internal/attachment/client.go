@@ -47,6 +47,8 @@ type Feeds struct {
 	Authz       authz.Authorizer
 	Attachments *Service // documents' limits and storage
 	Fetch       Fetcher
+	// Hosts is egress.hosts (spec 0044), checked before an online feed's add and runs; nil: no list
+	Hosts       egress.HostChecker
 	Credentials credential.Registry
 	// Interval is the time between scheduled runs of a feed (0: only requested runs).
 	Interval time.Duration
@@ -173,7 +175,10 @@ func (f *Feeds) Add(ctx context.Context, a authz.Actor, tenant string, sp FeedSp
 	if err != nil {
 		return store.Feed{}, err
 	}
-	if !bundle {
+	if !bundle { // a bundle-mode feed contacts nothing
+		if err := egress.CheckHost(f.Hosts, u, f.Log, "tenant", tenant, "feed", sp.Name); err != nil {
+			return store.Feed{}, err
+		}
 		if err := f.checkCredential(sp.Credential, tenant, u); err != nil {
 			return store.Feed{}, err
 		}
@@ -518,7 +523,8 @@ func (f *Feeds) RunFeed(ctx context.Context, id string, renew func(context.Conte
 	var next time.Time
 	switch {
 	case f.Interval <= 0:
-	case runErr != nil && status == store.FeedFailing:
+	case runErr != nil && status == store.FeedFailing && !errors.Is(runErr, egress.ErrHostNotAllowed):
+		// soon; not a host off egress.hosts (spec 0044), off until a restart: at the interval, as errAuth
 		next = res.Ended.Add(retryAfter)
 	default:
 		next = res.Ended.Add(f.Interval + time.Duration(rand.Int64N(int64(f.Interval/10)+1)))
@@ -545,6 +551,8 @@ func runClass(err error) string {
 		return ""
 	case errors.Is(err, errAuth):
 		return "unauthorized"
+	case errors.Is(err, egress.ErrHostNotAllowed): // spec 0044
+		return "egress-host"
 	case errors.Is(err, egress.ErrRefused):
 		return "refused"
 	case errors.Is(err, egress.ErrConnect), errors.Is(err, egress.ErrStatus), errors.Is(err, egress.ErrTooLarge):
@@ -569,6 +577,10 @@ func (r *run) refuse(st Statement, reason string) {
 }
 
 func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) error) error {
+	// spec 0044: a host off egress.hosts fails the run before a token or a request
+	if err := egress.CheckHost(f.Hosts, r.fd.URL, f.Log, "tenant", r.t.Name, "feed", r.fd.Name); err != nil {
+		return err
+	}
 	cred, err := f.Credentials.For(r.fd.Credential, r.t.Name, r.fd.URL)
 	if err != nil {
 		return err

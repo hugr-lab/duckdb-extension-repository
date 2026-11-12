@@ -650,7 +650,7 @@ func (h *Handler) identify(r *http.Request, sc store.ServeChannel, label string)
 		h.failures.Record(sc.Tenant, "serve", err)
 		if h.o.Events != nil {
 			h.o.Events.Refusal(r.Context(), sc.Tenant.ID, "anonymous", "auth.failure", audit.Refused, "route:"+label,
-				map[string]any{"reason": "invalid", "route": r.Method + " " + label})
+				map[string]any{"reason": auth.EventReason(err), "route": r.Method + " " + label})
 		}
 		return none, "", r // an invalid token is no token: public releases are still served
 	}

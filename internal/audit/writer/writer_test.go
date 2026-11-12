@@ -132,22 +132,32 @@ func TestTotalIsFair(t *testing.T) {
 }
 
 // Spec 0037: refusals of one actor for different reasons (a taken publisher name, a taken key) are
-// told apart at once; another kind's reason (auth.failure's) does not split its limit.
+// told apart at once; spec 0044: so are auth.failure's (an issuer host off egress.hosts is not an
+// invalid token), while one reason's repeats still share its limit.
 func TestRefusalReasons(t *testing.T) {
 	st, w, a, _ := setup(t)
 	rctx := audit.WithRequest(ctx, audit.Request{Client: "203.0.113.9"})
 	for _, reason := range []string{"publisher-taken", "key-taken"} {
 		w.Refusal(rctx, a.ID, "distribution-admin:ops|x", "authz.refused", audit.Refused, "route:r", map[string]any{"route": "r", "reason": reason})
 	}
-	for _, reason := range []string{"invalid", "expired"} {
+	for _, reason := range []string{"invalid", "issuer_host_not_allowed", "invalid"} {
 		w.Refusal(rctx, a.ID, "anonymous", "auth.failure", audit.Refused, "route:r", map[string]any{"route": "r", "reason": reason})
 	}
 	w.Flush(ctx)
 	if evs := count(t, st, a.ID, "authz.refused"); len(evs) != 2 {
 		t.Fatalf("two reasons, two events at once: %+v", evs)
 	}
-	if evs := count(t, st, a.ID, "auth.failure"); len(evs) != 1 {
-		t.Fatalf("auth.failure's reasons share one limit: %+v", evs)
+	evs := count(t, st, a.ID, "auth.failure")
+	reasons := map[string]bool{}
+	for _, e := range evs {
+		var d struct{ Reason string }
+		if err := json.Unmarshal([]byte(e.Data), &d); err != nil {
+			t.Fatal(err)
+		}
+		reasons[d.Reason] = true
+	}
+	if len(evs) != 2 || !reasons["invalid"] || !reasons["issuer_host_not_allowed"] {
+		t.Fatalf("auth.failure's two reasons, two events at once: %+v", evs)
 	}
 }
 

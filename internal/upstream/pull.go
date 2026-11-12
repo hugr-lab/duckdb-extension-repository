@@ -13,6 +13,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/extfile"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -299,7 +300,7 @@ func (p *Puller) work(ctx context.Context, m release.Miss) {
 		p.mu.Unlock()
 	}()
 	outcome, err := p.fetch(ctx, m)
-	if err != nil && !isRoomRefusal(err) {
+	if err != nil && !isRoomRefusal(err) && !errors.Is(err, egress.ErrHostNotAllowed) { // a refused host is logged where refused
 		p.Log.Warn("upstream: a pull-through fetch failed", "upstream", m.UpstreamID, "name", m.Name, "error", err)
 	}
 	// a released cell is served from now on; any other outcome is not fetched again for a while (a
@@ -391,6 +392,14 @@ func (p *Puller) fetch(ctx context.Context, m release.Miss) (string, error) {
 	}
 	defer done()
 	ctx = lctx
+	// spec 0044: a host off egress.hosts is a fetch that cannot start (a pull-through miss records
+	// nothing; either is not tried again for a while)
+	if err := egress.CheckHost(s.Hosts, s.prefix(u), s.Log, "tenant", sc.Tenant.Name, "upstream", u.Name); err != nil {
+		if lazy {
+			p.putFailed(ctx, u, m, err.Error())
+		}
+		return store.CellFailed, err
+	}
 	keys, err := p.upstreamKeys(ctx, u)
 	if err != nil {
 		if lazy { // spec 0032: a first request is answered 404 now, not 503 while nothing comes

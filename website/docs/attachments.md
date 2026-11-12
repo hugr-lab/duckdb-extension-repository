@@ -346,7 +346,11 @@ sequenceDiagram
    `prefixes` must cover the feed URL. Its principal holds `feed` at the source.
 2. **Egress.** The source's address and port must be reachable through egress (see
    [Configuration](configuration.md)). Requests go without redirects, and the credential is sent
-   only to the feed URL.
+   only to the feed URL. With `egress.hosts_enforce` (spec 0044), the feed URL's host must also be
+   on `egress.hosts`: feed add answers `400` with the problem type `egress-host`, naming the host,
+   and a run fails before asking for a token (status `failing`, `feed.run` error class
+   `egress-host`), tried again at `attachments.feed_interval`, not after 5 minutes (the list changes
+   only with a restart). A bundle-mode feed contacts nothing and is not checked.
 3. **Pinned keys.** The fingerprints (`sha256:<64 hex>`) of the source's attestation keys, read from
    `GET <feed URL>/attestation-keys` and checked with the source's operator.
 
@@ -407,7 +411,7 @@ the feed instead.
 
 Adding an online feed and resuming one request a run. Otherwise a feed runs every
 `attachments.feed_interval` (default 6 h, at least 5 min) with up to 10% jitter, and 5 minutes after
-a failing run.
+a failing run (at the interval for a host off `egress.hosts`).
 
 **Removing** a feed keeps its documents unless `-documents` (`?documents=true`) is given. Then they
 pass to another feed of the same source if there is one, and otherwise are removed.
@@ -419,7 +423,7 @@ pass to another feed of the same source if there is one, and otherwise are remov
 | `new` | never run; for a bundle-mode feed, no bundle imported yet |
 | `ok` | the last run completed |
 | `unauthorized` | the source answered the feed request with `404` (the credential's principal does not hold `feed`, or there is no such tenant), or refused the token twice; the next run is at the normal interval |
-| `failing` | the last run failed (network, egress, credential, none of the pinned keys published, an export feed at its cap, …); retried after 5 minutes |
+| `failing` | the last run failed (network, egress, credential, none of the pinned keys published, an export feed at its cap, …); retried after 5 minutes (a host off `egress.hosts`: at the feed interval) |
 
 A feed's state is `active` or `paused`. `feed show` and the API give the last error, the last
 success, the next run, whether a run is requested, and the last run's result: counts (`offered`,
@@ -478,7 +482,7 @@ site's import takes them into its bundle-mode feeds
 **A bundle-mode feed** (`-mode bundle`, `"mode": "bundle"`), at the site:
 
 - its URL is only the identity its statements name: it must be https, but kista never contacts it,
-  so egress need not reach it, and it takes no credential (`400`);
+  so egress need not reach it (nor `egress.hosts` list its host), and it takes no credential (`400`);
 - it never runs: it is not scheduled, adding or resuming it requests no run, and `sync` answers
   `409`;
 - its status is `new` until an import takes it as a target, then that import's (`ok` or `failing`);
