@@ -234,8 +234,9 @@ shows as a changed digest. A server administrator's token can never widen what k
   started once the listeners are bound, so the reads never delay serving. It reads, across
   tenants, `Store.IssuerURLs` (which exists, for spec 0023's warning, and is extended with the
   explicit `jwks_uri`; serve reads it once for both), and two new reads, `Store.UpstreamPrefixes`
-  (tenant, name, kind, mode, prefix) and `Store.FeedURLs` (tenant, name, mode, URL). It covers stored hosts only: a discovered `jwks_uri` is not stored, so a refused one
-  shows only when it is fetched. Bundle-mode records are skipped.
+  (tenant, name, kind, mode, prefix) and `Store.FeedURLs` (tenant, name, mode, URL). It covers
+  stored hosts only: a discovered `jwks_uri` is not stored, so a refused one shows only when it is
+  fetched. Bundle-mode records are skipped.
 - The list's own history is the configuration's (GitOps, the Helm values) and the `server.start`
   digest.
 

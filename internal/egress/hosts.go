@@ -133,12 +133,12 @@ func normalName(h string) (string, bool) {
 	return a, true
 }
 
-// HostKey is a host in the form the list compares it in: an address unmapped, a name IDNA-mapped,
-// lowercase and without a trailing dot; a host that is neither, lowercased. Two spellings of one
-// host have one key.
+// HostKey is a host in the form the list compares it in: an address unmapped (a zone kept, since a
+// zoned address is never allowed), a name IDNA-mapped, lowercase and without a trailing dot; a host
+// that is neither, lowercased. Two spellings of one host have one key.
 func HostKey(host string) string {
 	if a, err := netip.ParseAddr(host); err == nil {
-		return a.Unmap().WithZone("").String()
+		return a.Unmap().String()
 	}
 	if n, ok := normalName(host); ok {
 		return n

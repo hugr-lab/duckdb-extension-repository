@@ -466,8 +466,8 @@ egress:
   with how many records and tenants name it (bundle-mode upstreams and feeds are skipped; a
   discovered `jwks_uri` shows only when it is fetched).
 - When the operator's own token service is the tenants' issuer, list its host. Server issuers and
-  endpoints kista never fetches for a tenant need no entry; no own host is implicitly allowed or
-  refused other than `serve.public_url`.
+  endpoints kista never fetches for a tenant need no entry. kista adds no host to the list
+  implicitly; the only host it refuses on its own is `serve.public_url`'s.
 
 ## auth
 

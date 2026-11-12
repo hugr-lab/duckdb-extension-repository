@@ -129,7 +129,8 @@ func TestHostMatching(t *testing.T) {
 		t.Errorf("an empty list is on: %v %d", on, n)
 	}
 	for host, want := range map[string]string{"Login.Example.": "login.example", "ｋｉｓｔａ.example": "kista.example",
-		"::ffff:203.0.113.10": "203.0.113.10", "2001:0DB8::1": "2001:db8::1", "Bad_Name.example": "bad_name.example"} {
+		"::ffff:203.0.113.10": "203.0.113.10", "2001:0DB8::1": "2001:db8::1", "Bad_Name.example": "bad_name.example",
+		"fe80::1%eth0": "fe80::1%eth0"} {
 		if got := HostKey(host); got != want {
 			t.Errorf("HostKey(%q): %q, want %q", host, got, want)
 		}
