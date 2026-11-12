@@ -133,6 +133,30 @@ func TestHostMatching(t *testing.T) {
 	}
 }
 
+// Spec 0044: a URL that does not parse is refused with no host (never its raw text as one, even when
+// that text is a listed name); a typed-nil checker is no list, as a nil one is.
+func TestHostCheckEdges(t *testing.T) {
+	h := mustHosts(t, "listed.example")
+	var he *HostError
+	for _, raw := range []string{"https://listed.example/%zz", "listed.example\x7f://", "https://[::1"} {
+		if err := h.Check(raw); !errors.As(err, &he) || he.Host != "" {
+			t.Errorf("%q: %v", raw, err)
+		}
+	}
+	if err := h.Check("listed.example"); !errors.As(err, &he) || he.Host != "" {
+		t.Errorf("a bare name is a URL with no host: %v", err)
+	}
+	var none *Client
+	for name, c := range map[string]HostChecker{"nil": nil, "a typed nil": none} {
+		if err := CheckHost(c, "https://anything.example/x", nil); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := CheckHost(&Client{hosts: h}, "https://other.example/x", nil); !errors.As(err, &he) || he.Host != "other.example" {
+		t.Errorf("a list: %v", err)
+	}
+}
+
 // Spec 0044: a host off the list is refused before anything happens (no resolution, no
 // connection, no CONNECT), by checkURL and, when it is bypassed, by dial; a listed host still meets
 // every address rule.

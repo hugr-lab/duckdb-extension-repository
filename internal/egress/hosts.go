@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -165,11 +166,14 @@ type Warner interface {
 	Warn(msg string, args ...any)
 }
 
-// CheckHost is a caller's pre-check of a URL's host (spec 0044): nil when h is nil (no list) or the
-// host is listed; otherwise the *HostError, logged at warn with the caller's context (log nil:
-// slog's default).
+// CheckHost is a caller's pre-check of a URL's host (spec 0044): nil when h is nil or a typed nil
+// (no list) or the host is listed; otherwise the *HostError, logged at warn with the caller's
+// context (log nil: slog's default).
 func CheckHost(h HostChecker, raw string, log Warner, args ...any) error {
 	if h == nil {
+		return nil
+	}
+	if v := reflect.ValueOf(h); v.Kind() == reflect.Pointer && v.IsNil() { // a nil *Client in the interface
 		return nil
 	}
 	err := h.HostAllowed(raw)
@@ -188,12 +192,13 @@ func CheckHost(h HostChecker, raw string, log Warner, args ...any) error {
 func (c *Client) HostAllowed(raw string) error { return c.hosts.Check(raw) }
 
 // Check is a URL's host against the list: nil when it is on it (or h is nil), a *HostError
-// otherwise.
+// otherwise. A URL that does not parse has no host: refused, with Host "" (the raw text is never
+// taken for a host, nor logged as one).
 func (h *Hosts) Check(raw string) error {
 	if h == nil {
 		return nil
 	}
-	host := raw
+	host := ""
 	if u, err := url.Parse(raw); err == nil {
 		host = u.Hostname()
 	}
