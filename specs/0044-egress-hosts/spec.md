@@ -1,6 +1,6 @@
 # Spec 0044: Egress hosts, a server-wide host allowlist for what kista fetches for tenants
 
-- **Status**: accepted
+- **Status**: implemented
 - **Date**: 2026-11-05
 - **Author**: vgsml, Claude
 
@@ -446,13 +446,12 @@ by name; `egress.hosts` does it in kista; egress IPs never trusted by source-res
   event and a count (as for `publisher-taken`), so a run of probes records the first one's `host`
   and how many followed.
 
-**Paused 2026-11-05.** Done: the code (egress, config, app, upstreams, issuers and the verifier,
+**Implemented 2026-11-12.** The code (egress, config, app, upstreams, issuers and the verifier,
 the bootstrap, feeds, the relay, usage, the API, the store reads, the start-time warning), every
-test the Testing section lists, the e2e lazy-mirror cases (both pass), and the website pages.
-Each new test passed on SQLite, PostgreSQL and SQL Server when it was written. Nothing is in
-progress. Left: one full `make test` over all three engines, `make lint` over the whole tree (the
-changed packages were clean), the full `make e2e` (stopped before it finished), the review passes,
-and then the Status and the `specs/README.md` row set to `implemented`.
+test the Testing section lists, the e2e lazy-mirror cases, and the website pages. The full
+`make test` passes with SQLite, PostgreSQL and SQL Server all required (`KISTA_TEST_REQUIRE_DBS=1`),
+`make lint` is clean over the whole tree, and the full `make e2e` passes on DuckDB at
+`e2e/DUCKDB_PIN`.
 
 ## Follow-ups
 
