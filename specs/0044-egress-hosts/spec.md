@@ -434,7 +434,8 @@ by name; `egress.hosts` does it in kista; egress IPs never trusted by source-res
   and `VerifyIdentity` fails with `auth.ReasonIssuerHost` (`issuer host not allowed`, the log
   line's) when it is `ErrHostNotAllowed`. In the `auth.failure` event the reason is
   `issuer_host_not_allowed` (`auth.EventReason`): the event's reasons are one token, as
-  `stale_token` and `unnamed_writer` are.
+  `stale_token` and `unnamed_writer` are. The event writer keys `auth.failure`'s limit by `reason`
+  too (as spec 0037 does `authz.refused`'s), so these failures are never counted into `invalid`.
 - **API.** `serviceErr` maps a `*HostError` first (after the limit problems): `400 egress-host` with
   `host`, noted as a refusal with `reason: egress-host` and `host`; `authz.refused` gains the field
   `host` in the events catalogue.
