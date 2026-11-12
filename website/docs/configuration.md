@@ -463,8 +463,11 @@ egress:
   runs, without retries.
 - Changes apply at restart. At start kista logs `egress: host list on` (with its entries) or
   `egress: host list off`, and, once serving, one warning per stored host that is off the list,
-  with how many records and tenants name it (bundle-mode upstreams and feeds are skipped; a discovered `jwks_uri`
-  shows only when it is fetched).
+  with how many records and tenants name it (bundle-mode upstreams and feeds are skipped; a
+  discovered `jwks_uri` shows only when it is fetched).
+- When the operator's own token service is the tenants' issuer, list its host. Server issuers and
+  endpoints kista never fetches for a tenant need no entry; no own host is implicitly allowed or
+  refused other than `serve.public_url`.
 
 ## auth
 
