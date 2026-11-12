@@ -198,7 +198,9 @@ alone, before DNS, so naming it tells the tenant nothing about internal names.
   its cells, with an error that wraps `errFailed`, so it is scheduled as a failed run (the next
   interval), not as an interrupted one. `last_run.error` is the error above, the `upstream.run`
   event's `error` class is `egress-host`, and no cell record is touched, so adding the host and
-  restarting is enough. A feed run fails the same way (`feed.run` class `egress-host`).
+  restarting is enough. A feed run fails the same way (`feed.run` class `egress-host`), status
+  `failing`, and is scheduled at the feed interval (as an unauthorized run is), not after a failing
+  run's 5 minutes.
 - **Lazy mirror and pull-through.** `Puller.fetch` checks the host at its start. For a lazy mirror
   the cell is recorded `failed` with the error as its detail, and the client is answered `404`, as
   spec 0032 does for a fetch that cannot start. A pull-through upstream answers its usual miss and
@@ -424,7 +426,8 @@ by name; `egress.hosts` does it in kista; egress IPs never trusted by source-res
   lazy or pull-through fetch is the outcome `failed` to the puller, so the cell is not offered again
   for a minute (`failedTTL`) and a miss storm logs no line per request.
 - **Feeds, relay, usage.** `attachment.Feeds.Add` checks an online feed's URL before its
-  credential; `run` checks before the credential's token. `licenses.Service.fetch` checks before
+  credential; `run` checks before the credential's token, and `RunFeed` schedules such a run at
+  `Interval` (it stays `FeedFailing`). `licenses.Service.fetch` checks before
   `Credentials.For`; the forwarder before any day, and `post` maps a `*HostError` from egress to the
   same reason `egress-host: <host>`.
 - **Tokens.** `jwksEntry` and `discoEntry` keep `lastErr`; `key()` returns it with a missing key,

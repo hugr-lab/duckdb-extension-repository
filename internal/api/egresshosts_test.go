@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
@@ -131,7 +132,7 @@ func TestEgressHostsAPI(t *testing.T) {
 
 // Spec 0044: a feed (spec 0011) on a host egress.hosts leaves out is refused at add (a bundle-mode
 // one is added); a feed added before the host left the list fails its run before any token or
-// request, with the class egress-host.
+// request, with the class egress-host, and is tried again at its interval.
 func TestEgressHostsFeeds(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -156,12 +157,16 @@ func TestEgressHostsFeeds(t *testing.T) {
 		Keys: []string{fp}}); err != nil {
 		t.Fatalf("a bundle-mode feed off the list: %v", err)
 	}
+	sub.feeds.Interval = time.Hour
+	start := time.Now()
 	res := sub.run(t, "src")
 	if !strings.Contains(res.Error, "127.0.0.1 is not on this server's egress host list") || hits.Load() != 0 {
 		t.Fatalf("the run: %+v, %d requests", res, hits.Load())
 	}
-	if f, _ := sub.feeds.Get(ctx, admin, "acme", "src"); f.Status != store.FeedFailing {
-		t.Fatalf("status: %s", f.Status)
+	// failing, and tried again at the feed's interval, not a failing run's few minutes: the list
+	// changes only with a restart
+	if f, _ := sub.feeds.Get(ctx, admin, "acme", "src"); f.Status != store.FeedFailing || f.NextRunAt.Before(start.Add(50*time.Minute)) {
+		t.Fatalf("status %s, next run %v", f.Status, f.NextRunAt)
 	}
 	tn, _ := sub.st.GetTenant(ctx, "acme")
 	evs, err := sub.st.ListEvents(ctx, tn.ID, store.EventFilter{Kind: "feed.run"})

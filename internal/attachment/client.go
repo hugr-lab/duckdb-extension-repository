@@ -523,7 +523,8 @@ func (f *Feeds) RunFeed(ctx context.Context, id string, renew func(context.Conte
 	var next time.Time
 	switch {
 	case f.Interval <= 0:
-	case runErr != nil && status == store.FeedFailing:
+	case runErr != nil && status == store.FeedFailing && !errors.Is(runErr, egress.ErrHostNotAllowed):
+		// soon; not a host off egress.hosts (spec 0044), off until a restart: at the interval, as errAuth
 		next = res.Ended.Add(retryAfter)
 	default:
 		next = res.Ended.Add(f.Interval + time.Duration(rand.Int64N(int64(f.Interval/10)+1)))
