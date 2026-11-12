@@ -219,7 +219,8 @@ jobs:
   go-macos:
     # macOS runners cannot run containers: SQLite and the fs blob store only.
     runs-on: macos-15
-    timeout-minutes: 35
+    # the whole suite under -race now runs past 35 minutes on a hosted macOS runner
+    timeout-minutes: 50
     env:
       GOWORK: off
     steps:
