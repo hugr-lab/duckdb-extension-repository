@@ -546,8 +546,8 @@ Metrics never carry a principal or a client address.
 - API writes add an `api: write` line, and refusals of an authenticated caller an `api: refused`
   line, with the actor, route template, resource ids, status and client.
 - At start, serve logs `egress: host list off`, or with `egress.hosts_enforce` (spec 0044)
-  `egress: host list on` (with `entries`) and one warning per stored host off the list (`host`,
-  `records`, `tenants`). Each refused fetch is logged once at WARN,
+  `egress: host list on` (with `entries`) and, once serving, one warning per stored host off the
+  list (`host` in its normalised form, `records`, `tenants`). Each refused fetch is logged once at WARN,
   `egress: refused: the host is not on egress.hosts`, with `host` and, where the caller knows them,
   `tenant` and the record (`upstream`, `issuer`, `feed`). A token of an issuer whose host is off the
   list fails with the reason `issuer host not allowed` in the token-failure line.

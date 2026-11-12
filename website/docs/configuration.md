@@ -462,8 +462,8 @@ egress:
   discovered `jwks_uri` on a host off the list makes the bootstrap's issuer item `refused` when it
   runs, without retries.
 - Changes apply at restart. At start kista logs `egress: host list on` (with its entries) or
-  `egress: host list off`, and one warning per stored host that is off the list, with how many
-  records and tenants name it (bundle-mode upstreams and feeds are skipped; a discovered `jwks_uri`
+  `egress: host list off`, and, once serving, one warning per stored host that is off the list,
+  with how many records and tenants name it (bundle-mode upstreams and feeds are skipped; a discovered `jwks_uri`
   shows only when it is fetched).
 
 ## auth

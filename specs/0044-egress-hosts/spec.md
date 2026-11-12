@@ -228,8 +228,9 @@ shows as a changed digest. A server administrator's token can never widen what k
   reason `issuer host not allowed`.
 - Each refusal is logged once, at warn, with the host (and the tenant and record where the caller
   knows them), by the code that refuses: the pre-check's caller, or egress's `checkURL` and `dial`.
-- At start, `serve` logs one warning per distinct stored host that is not on the list, with the
-  number of records and tenants that name it. It reads, across tenants, `Store.IssuerURLs` (which
+- At start, `serve` logs one warning per distinct stored host (two spellings of a host are one)
+  that is not on the list, with the number of records and tenants that name it, from a goroutine
+  started once the listeners are bound, so the reads never delay serving. It reads, across tenants, `Store.IssuerURLs` (which
   exists, for spec 0023's warning, and is extended with the explicit `jwks_uri`), and two new reads,
   `Store.UpstreamPrefixes` (tenant, name, kind, mode, prefix) and `Store.FeedURLs` (tenant, name,
   mode, URL). It covers stored hosts only: a discovered `jwks_uri` is not stored, so a refused one
@@ -440,9 +441,10 @@ by name; `egress.hosts` does it in kista; egress IPs never trusted by source-res
   `host`, noted as a refusal with `reason: egress-host` and `host`; `authz.refused` gains the field
   `host` in the events catalogue.
 - **Start.** `serve` logs `egress: host list on` (`entries`) or `egress: host list off`, and
-  `warnEgressHosts` one warning per host off the list (`host`, `records`, `tenants`) from
-  `Store.IssuerURLs` (now with `jwks_uri`), `Store.UpstreamPrefixes` and `Store.FeedURLs`, skipping
-  bundle-mode records.
+  `warnEgressHosts` one warning per host off the list (`host`, `records`, `tenants`), keyed by
+  `egress.HostKey` (the list's normalised form), from serve's one `Store.IssuerURLs` read (now with
+  `jwks_uri`, shared with spec 0023's warning), `Store.UpstreamPrefixes` and `Store.FeedURLs`,
+  skipping bundle-mode records. It runs in a goroutine started beside `srv.Run`, after `Bind`.
 - **e2e.** `TestUpstreamLazy`'s mirror runs with the list on (`localhost` listed). The refusal is a
   case of its own, `TestUpstreamLazyHostOff`, on a fresh pair: every cell of the first case's
   mirror is fetched by its end. DuckDB's first request is answered `503` (the ask), its retry `404`.

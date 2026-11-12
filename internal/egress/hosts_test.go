@@ -128,6 +128,12 @@ func TestHostMatching(t *testing.T) {
 	if on, n := empty.HostsOn(); !on || n != 0 {
 		t.Errorf("an empty list is on: %v %d", on, n)
 	}
+	for host, want := range map[string]string{"Login.Example.": "login.example", "ｋｉｓｔａ.example": "kista.example",
+		"::ffff:203.0.113.10": "203.0.113.10", "2001:0DB8::1": "2001:db8::1", "Bad_Name.example": "bad_name.example"} {
+		if got := HostKey(host); got != want {
+			t.Errorf("HostKey(%q): %q, want %q", host, got, want)
+		}
+	}
 	if got := (&HostError{Host: "x.example"}).Error(); got != "egress: refused: x.example is not on this server's egress host list" {
 		t.Errorf("the message: %q", got)
 	}

@@ -123,9 +123,10 @@ func TestEgressHostsCredentials(t *testing.T) {
 	}
 }
 
-// Spec 0044: at start, one warning per stored host off the list, with its records and tenants:
-// issuers' URLs and explicit jwks_uri, upstreams' prefixes and DuckDB's built-in hosts, feeds' URLs;
-// bundle-mode upstreams and feeds contact nothing and are left out.
+// Spec 0044: at start, one warning per stored host off the list (two spellings of a host are one),
+// with its records and tenants: issuers' URLs and explicit jwks_uri (serve's one read of them),
+// upstreams' prefixes and DuckDB's built-in hosts, feeds' URLs; bundle-mode upstreams and feeds
+// contact nothing and are left out.
 func TestWarnEgressHosts(t *testing.T) {
 	ctx := context.Background()
 	st, err := store.OpenSQLite(ctx, filepath.Join(t.TempDir(), "kista.db"))
@@ -176,6 +177,7 @@ func TestWarnEgressHosts(t *testing.T) {
 	upstream("repo", store.UpstreamRepo, "https://repo.unlisted/x", store.ModePullThrough)
 	upstream("listed", store.UpstreamRepo, "https://listed.example/x", store.ModeMirror)
 	upstream("air", store.UpstreamRepo, "https://air.unlisted/x", store.ModeBundle)
+	upstream("again", store.UpstreamRepo, "https://REPO.Unlisted./y", store.ModeMirror) // repo.unlisted, spelled otherwise
 	feed := func(name, url, mode, cred string) {
 		in("acme", func(tx *store.Tx) error {
 			return tx.InsertFeed(ctx, &store.Feed{TenantID: ids["acme"], Name: name, URL: url, Credential: cred, Keys: []string{fp},
@@ -190,7 +192,7 @@ func TestWarnEgressHosts(t *testing.T) {
 	}) || !slices.ContainsFunc(rs, func(r [4]string) bool { return r[0] == ids["beta"] && r[3] == "" }) {
 		t.Fatalf("IssuerURLs: %v %v", rs, err)
 	}
-	if rs, err := st.UpstreamPrefixes(ctx); err != nil || len(rs) != 4 || !slices.Contains(rs, [5]string{ids["acme"], "core", store.UpstreamCore, store.ModeMirror, ""}) ||
+	if rs, err := st.UpstreamPrefixes(ctx); err != nil || len(rs) != 5 || !slices.Contains(rs, [5]string{ids["acme"], "core", store.UpstreamCore, store.ModeMirror, ""}) ||
 		!slices.Contains(rs, [5]string{ids["acme"], "air", store.UpstreamRepo, store.ModeBundle, "https://air.unlisted/x"}) {
 		t.Fatalf("UpstreamPrefixes: %v %v", rs, err)
 	}
@@ -200,7 +202,11 @@ func TestWarnEgressHosts(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	warnEgressHosts(ctx, st, hostsConfig(t, []string{"listed.example"}).EgressHosts(), slog.New(slog.NewJSONHandler(&buf, nil)))
+	issuers, err := st.IssuerURLs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnEgressHosts(ctx, st, hostsConfig(t, []string{"listed.example"}).EgressHosts(), issuers, slog.New(slog.NewJSONHandler(&buf, nil)))
 	type warning struct {
 		Level, Host      string
 		Records, Tenants int
@@ -214,7 +220,7 @@ func TestWarnEgressHosts(t *testing.T) {
 		got = append(got, w)
 	}
 	want := []warning{{"WARN", "extensions.duckdb.org", 1, 1}, {"WARN", "feed.unlisted", 1, 1}, {"WARN", "idp.unlisted", 2, 2},
-		{"WARN", "keys.unlisted", 2, 1}, {"WARN", "repo.unlisted", 1, 1}}
+		{"WARN", "keys.unlisted", 2, 1}, {"WARN", "repo.unlisted", 2, 1}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the warnings: %+v\n%s", got, buf.String())
 	}

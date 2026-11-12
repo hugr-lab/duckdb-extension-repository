@@ -34,11 +34,12 @@ func ServerEgress(cfg config.Config) (*egress.Client, error) {
 // so its host need not be on a list every tenant reaches (spec 0044).
 func CommunityEgress(cfg config.Config) (*egress.Client, error) { return egressWith(cfg, nil, 0, nil) }
 
-// warnEgressHosts says at start, once per host, which stored records name a host off egress.hosts
-// (spec 0044), with how many records and tenants: their fetches are refused until the operator lists
-// it. A discovered jwks_uri is not stored (it shows when it is fetched); bundle-mode upstreams and
-// feeds contact nothing.
-func warnEgressHosts(ctx context.Context, st *store.Store, hosts *egress.Hosts, log *slog.Logger) {
+// warnEgressHosts says at start, once per host (its normalised form), which stored records name a
+// host off egress.hosts (spec 0044), with how many records and tenants: their fetches are refused
+// until the operator lists it. issuers is serve's one read of Store.IssuerURLs (nil when it failed).
+// A discovered jwks_uri is not stored (it shows when it is fetched); bundle-mode upstreams and feeds
+// contact nothing.
+func warnEgressHosts(ctx context.Context, st *store.Store, hosts *egress.Hosts, issuers [][4]string, log *slog.Logger) {
 	type use struct{ records, tenants map[string]bool }
 	uses := map[string]*use{}
 	note := func(tenant, record, raw string) {
@@ -46,20 +47,17 @@ func warnEgressHosts(ctx context.Context, st *store.Store, hosts *egress.Hosts, 
 		if raw == "" || !errors.As(hosts.Check(raw), &he) {
 			return
 		}
-		u := uses[he.Host]
+		key := egress.HostKey(he.Host)
+		u := uses[key]
 		if u == nil {
 			u = &use{records: map[string]bool{}, tenants: map[string]bool{}}
-			uses[he.Host] = u
+			uses[key] = u
 		}
 		u.records[tenant+"/"+record], u.tenants[tenant] = true, true
 	}
-	if rs, err := st.IssuerURLs(ctx); err != nil {
-		log.Error("serve: reading issuer records", "error", err)
-	} else {
-		for _, r := range rs {
-			note(r[0], "issuer:"+r[1], r[2])
-			note(r[0], "issuer:"+r[1], r[3])
-		}
+	for _, r := range issuers {
+		note(r[0], "issuer:"+r[1], r[2])
+		note(r[0], "issuer:"+r[1], r[3])
 	}
 	if rs, err := st.UpstreamPrefixes(ctx); err != nil {
 		log.Error("serve: reading upstreams", "error", err)
