@@ -15,7 +15,7 @@ COPY web/console ./
 # then only what the binary embeds stays, so the SBOM lists the shipped packages, not the tooling
 RUN npm run licenses && npm audit --omit=dev --audit-level=high && npm run build && npm prune --omit=dev
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:6928d94d1142af58816fed5a62338d605a266ccd53a0deaab6b1096f19059261 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:5e8afd493a7124a8586e134d9b532731161d4b9becf9dee5a5956b107426f93d AS build
 ARG TARGETOS TARGETARCH VERSION=dev
 ENV GOWORK=off GOTOOLCHAIN=local GOFLAGS=-mod=readonly
 WORKDIR /src
