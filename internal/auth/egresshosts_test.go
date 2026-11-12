@@ -95,3 +95,65 @@ func TestVerifyIssuerHostNotAllowed(t *testing.T) {
 		}
 	}
 }
+
+// splitIDP answers like Google's issuer: discovery on accounts.example names a JWKS on
+// keys.example. It fetches as egress narrowed by egress.hosts does, refusing a host off the list
+// with its *egress.HostError before answering, and counts the requests each host answered.
+type splitIDP struct {
+	hosts *egress.Hosts
+	jwks  []byte
+	got   map[string]int
+}
+
+func (s *splitIDP) Get(_ context.Context, raw string) ([]byte, http.Header, error) {
+	if err := s.hosts.Check(raw); err != nil {
+		return nil, nil, err
+	}
+	s.got[raw]++
+	switch raw {
+	case "https://accounts.example/.well-known/openid-configuration":
+		return []byte(`{"issuer":"https://accounts.example","jwks_uri":"https://keys.example/jwks"}`), http.Header{}, nil
+	case "https://keys.example/jwks":
+		return s.jwks, http.Header{}, nil
+	}
+	return nil, nil, egress.ErrStatus
+}
+
+// Spec 0044: the Google split at the verifier: the issuer's discovery host is listed, its JWKS host
+// is not. Discovery is read, the JWKS never asked for, and the token fails with the reason issuer
+// host not allowed (issuer_host_not_allowed in its event); with both hosts listed it verifies.
+func TestVerifyIssuerSplitHosts(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	jwks, _ := json.Marshal(map[string]any{"keys": []any{map[string]any{"kty": "RSA", "kid": "k1",
+		"n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()), "e": "AQAB"}}})
+	enc := func(x any) string { b, _ := json.Marshal(x); return base64.RawURLEncoding.EncodeToString(b) }
+	now := time.Now()
+	input := enc(map[string]any{"alg": "RS256", "kid": "k1"}) + "." + enc(map[string]any{"iss": "https://accounts.example", "sub": "alice",
+		"aud": "https://kista.example/acme", "iat": now.Unix(), "exp": now.Add(time.Hour).Unix()})
+	d := sha256.Sum256([]byte(input))
+	sig, _ := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, d[:])
+	token := input + "." + base64.RawURLEncoding.EncodeToString(sig)
+	ta := store.TenantAuth{Issuers: []store.Issuer{{ID: "i1", Name: "google", URL: "https://accounts.example", Algorithms: auth.Algorithms}}}
+	idp := func(entries ...string) *splitIDP {
+		h, err := egress.NewHosts(entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &splitIDP{hosts: h, jwks: jwks, got: map[string]int{}}
+	}
+
+	split := idp("accounts.example")
+	v := &auth.Verifier{Fetch: split}
+	_, err := v.VerifyIdentity(context.Background(), ta, "https://kista.example/acme", token)
+	var f *auth.Failure
+	if !errors.As(err, &f) || f.Reason != auth.ReasonIssuerHost || f.Issuer != "google" || auth.EventReason(err) != "issuer_host_not_allowed" {
+		t.Fatalf("the JWKS host off the list: %v", err)
+	}
+	if split.got["https://accounts.example/.well-known/openid-configuration"] != 1 || split.got["https://keys.example/jwks"] != 0 {
+		t.Fatalf("the requests answered: %v", split.got)
+	}
+	both := idp("accounts.example", "keys.example")
+	if _, err := (&auth.Verifier{Fetch: both}).VerifyIdentity(context.Background(), ta, "https://kista.example/acme", token); err != nil {
+		t.Fatalf("both hosts listed: %v", err)
+	}
+}

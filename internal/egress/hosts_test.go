@@ -281,3 +281,27 @@ func TestHostsNoConnect(t *testing.T) {
 		t.Fatalf("a listed host through the proxy: %v (%d)", err, connects.Load())
 	}
 }
+
+// Spec 0044: a transport error that carries a refused host (http.Client's *url.Error around dial's
+// *net.OpError around the *HostError) maps to that *HostError itself, not to a generic refusal or
+// a connection failure; any other refusal keeps its class.
+func TestDoErrHostError(t *testing.T) {
+	u, _ := url.Parse("https://unlisted.example/x")
+	he := &HostError{Host: "unlisted.example"}
+	wrapped := &url.Error{Op: "Get", URL: u.String(), Err: &net.OpError{Op: "dial", Net: "tcp", Err: he}}
+	got := doErr(wrapped, u)
+	if got != error(he) {
+		t.Fatalf("doErr: %T %v, want the *HostError", got, got)
+	}
+	if !errors.Is(got, ErrHostNotAllowed) || !errors.Is(got, ErrRefused) {
+		t.Fatalf("its classes: %v", got)
+	}
+	other := &url.Error{Op: "Get", URL: u.String(), Err: &net.OpError{Op: "dial", Net: "tcp", Err: ErrRefused}}
+	var h *HostError
+	if got := doErr(other, u); !errors.Is(got, ErrRefused) || errors.As(got, &h) {
+		t.Fatalf("an address refusal: %v", got)
+	}
+	if got := doErr(&url.Error{Op: "Get", URL: u.String(), Err: errors.New("reset")}, u); !errors.Is(got, ErrConnect) {
+		t.Fatalf("a connection failure: %v", got)
+	}
+}

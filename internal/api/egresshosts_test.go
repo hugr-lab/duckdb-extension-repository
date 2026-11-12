@@ -14,6 +14,7 @@ import (
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/api"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
+	"github.com/hugr-lab/duckdb-extension-repository/internal/auth"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/egress"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/store"
 )
@@ -172,5 +173,63 @@ func TestEgressHostsFeeds(t *testing.T) {
 	evs, err := sub.st.ListEvents(ctx, tn.ID, store.EventFilter{Kind: "feed.run"})
 	if err != nil || len(evs) != 1 || !strings.Contains(evs[0].Data, `"error":"egress-host"`) {
 		t.Fatalf("feed.run: %+v %v", evs, err)
+	}
+}
+
+// listedFetcher fetches as egress narrowed by egress.hosts does: a URL whose host is off the list is
+// refused with its *egress.HostError, any other is answered by next.
+type listedFetcher struct {
+	next  idps
+	hosts *egress.Hosts
+}
+
+func (f listedFetcher) Get(ctx context.Context, url string) ([]byte, http.Header, error) {
+	if err := f.hosts.Check(url); err != nil {
+		return nil, nil, err
+	}
+	return f.next.Get(ctx, url)
+}
+
+// Spec 0044: a token from an issuer whose host is off egress.hosts is answered 401, and its
+// auth.failure event's reason is issuer_host_not_allowed, not invalid, even among invalid tokens in
+// the same second.
+func TestEgressHostsAuthFailure(t *testing.T) {
+	hosts, err := egress.NewHosts([]string{"other-idp.example"}) // acme's issuer, idp.example, is not listed
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newMgmt(t, func(o *api.Options) {
+		o.Verifier = &auth.Verifier{Fetch: listedFetcher{next: o.Verifier.Fetch.(idps), hosts: hosts}}
+	})
+	const T = "/api/v1/tenants/acme"
+	// within a second: an invalid token, one of the unlisted issuer, an invalid one again (keyed
+	// together, the second would be lost in the invalid ones' trailing count)
+	for _, tok := range []string{"not-a-token", m.toks["tenant admin"], "not-a-token"} {
+		if r := m.call(t, "GET", T+"/channels", tok, ""); r.status != 401 {
+			t.Fatalf("%.12s…: %d %s", tok, r.status, r.body)
+		}
+	}
+	m.events.Close(ctx)
+	acme, err := m.st.GetTenant(ctx, "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	evs, err := m.st.ListEvents(ctx, acme.ID, store.EventFilter{Kind: "auth.failure"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reasons := map[string]int{}
+	for _, e := range evs {
+		var d struct {
+			Reason string
+			Count  int
+		}
+		if err := json.Unmarshal([]byte(e.Data), &d); err != nil {
+			t.Fatal(err)
+		}
+		reasons[d.Reason] += d.Count
+	}
+	if reasons["issuer_host_not_allowed"] != 1 || reasons["invalid"] != 2 {
+		t.Fatalf("auth.failure: %v from %+v", reasons, evs)
 	}
 }
