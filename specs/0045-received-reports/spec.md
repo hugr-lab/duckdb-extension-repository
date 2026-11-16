@@ -1,6 +1,6 @@
 # Spec 0045: Received reports: the `report` kind, the feed over catalogue builds, and documents handed downstream
 
-- **Status**: draft (revised 2026-11-16 after three reviews and the owner's answers)
+- **Status**: draft (revised 2026-11-16 after three reviews, the owner's answers and a joint re-review)
 - **Date**: 2026-11-16
 - **Author**: vgsml, Claude
 
@@ -12,8 +12,9 @@ its known vulnerabilities. The analyser is elsewhere (Enterest, or anyone) and t
 usually cannot reach it: it mirrors a channel of the organisation's tenant on another kista. On
 top of spec 0011's attachments and feed and spec 0014's `export`, this spec adds:
 
-1. a kind **`report`**: one signed JSON document holding a few summary members kista reads and an
-   HTML page kista never interprets, shown in an isolated frame;
+1. a kind **`report`**: one signed JSON document holding a few summary members kista reads and
+   the issuer's page, semantic HTML kista never interprets, shown in an isolated frame under the
+   console's own stylesheet;
 2. the default feed offer over **catalogue builds** (spec 0033), released or not;
 3. **handing received documents downstream online**: what a bundle already carries (spec 0014),
    answered on the feed route, with the issuer's statements unchanged and the issuer's key pinned
@@ -74,19 +75,28 @@ as any document (spec 0011). It carries no verdict; kista computes none. `review
 | `sections` | at most 16 of `{name, status}`, each 1 to 32 bytes of `[a-z0-9_.-]`, optional | coverage |
 | `html` | string | the issuer's page; never parsed |
 
+`envelope`, `report`, `issue`, `issued_at`, `depth`, `subject.bodies` and `html` are strict: a
+document that breaks one is refused.
+
 - **These members are the kind's floor, frozen for every envelope version**: name, type, bound and
   meaning. kista reads nothing else and interprets no version, so a newer envelope is stored and
-  shown exactly as `v1` is, and nothing is recomputed after an upgrade. (Spec 0046's "document
-  version" wait never applies to this kind.)
+  shown exactly as `v1` is, and nothing is recomputed after an upgrade. This is the floor spec
+  0046 ("Statements") lets a kind declare: a report never waits on a `document version`. Adding
+  the kind raises spec 0046's reader level.
 - **Everything else is carried unread.** Members are read by exact name; a document that repeats a
   read member, in any letter case, is refused.
-- **`html`** is a self-contained page: no scripts, no external resources. kista checks only that it
-  is a string. Its size is the document's, bounded by `attachments.max_size`.
+- **`html`** is semantic HTML only: headings, paragraphs, lists, tables, code, `details`; no
+  style, no script, no external resource. kista checks only that it is a string. Its size is the
+  document's, bounded by `attachments.max_size`.
+- **A summary list that breaks its rule does not lose the report.** An `attention` or `sections`
+  entry, name or count outside its grammar or bounds, or a `kinds_evaluated` that is not such an
+  integer, drops that member from the summary and sets `incomplete`; the report is stored and
+  shown, and the row says "summary incomplete: open the report".
 - **Checks at intake** (the same code for an attach, a run and an import): spec 0011's JSON checks;
-  the members above by their types and bounds; the attachment's body hash is one of
+  the strict members by their types and bounds; the attachment's body hash is one of
   `subject.bodies[].hash`. A failure is `400`, or the refusal `document`.
 - **The summary** is those members without `html`, with `bodies` (their number) and `read` (this
-  body's) in place of `subject`. The bounds make its largest form fit 4,000 bytes; nothing is cut.
+  body's) in place of `subject`. The bounds make its largest form fit 4,000 bytes; there is no cut rule.
   Strings have a grammar, so none needs scrubbing.
 
 ### Issues
@@ -139,17 +149,20 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}?issuer=<url>   →  the cont
 - `keys` is that issuer's keys file as the feed last fetched it; there is no keys route.
 - Per body, from `after_seq` to the feed's cursor, in `seq` order: the stored statement bytes and
   signature of each document held from the issuer, withdrawals, and what the export feed keeps
-  (spec 0014). Content is served only for documents of kinds an `export` feed of that issuer
-  takes; every other statement carries the one fixed `note`, "not held by the relay". Statements
-  that wait are carried as spec 0046 says for an export feed.
+  (spec 0014; spec 0046, "Export feeds and relays": a waiting statement is kept as a refusal is).
+  Content is served only for documents of kinds an `export` feed of that issuer takes. Every other
+  statement goes without content, with a `note`: for a statement the relay waits on, its kept
+  reason, one of spec 0046's waiting reasons; for the rest (removed or refused here, or of a kind
+  the export feed does not take) the fixed text "not held by the relay".
 - Each statement is verified against the relaying feed's own pinned keys before it is sent; the
   relay applies no kind filter of its own and signs nothing.
 - **Shared with the plan-driven export** (`exportfeeds.go`): the read of what a tenant holds from
   an issuer for a body and a range (documents, kept statements, refusals, their order at one
   `seq`), moved to `internal/attachment` (`internal/bundle` imports it, not the reverse). **New**:
   choosing the feed without a plan, verifying against its pins rather than a site's, and paging.
-  An answer holds at most `attachments.feed_answer_max` bytes (new; 1 MiB, the most a client
-  reads, by default and at most), the keys file included, then `more`.
+  An answer holds at most `attachments.feed_answer_max` bytes (new; 128 KiB to 1 MiB, 1 MiB by
+  default: the keys file may be 64 KiB, and a client reads no more than 1 MiB), the keys file
+  included, then `more`.
 - **A suspended tenant serves nothing on the feed routes, as today**: the own kista's feed turns
   `unauthorized`, keeps what it holds, and no withdrawal arrives meanwhile. The end of an
   entitlement that removes the tenant's feed ends the relay the same way.
@@ -161,8 +174,10 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}?issuer=<url>   →  the cont
   egress and `egress.hosts` (spec 0044); the credential is matched against it and sent only there.
 - A run sends `issuer` and its bodies to `via`, keeps from `keys` only the keys it pins, checks
   every statement as spec 0046's `Verify` and spec 0011's client do, and fetches content from
-  `via`. A statement with a note is verified, then refused `no content`; the note is bounded and
-  cleaned as a bundle's is (`bundle.Text`).
+  `via`. A statement with a note is verified, then **waits** (`no content`, spec 0046) only when
+  the note is one of spec 0046's waiting reasons, and is refused `no content` for good otherwise,
+  as a bundle's is today; the note is bounded and cleaned as a bundle's is (`bundle.Text`). A
+  bundle import follows the same rule.
 - A body's cursor moves no further than **that body's own verified statements**, as a bundle
   import's does (`internal/attachment/bundleimport.go:290-300`); the relay's unsigned high-water
   moves nothing.
@@ -181,7 +196,8 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 - **The document quota holds, it does not refuse.** A document that does not fit the tenant's
   quota holds its body's cursor and the run ends `failing` (`limits`), as `errHeldByQuota` does for
   what an export feed keeps. The quota is one pool per tenant; only the heads limit is per issuer.
-- On an export feed, a kept refusal replaces the earlier kept row of the same `issuer_id`.
+- On an export feed, a kept refusal replaces the earlier kept row of the same `issuer_id`
+  (`feed_refusals` gains the column, below).
 - **`attachments.max_size` stays 4 MiB by default**; the recipes for a tenant's and an own kista's
   report feeds set it higher (at most 16 MiB). A run buffers each document whole, outside
   `attachments.max_reads`: memory is about `max_size` × (`max_reads` + the feeds running at once),
@@ -214,13 +230,21 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
     attention";
   - the vulnerabilities line by the rules above;
   - "No report held" only after a successful empty read, with the feed's last success;
-  - where a statement waits for the body (spec 0046's waiting count), the row says so;
   - no line at all for a caller who cannot read documents.
-- **The page**: the console takes `html` from the document it downloads and shows it in an
-  `iframe` with an empty `sandbox`, under a policy on the framed content of `default-src 'none'`
-  with inline styles and `data:` images only, and with no frame source allowed by the console's
-  own policy; inside a border labelled "<issuer host>'s page". "Download" saves it as `.html`, for
-  printing. Other kinds are downloaded only, as before.
+- **The page.** The console takes `html` from the document it downloads and builds the frame's
+  `srcdoc` as a fixed prefix followed by `html`, with no parsing. The prefix is a `meta`
+  Content-Security-Policy (`default-src 'none'; style-src <the console's report stylesheet URL>;
+  img-src data:; form-action 'none'; base-uri 'none'`) and a link to that one stylesheet of
+  kista's. The `iframe` has an empty `sandbox` and a border labelled "<issuer host>'s page". The
+  page so follows the console's light and dark theme. The console's own header
+  (`web/console/console.go:183-194`) only gains `frame-src 'none'`.
+- **Download** is the print path (a sandboxed frame cannot print itself): the same prefix with
+  kista's stylesheet inlined and `style-src 'unsafe-inline'` in the `meta`, then `html`, saved
+  through the existing `save()` (an octet-stream blob with the `download` attribute). kista never
+  serves `text/html`. Other kinds are downloaded only, as before.
+- **A host that embeds the console** (spec 0015) sets `frame-src 'none'` in its own policy, or one
+  that admits no navigation of the report's frame: in the embedded mount the host's policy
+  applies, not kista's.
 
 ### API, configuration, data model
 
@@ -229,16 +253,21 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 - `via` on `POST …/feeds` and `kista admin feed add -via <url>`; `feed show`. The relay's two
   routes. `head=true`, `source=` and `version=` on the attachments list.
 - `attachments.feed_answer_max`. Events: `feed.add` carries `via`.
-- Migration `0055` (spec 0046 owns `0054`), three dialects: `feeds.via` (`varchar(1000)` NULL;
-  SQL Server `nvarchar`, BIN2). `min_reader` is raised: an older replica would run a `via` feed
+- Migration `0055` (spec 0046 owns `0054`), three dialects: `feeds.via` (`varchar(1000)` NULL)
+  and `feed_refusals.issuer_id` (`varchar(64)` NULL, indexed with `feed_id`; written with every
+  row kept from now on, so replacing by `issuer_id` is a store operation; a row kept before has
+  none and is replaced by none);
+  SQL Server `nvarchar`, BIN2. `min_reader` is raised: an older replica would run a `via` feed
   against the issuer's URL.
-- Docs with each PR: `attachments.md`, `api.md`, `upstreams.md`, `console.md`, the own-kista page.
+- Docs with each PR: `attachments.md`, `api.md`, `upstreams.md`, `console.md`, the own-kista page,
+  `configuration.md` (the new key), `administration/upgrading.md` (schema 55, `min_reader`).
 
 ## What a source must do
 
-1. `"envelope": "kista.report.v1"` and the floor's members within their bounds; `html`
-   self-contained (no scripts, no external resources); every body of a statement in
-   `subject.bodies`.
+1. `"envelope": "kista.report.v1"` and the floor's members within their bounds; `html` semantic,
+   with no style, no script and no external resource; every body of a statement in
+   `subject.bodies`; `kinds_evaluated` as an integer (a producer whose own member of that name is
+   a list maps it).
 2. One statement per document and body; each issue `supersedes` the previous one of the same body;
    a retraction is a higher issue; audience `administrators`; `valid_until` on what ages.
 3. `kista:vulnerabilities:check` on every component; the whole document within the receiver's
@@ -261,19 +290,26 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
   kista shows the issue, its date, `valid_until` and the feed's last success, and promises no more.
 - **A lower issue can show as current** in the case under "Issues".
 - **What a `feed` holder learns**: the documents of bodies released in its channels, and which
-  issuers the tenant hands on (an issuer that is handed on answers with `keys`). Nothing of other
-  bodies, of sources not handed on, or without `feed`.
+  issuers the tenant hands on (an issuer that is handed on answers with `keys`). Also: a report
+  lists the hashes of its subject's other bodies, and a statement of a kind the export feed does
+  not take still arrives with its signed title and summary. No statement or document about any
+  other body, nothing of sources not handed on, nothing without `feed`.
 - **Leaving a tenant** takes `export` on the source and a `feed` grant. Setting `export` widens
   what every existing holder receives; the confirmation says so. Both are audited.
 - **What a source learns** from the default offer: the hashes of every build the tenant received
   from outside, undecided ones and other upstreams' included; never its own builds.
-- **The issuer's page.** It runs nothing and reaches nothing: an empty `sandbox` gives it a unique
-  origin without scripts, forms or top navigation; the content policy loads nothing external; the
-  console allows no frame source, so a link navigates nowhere; kista never parses it. A browser
-  test proves each. Not promised: what the page says. It is the issuer's word, inside a border
-  that names the issuer from the record.
-- **Summaries**: read members have fixed names, grammars and bounds; duplicates are refused; the
-  console shows them as quoted text.
+- **The issuer's page.** Closed by the empty `sandbox`: scripts, forms, `meta` refresh, a unique
+  origin. Closed by the frame's `meta` policy: every external load, and every style but kista's
+  one stylesheet (the console's own `style-src 'self'` already blocks inline styles in the frame,
+  which is why the page carries none). Closed by `frame-src 'none'`: a link navigating the frame,
+  standalone. **Not closed by kista in the embedded mount**: there the host's policy governs, and
+  link navigation inside the frame is the host's `frame-src` to block. The download is a file the
+  reader opens outside kista, under its own `meta` policy. kista never parses the page. A browser
+  test proves each property, standalone and embedded. Not promised: what the page says. It is the
+  issuer's word, inside a border that names the issuer from the record.
+- **Summaries**: read members have fixed names, grammars and bounds; duplicates are refused; a
+  list that breaks its rule is left out and flagged, never shown; the console shows the rest as
+  quoted text.
 - **Tenant isolation, SSRF, credentials**: as specs 0011 and 0044; `via` is the only host
   contacted.
 - **Bounds**: an answer by `attachments.feed_answer_max`; documents by the tenant's one quota,
@@ -281,16 +317,21 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 
 ## Testing
 
-- **Unit**: the envelope (each member's type and bound; a duplicate in another case; unknown
-  members; a higher version stored alike; a body not listed; the largest summary under 4,000
-  bytes); the vulnerabilities rules; the console's row texts and the frame (browser test: no
-  script, no request, no navigation, no form).
+- **Unit**: the envelope (each strict member's type and bound; a list out of its rule dropped and
+  flagged; a duplicate in another case; unknown members; a higher version stored alike; a body not
+  listed; the largest summary under 4,000 bytes); the vulnerabilities rules; the console's row
+  texts.
+- **Browser**, standalone and embedded, one test per property: no script runs, no form submits,
+  no `meta` refresh, no external request (image, CSS `url()`, font), no inline style applies,
+  kista's stylesheet applies in both themes, a link does not navigate (embedded: under a host
+  policy with `frame-src 'none'`), the download opens styled and loads nothing.
 - **Store suite, three dialects**: the offer (upstream, live and removed distributor's publisher,
   the tenant's own and a removed own publisher, withdrawn, revoked, unreleased); `feeds.via`; the
   list filters; a kept refusal replaced.
 - **Feed**: the relay's scope and equal answers; content by kind; paging; a suspended tenant; a
   `via` client against a fake relay (altered statement or content, unpinned key, a high-water
-  without statements, a note); the quota holding a cursor.
+  without statements, a note that is a waiting reason and one that is not); the quota holding a
+  cursor.
 - **End to end**, two kistas and a stand-in issuer: a report reaches A for an unreleased build and
   shows on the row; with `export` and a `feed` grant it reaches B through A while B never contacts
   the issuer; a correction supersedes; A's stored bytes altered: B refuses; the issuer rotates:
@@ -321,6 +362,8 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 - **A second switch beside `export`**, or **routes under the channel's prefix** (spec 0039): a
   setting to forget, or the feed's client built twice with `install` reading documents.
 - **A third offer, an issue rule, a keys route**: removed in review; spec 0011's parts do the work.
+- **A styled page from the issuer**: the console's policy blocks inline styles in any frame it
+  builds, and loosening it for one frame loosens it for the console.
 
 ## Follow-ups
 
