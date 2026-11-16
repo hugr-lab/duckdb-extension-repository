@@ -1,6 +1,6 @@
 # Spec 0046: Forward compatibility: what a kista does with what a newer peer sends, and the compatibility rules
 
-- **Status**: accepted (2026-11-16; the owner's answers of 2026-11-16; three reviews and a re-review applied)
+- **Status**: implemented
 - **Date**: 2026-11-16
 - **Author**: vgsml, Claude
 

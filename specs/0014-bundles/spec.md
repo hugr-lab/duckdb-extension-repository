@@ -452,8 +452,8 @@ The manifest:
 - **Signed.** The manifest binds every file to its cells by hash and size, and the signature covers
   its exact bytes. A carrier can withhold the whole bundle but cannot change, add, move or drop
   anything inside it without the import noticing.
-- **Validated before use.** The import decodes the manifest strictly (unknown fields and duplicate
-  keys refused) and validates it before anything else:
+- **Validated before use.** The import decodes the manifest (duplicate keys refused; unknown
+  members ignored under the member-name rule, spec 0046) and validates it before anything else:
   - the format and the grammar of every field;
   - sources unique after normalisation;
   - cells unique within a source;
@@ -728,6 +728,8 @@ tenant administrator's, like the feed's other settings) also keeps:
   the cursor instead), so the bytes are always there. The reasons are those spec 0011's client
   records as permanent, except `unrequested`, which has no body: a kind not accepted, the media
   type, the title, the size, `changed`, `body`, `content`, `document`, a body not held, `limits`;
+  and, kept the same way under its reason, a statement that waits for this kista's upgrade (spec
+  0046: `newer`, `unknown kind`, `media type`, `document version`);
 - **statements about documents it does not hold**: a withdrawal of a document it never stored, and
   any statement about a document it removed (a tombstone, made by an administrator or by the
   collector's `RemoveSuperseded`), which today leaves the tombstone at its old `seq`. Per document,
@@ -849,7 +851,8 @@ one it imported, the same `id` with another manifest, or a plan older than the f
   does not hold changes nothing (a bundle-mode feed keeps nothing for export);
 - a document's content comes from the bundle, checked against its statement's size and hash. A
   statement that needs content the bundle does not carry is refused, "bundle: no content (<the
-  gateway's note>)";
+  gateway's note>)"; unless the note is a waiting reason (spec 0046: the gateway could not read
+  it), when it waits and is asked for again at every plan until the gateway carries its content;
 - a statement that does not verify holds the body: nothing after it is applied;
 - the cursor moves, never back, to the range's `seq`, but no further than the highest `seq` of a
   statement for the body verified in this bundle or before. Online caps the high-water by the
@@ -1369,8 +1372,9 @@ statements bullet).
   - The cell cap.
   - `plan.created_at` against a target created later.
 - **Format** (`internal/bundle`): sign and verify with the `\0`-separated context and 64 raw
-  bytes; the fingerprint from the parsed key, not the PEM bytes; a non-Ed25519 `.pub`; strict JSON
-  (unknown fields, duplicate keys); every name grammar; `../`, absolute names, a PAX global header,
+  bytes; the fingerprint from the parsed key, not the PEM bytes; a non-Ed25519 `.pub`; the JSON
+  rules (duplicate keys refused, the member-name rule; unknown members ignored, spec 0046); every
+  name grammar; `../`, absolute names, a PAX global header,
   a GNU long name, sparse records, links; `sources/` after `files/`; a `.well-known` over 64 KiB;
   trailing gzip data and a second gzip member; an inflated size over `inflated_size`; control
   characters in `detail` and `exporter`; canonical order of sources and files.
@@ -1491,7 +1495,8 @@ statements bullet).
     1 MiB; documents by content hash, once; a tombstone carried without content, a missing live
     object ending the range; the limits; no credential in the bundle.
   - **Import.** Statements checked and applied with the shared client code, arriving for a body
-    the same bundle brings; content not carried refused with the exporting side's note; a keys
+    the same bundle brings; content not carried refused with the exporting side's note (waiting
+    instead when the note is a waiting reason, spec 0046); a keys
     file without a pinned key failing the target; the cursor no further than a verified statement,
     never back, held below a statement that does not verify or comes out of order, moved only
     after a whole read; a damaged batch and a truncated bundle failing the feed only; `gap` exiting

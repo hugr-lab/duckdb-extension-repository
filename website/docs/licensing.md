@@ -214,7 +214,10 @@ Each entry gets the organisation's licence through its own relay or an import: t
 remote (Enterest's `prod` and `nightly` mirrored into a tenant's `prod` and `nightly`) each store
 their own copy, and a renewal reaching either first is taken by each at its own run. An upstream's
 relay governs only the relayed licences of its own entry: one it stops listing is removed (revoked),
-an import is never removed by it, and another entry's copy is that entry's. A `404` from the
+an import is never removed by it, and another entry's copy is that entry's. A licence the upstream
+lists in a format newer than this kista reads (a higher `v`) is refused (`v`, counted `newer` in the
+run), and it is not a name left out: the licence stored for that name stays until its own expiry and
+grace ([Compatibility](compatibility.md)). A `404` from the
 upstream means it serves no licences and changes nothing, and so does a failure (the credential
 refused with `401` or `403`, a network error, an answer over 1,000 licences or 8 MiB). Removing the
 upstream removes the relayed licences of its entry; clearing its credential stops the relay, and its
@@ -441,11 +444,12 @@ POST <prefix>/-/usage/<name>      Content-Type: application/json, at most 64 KiB
   extension in that channel, or anyone served a public release of it. Everyone else gets the answer
   of a missing path, and the body is not read.
 - **The rules**: `status` is the SDK's licence status (`valid`, `grace`, `expired`, `not_yet_valid`,
-  `not_covered`, `invalid`, or `missing` without a licence); `license` is the licence's id; event and
+  `not_covered`, `invalid`, or `missing` without a licence; a status this kista does not know, a
+  later SDK's, is counted under `other`); `license` is the licence's id; event and
   counter names are `[a-z][a-z0-9_.]{0,63}`; at most 32 events and 16 counters per event; counts are
   integers from 0 to 2^53-1; `version`, `platform`, `duckdb_version` and `status` are required. A
   report breaking them answers `400` with the rule, as `<rule>: <message>`: `json`, `version`,
-  `status`, `license`, `events`, `name` or `value`; `415` (`content`) without `application/json`,
+  `status` (when it is missing), `license`, `events`, `name` or `value`; `415` (`content`) without `application/json`,
   `413` (`size`) over 64 KiB. The rules are stable: an SDK's tests may rely on them.
 - A report for a version the caller is not served in that channel, or with a malformed `platform` or
   `duckdb_version`, is dropped and answered `204` all the same.

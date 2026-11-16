@@ -62,8 +62,11 @@ its writer (a `sub` or a client claim). Either failure answers `401`.
 ## Requests and responses
 
 - **JSON bodies** are `application/json` (optionally `charset=utf-8`; otherwise `415`), one object, at
-  most 64 KiB (`413`). Unknown and duplicate keys are refused (`400`). A route that takes no body
-  refuses one.
+  most 64 KiB (`413`). Unknown and duplicate keys are refused (`400`), so a newer client fails
+  loudly instead of dropping what it asked. The one exception is the feed route another kista calls
+  (`POST …/tenants/{t}/feed`): it reads `bodies` and `issuer` and ignores other members, and a
+  request that names an `issuer` (a relay's selector) is answered no statements
+  ([Compatibility](compatibility.md)). A route that takes no body refuses one.
 - **Raw bodies**: the publication route takes the extension file (`application/octet-stream`); the
   attachment route takes the document with its media type; a licence import takes the licence (at
   most 16 KiB). All need `Content-Length`.

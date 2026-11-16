@@ -185,6 +185,9 @@ document (saved as a file, never opened) and remove it, and attach one on a rele
 administrators also mark it `readers` or feedable. **Feeds**, on the Upstreams page, lists subscriptions with their status, last run and last
 success; they are added, synced, paused, resumed and removed there. Changing a feed's credential,
 keys, kinds or readers is done with the API or the CLI. See [Attachments and the feed](attachments.md).
+A feed whose source sends what this kista is too old to read, and an upstream whose last run met a
+revocation state or a route version it does not know, say so in a line ("This kista is older than
+its source: …"); see [Compatibility](compatibility.md).
 
 The server scope adds:
 

@@ -225,9 +225,10 @@ licenses                + package_type; pk (tenant_id, package_type, name)
 
 A bundle (spec 0014) carries sources (`Manifest.Sources`, `Plan.Sources`), each an upstream's, so
 the type belongs to a source, not to each entry: `Source.package_type` and
-`PlanSource.package_type`, omitted (required omitted) when `duckdb_extension`. Manifests and plans
-are decoded strictly, so a v0.1.4 importer or exporter reads every extension bundle and plan a newer
-one writes; a source of a type an importer does not know is refused.
+`PlanSource.package_type`, omitted (required omitted) when `duckdb_extension`, so a v0.1.4 importer
+or exporter, which decodes manifests and plans strictly, reads every extension bundle and plan a
+newer one writes; a source of a type an importer or an exporter does not know is left out by itself,
+with a problem (spec 0046), and the rest of the bundle is taken.
 
 ### Events
 

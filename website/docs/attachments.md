@@ -52,7 +52,9 @@ the attestation claims and does not verify it against the uploaded file yet.
 
 ### The review format
 
-`review` documents use kista's open schema, `kista.review.v1`. Unknown fields are refused.
+`review` documents use kista's open schema, `kista.review.v1`. Unknown fields are refused when a
+document is attached here (a typo must fail); a review received from a feed or a bundle may carry
+fields a later analyser added, which are ignored ([Compatibility](compatibility.md)).
 
 ```json title="review.json"
 {
@@ -262,12 +264,16 @@ statement is at most 16 KiB.
 | `kind`, `media_type`, `content_hash`, `size`, `title`, `summary` | the document |
 | `issued_at`, `valid_until` | RFC 3339 |
 | `supersedes` | the `issuer_id` of an earlier document of the same issuer, body and kind |
-| `origin` | who stands behind it at the source: `tenant` or `publisher:<name>` |
-| `audience` | `administrators`, or `readers` when the source shows the document to its own readers |
+| `origin` | who stands behind it at the source: `tenant` or `publisher:<name>`; a subscriber stores and shows any printable text of at most 80 bytes |
+| `audience` | `administrators`, or `readers` when the source shows the document to its own readers; a subscriber reads anything but `readers` as not for readers |
 | `withdrawn` | `true` for a withdrawal, which carries the document's identity only |
+| `v` | the format's major; absent is 1, and this release writes none |
 
-The subscriber refuses bytes that are not the canonical form and unknown fields. It does not store
-the received `summary`: it computes its own from the content, which `content_hash` binds.
+The subscriber refuses bytes that are not the canonical form. It ignores fields it does not know,
+under the member-name rule: every field name at every depth is `[a-z0-9_]{1,64}` and none is twice
+in its object, or the statement does not verify. It does not store the received `summary`: it
+computes its own from the content, which `content_hash` binds. What it does with a statement of a
+newer source is in [Compatibility](compatibility.md).
 
 ## Offering documents to the feed
 
@@ -427,7 +433,8 @@ pass to another feed of the same source if there is one, and otherwise are remov
 
 A feed's state is `active` or `paused`. `feed show` and the API give the last error, the last
 success, the next run, whether a run is requested, and the last run's result: counts (`offered`,
-`received`, `superseded`, `withdrawn`, `updated`, `duplicate`, `failed`, `refused`; for an export
+`received`, `superseded`, `withdrawn`, `updated`, `duplicate`, `failed`, `refused`, `waiting`
+(statements this kista is too old to read, left for an upgrade); for an export
 feed also `kept`, statements about documents not held, `held`, statements waiting at the cap, and
 `overtaken`, a run stopped by a change of `export`; for a bundle import `gap`, `not offered`,
 `would_store`, `would_withdraw`, and `held`, statements that did not verify or came out of order)
@@ -453,15 +460,23 @@ For each run:
 Cursors are per (feed, body):
 
 - **Stored, or refused for good**: the cursor moves past the statement, and a refusal is recorded
-  with its reason: `kind` (not accepted by the feed), `media type`, `title`, `size`, `content` (does
+  with its reason: `kind` (not accepted by the feed), `title`, `size`, `content` (does
   not match the statement), `document` (does not parse as its media type), `changed` (a held
   document's content or body differs), `body` (a withdrawal for another body), `not held`,
-  `limits`, `unrequested` (a body the subscriber did not send). A document another feed stored first
+  `limits`, `unrequested` (a body the subscriber did not send), `statement` (authentic, with a field
+  of the wrong type or out of its bounds). A document another feed stored first
   counts as `duplicate`, not as a refusal.
+- **Waiting for an upgrade**: the cursor moves past a statement this kista is too old to read, which
+  is counted (`waiting`) and neither applied nor refused: `newer` (a higher `v`), `unknown kind`,
+  `media type` (one the kind does not take here), `document version` (a version of the document
+  this kista does not read). The feed stays `ok`; its record counts them by reason (`waiting`) and
+  it shows administrators a line, "This kista is older than its source: documents wait for an
+  upgrade". An upgraded kista takes them again by
+  itself ([Compatibility](compatibility.md#waiting-and-taking-again)).
 - **A transient failure** (a fetch, egress, a document the source no longer serves): the cursor
   stays, and the body's later statements wait for the next run.
-- **Not verified** (`encoding`, `signature`: an unpinned key or bad bytes, `issuer`: another
-  issuer): the body's cursor is held, so the statement is tried again at the next run and taken once
+- **Not verified** (`encoding`, `signature`: an unpinned key, bad bytes or a field name that breaks
+  the member-name rule, `issuer`: another issuer): the body's cursor is held, so the statement is tried again at the next run and taken once
   its key is pinned.
 
 A newer statement about a document already held updates its statement and validity. Its visibility
@@ -498,6 +513,10 @@ bundle needs to answer a site's plan.
 - **Its refusals for good**, each with the statement's signed bytes: the reasons above, except
   `unrequested`. They still count under `refused` in a run. The site judges each statement again
   itself.
+- **The statements that wait for its upgrade**, kept the same way, each under its waiting reason. A
+  bundle carries them without content, the reason as their note: a site that can read one leaves it
+  waiting too and asks again with every plan, until the gateway is upgraded and carries the content
+  ([Compatibility](compatibility.md#waiting-and-taking-again)).
 - **Statements about documents the tenant does not hold**: a withdrawal of a document never stored,
   and any statement about one removed here (by an administrator, or by the collector after it was
   superseded for a year). A site may hold the document. A run counts them as `kept`. When the
