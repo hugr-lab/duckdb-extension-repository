@@ -215,6 +215,10 @@ func Parse(token string) (*Token, error) {
 		}
 		raw[i] = b
 	}
+	// spec 0046: a token in a newer format is refused as that (v), whatever its header became there
+	if v, _, ok := peek(raw[1]); ok && v > 1 {
+		return nil, refuse(RuleV, "format version %d, and this kista reads 1", v)
+	}
 	t := &Token{signed: []byte(parts[0] + "." + parts[1]), signature: raw[2]}
 	if err := t.header(raw[0]); err != nil {
 		return nil, err
@@ -223,6 +227,40 @@ func Parse(token string) (*Token, error) {
 		return nil, err
 	}
 	return t, nil
+}
+
+// peek reads a payload's v and ext only, whatever else it holds: ok when it is an object with an
+// integer v.
+func peek(payload []byte) (v int64, ext string, ok bool) {
+	p, err := parseJSON(payload)
+	if err != nil || p.kind != kindObject {
+		return 0, "", false
+	}
+	if v, err = integer(p, "v", RuleV, true); err != nil {
+		return 0, "", false
+	}
+	ext, _ = str(p, "ext", RuleExt, false)
+	return v, ext, true
+}
+
+// Newer reads, of a token in a format above the one this binary reads, the extension it names
+// (spec 0046): ok when its payload's v is above 1 and its ext is an extension name. Nothing of the
+// token is verified: a relay uses the name only to keep a licence it already verified and stored,
+// for no longer than that licence's own expiry.
+func Newer(token string) (ext string, ok bool) {
+	parts := strings.Split(token, ".")
+	if len(token) > MaxSize || len(parts) != 3 || !b64Re.MatchString(parts[1]) {
+		return "", false
+	}
+	payload, err := base64.RawURLEncoding.Strict().DecodeString(parts[1])
+	if err != nil {
+		return "", false
+	}
+	v, ext, ok := peek(payload)
+	if !ok || v <= 1 || !extRe.MatchString(ext) {
+		return "", false
+	}
+	return ext, true
 }
 
 func (t *Token) header(b []byte) error {

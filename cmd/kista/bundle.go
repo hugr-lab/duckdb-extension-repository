@@ -164,7 +164,7 @@ func bundleSign(args []string, stdout io.Writer) error {
 		return err
 	}
 	var plan bundle.Plan
-	if err := bundle.DecodeStrict(planData, &plan); err != nil {
+	if err := bundle.Decode(planData, &plan); err != nil {
 		return err
 	}
 	if err := plan.Validate(); err != nil {
@@ -434,7 +434,7 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 			return false, err
 		}
 		plan = &bundle.Plan{}
-		if err := bundle.DecodeStrict(data, plan); err != nil {
+		if err := bundle.Decode(data, plan); err != nil {
 			return false, err
 		}
 		if err := plan.Validate(); err != nil {
@@ -495,6 +495,9 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 				planVersions[k][[3]string{c.DuckDBVersion, c.Platform, c.Name}] = c.Versions
 			}
 		}
+	}
+	for _, l := range m.LeftOut { // spec 0046
+		problem("source %s %s is of package type %s, not known here: an import leaves it out (upgrade this kista)", l.Kind, l.Prefix, l.PackageType)
 	}
 	outcomes := map[string]int{}
 	for _, s := range m.Sources {
@@ -753,6 +756,10 @@ func (c *feedCheck) entry(it bundle.Item) {
 			sig, _ := base64.StdEncoding.DecodeString(e.Signature)
 			c.counts["statements"]++
 			st, err := attachment.Verify(stmt, sig, c.keys[it.FeedIndex])
+			if errors.Is(err, attachment.ErrMalformed) {
+				c.counts["refused"]++ // authentic, a member out of its bounds: an import refuses it for good
+				continue
+			}
 			if err != nil {
 				c.problem("feed %s: a statement does not verify with the keys file's keys: %v", f.URL, err)
 				continue

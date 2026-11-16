@@ -42,7 +42,6 @@ func TestParse(t *testing.T) {
 		{"trailing data", ev(`[]`) + `{}`, usage.RuleJSON},
 		{"version missing", `{"platform": "p", "duckdb_version": "v", "status": "valid"}`, usage.RuleVersion},
 		{"version not a string", `{"version": 1, "platform": "p", "duckdb_version": "v", "status": "valid"}`, usage.RuleJSON},
-		{"status unknown", `{"version": "1", "platform": "p", "duckdb_version": "v", "status": "ok"}`, usage.RuleStatus},
 		{"status missing", `{"version": "1", "platform": "p", "duckdb_version": "v"}`, usage.RuleStatus},
 		{"licence id", `{"version": "1", "platform": "p", "duckdb_version": "v", "status": "valid", "license": "a b"}`, usage.RuleLicense},
 		{"event name", ev(`[{"name": "Load", "count": 1}]`), usage.RuleName},
@@ -66,6 +65,11 @@ func TestParse(t *testing.T) {
 		if !errors.As(err, &ue) || ue.Rule != c.rule {
 			t.Errorf("%s: %v, want rule %s", c.name, err, c.rule)
 		}
+	}
+	// spec 0046: a status this kista does not know (a later SDK's) is counted as other, not refused
+	if r, err := usage.Parse([]byte(`{"version": "1", "platform": "p", "duckdb_version": "v", "status": "suspended", "events": []}`)); err != nil ||
+		r.Status != usage.StatusOther {
+		t.Fatalf("a status of a later SDK: %q %v", r.Status, err)
 	}
 	// the limits themselves are fine
 	if _, err := usage.Parse([]byte(ev(`[` + many(32, func(int) string { return `{"name": "a", "count": 9007199254740991}` }) + `]`))); err != nil {

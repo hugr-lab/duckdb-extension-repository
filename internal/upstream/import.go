@@ -67,12 +67,15 @@ type TargetResult struct {
 type ImportResult struct {
 	Import    store.BundleImport `json:"-"`
 	Targets   []TargetResult     `json:"targets"`
-	Unplanned int                `json:"unplanned"`         // bundle cells outside every target's matrix
-	Feeds     int                `json:"feeds"`             // feeds the bundle carries that no target took (phase 1b)
-	Gaps      int                `json:"gaps"`              // feed bodies whose range did not start at the feed's cursor: write a new plan
-	Skipped   int64              `json:"skipped_bytes"`     // entries read through
-	Problem   string             `json:"problem,omitempty"` // why the import stopped early
-	Stop      string             `json:"stop,omitempty"`    // its class: bundle (truncated, malformed, stalled), interrupted, deleting
+	Unplanned int                `json:"unplanned"` // bundle cells outside every target's matrix
+	Feeds     int                `json:"feeds"`     // feeds the bundle carries that no target took (phase 1b)
+	Gaps      int                `json:"gaps"`      // feed bodies whose range did not start at the feed's cursor: write a new plan
+	// LeftOut are the bundle's sources of a package type this kista does not know (spec 0046): nothing
+	// of them was read; the rest was taken.
+	LeftOut []bundle.LeftOut `json:"left_out,omitempty"`
+	Skipped int64            `json:"skipped_bytes"`     // entries read through
+	Problem string           `json:"problem,omitempty"` // why the import stopped early
+	Stop    string           `json:"stop,omitempty"`    // its class: bundle (truncated, malformed, stalled), interrupted, deleting
 	// Licenses are the licences the bundle carried, as the site took them (spec 0021).
 	Licenses *licenses.Result `json:"licenses,omitempty"`
 }
@@ -161,8 +164,13 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 		}
 	}
 	if len(targets) == 0 && len(fts) == 0 {
-		return out, fmt.Errorf("%w: no active bundle-mode upstream or feed of tenant %s has a source or feed in the bundle", store.ErrInvalid, t.Name)
+		why := ""
+		if len(m.LeftOut) > 0 {
+			why = fmt.Sprintf(" (%d of its sources are of a package type this kista does not know: upgrade this kista)", len(m.LeftOut))
+		}
+		return out, fmt.Errorf("%w: no active bundle-mode upstream or feed of tenant %s has a source or feed in the bundle%s", store.ErrInvalid, t.Name, why)
 	}
+	out.LeftOut = m.LeftOut
 	if err := s.failInterrupted(ctx, t.ID); err != nil {
 		return out, err
 	}
@@ -882,6 +890,11 @@ func (s *Service) leftovers(ctx context.Context, t store.Tenant, targets []*targ
 					why = "bundle: the file is not in the bundle"
 				}
 				rec = store.UpstreamCell{Outcome: store.CellFailed, Detail: why}
+			default:
+				// spec 0046: an outcome this kista does not know is this cell's problem; what the cell
+				// holds stays (a failure never replaces a body)
+				rec = store.UpstreamCell{Outcome: store.CellFailed,
+					Detail: "bundle: the exporting kista's outcome " + bundle.Text(c.Outcome, 64) + " is not known here: upgrade this kista"}
 			}
 			if err := s.record(ctx, t, tg, c, rec, dryRun); err != nil {
 				return

@@ -39,8 +39,9 @@ type v014PlanSource struct {
 }
 
 // Spec 0034: a source's package_type is omitted for duckdb_extension, so an older kista reads every
-// extension bundle and plan a newer one writes; written, it must be another type, one the reader
-// knows (and every source kind here is DuckDB's).
+// extension bundle and plan a newer one writes; written, it must be another type (and every source
+// kind here is DuckDB's). Spec 0046: a source of a type the reader does not know is left out by
+// itself: the manifest and the plan stay valid, and nothing of the source is read.
 func TestSourcePackageTypes(t *testing.T) {
 	f := newFixture(t)
 	data := f.manifest(t)
@@ -48,26 +49,30 @@ func TestSourcePackageTypes(t *testing.T) {
 		t.Fatalf("an extension manifest names its type: %s", data)
 	}
 	var old v014Manifest
-	if err := bundle.DecodeStrict(data, &old); err != nil || len(old.Sources) != 2 {
+	if err := bundle.Decode(data, &old); err != nil || len(old.Sources) != 2 {
 		t.Fatalf("v0.1.4's decoder: %v", err)
 	}
 	var back bundle.Manifest
-	if err := bundle.DecodeStrict(data, &back); err != nil || back.Sources[0].PackageType != "" || back.Validate(t0) != nil {
+	if err := bundle.Decode(data, &back); err != nil || back.Sources[0].PackageType != "" || back.Validate(t0) != nil {
 		t.Fatalf("round trip: %v", err)
 	}
 	ps := []bundle.PlanSource{{Kind: "duckdb-core", Cells: []bundle.PlanCell{{DuckDBVersion: "v2.0.0", Platform: "linux_amd64", Name: "httpfs"}}}}
 	pb, _ := json.Marshal(ps)
 	var oldPS []v014PlanSource
-	if err := bundle.DecodeStrict(pb, &oldPS); err != nil || strings.Contains(string(pb), "package_type") {
+	if err := bundle.Decode(pb, &oldPS); err != nil || strings.Contains(string(pb), "package_type") {
 		t.Fatalf("a plan's source: %s %v", pb, err)
 	}
 
 	defer pkgtype.RegisterForTest("test_package")()
-	for typ, want := range map[string]bool{"": true, pkgtype.DuckDBExtension: false, "nope": false, "test_package": false} {
+	for typ, want := range map[string]bool{"": true, pkgtype.DuckDBExtension: false, "nope": true, "test_package": false} {
 		g := newFixture(t)
 		g.m.Sources[0].PackageType = typ
 		if err := g.m.Validate(t0); (err == nil) != want || err != nil && !errors.Is(err, bundle.ErrInvalid) {
 			t.Errorf("a manifest's source of %q: %v", typ, err)
+		}
+		if typ == "nope" && (len(g.m.LeftOut) != 1 || g.m.LeftOut[0].PackageType != "nope" || len(g.m.Sources) != 1 ||
+			g.m.Sources[0].PackageType != "") {
+			t.Errorf("a source of an unknown type is not left out: %+v, %d sources", g.m.LeftOut, len(g.m.Sources))
 		}
 		p := bundle.Plan{Format: bundle.PlanFormat, CreatedAt: t0, Tenant: "acme", BundleKeys: []string{"sha256:" + strings.Repeat("1", 64)},
 			Sources: []bundle.PlanSource{{Kind: "duckdb-core", PackageType: typ,

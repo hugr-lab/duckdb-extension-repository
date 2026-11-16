@@ -1,0 +1,29 @@
+{
+  "api": 1,
+  "rows": [
+    {
+      "name": "tresor",
+      "version": "1.0",
+      "platform": "linux_amd64",
+      "body_hash": "abababababababababababababababababababababababababababababababab",
+      "state": "withdrawn",
+      "reason": "CVE-2026-0001"
+    },
+    {
+      "name": "tresor",
+      "version": "1.1",
+      "platform": "linux_amd64",
+      "body_hash": "abababababababababababababababababababababababababababababababab",
+      "state": "blocked",
+      "reason": "a bad build"
+    },
+    {
+      "name": "tresor",
+      "version": "1.2",
+      "platform": "linux_amd64",
+      "body_hash": "abababababababababababababababababababababababababababababababab",
+      "state": "yanked",
+      "reason": ""
+    }
+  ]
+}

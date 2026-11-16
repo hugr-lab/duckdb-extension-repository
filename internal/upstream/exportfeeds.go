@@ -331,8 +331,10 @@ func (x *exporter) changed(ctx context.Context, cands []store.Feed, cursors map[
 
 // bodyStatements collects a body's statements in (from, upTo] as the tenant holds them: its
 // documents of the issuer (whichever feed stored them), the statements an export feed kept, the
-// chosen feed's refusals; at one seq the first of these wins. The range ends just below a
-// statement that does not verify with the plan's keys, or whose live document cannot be read.
+// chosen feed's refusals, among them the statements that wait for this kista's upgrade (spec 0046:
+// carried without content, their note the waiting reason); at one seq the first of these wins. The
+// range ends just below a statement that does not verify with the plan's keys, or whose live
+// document cannot be read.
 func (x *exporter) bodyStatements(ctx context.Context, pf *bundle.PlanFeed, pinned map[string]*rsa.PublicKey, best store.Feed,
 	body string, from, upTo int64) ([]xstatement, int64, error) {
 	type cand struct {
@@ -387,11 +389,15 @@ func (x *exporter) bodyStatements(ctx context.Context, pf *bundle.PlanFeed, pinn
 			return out, q - 1, nil
 		}
 		st, err := attachment.Verify(stmt, sig, pinned)
-		if err != nil || st.Issuer != pf.URL || st.BodyHash != body || st.Seq != q {
+		// authentic, with a member out of its bounds: refused for good here, and carried so the site
+		// refuses it too (spec 0046); it has no document
+		malformed := errors.Is(err, attachment.ErrMalformed) && c.doc == nil
+		if err != nil && !malformed || st.Issuer != pf.URL || st.BodyHash != body || st.Seq != q {
 			return out, q - 1, nil // as an unverified statement holds a cursor online
 		}
 		xs := xstatement{stmt: stmt, sig: sig, st: st, note: c.note}
 		switch {
+		case malformed:
 		case st.Withdrawn:
 			xs.note = ""
 		case c.doc != nil && len(pf.Kinds) > 0 && !slices.Contains(pf.Kinds, st.Kind):

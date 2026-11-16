@@ -92,6 +92,7 @@ type fakeRepo struct {
 	namesStatus int
 	namesCut    string
 	namesReads  int
+	namesAPI    int // the route's "api" (0: 1): a later wire major, spec 0046
 }
 
 // authorizations returns the Authorization headers of file requests so far.
@@ -141,7 +142,7 @@ func newRepoTLS(t *testing.T, tls bool) *fakeRepo {
 			}
 			size := cmp.Or(r.namesPage, 500)
 			end := min(start+size, len(r.names))
-			ans := map[string]any{"api": 1, "names": append([]string{}, r.names[start:end]...)}
+			ans := map[string]any{"api": cmp.Or(r.namesAPI, 1), "names": append([]string{}, r.names[start:end]...)}
 			if end < len(r.names) {
 				ans["next"] = "n" + strconv.Itoa(end)
 			}

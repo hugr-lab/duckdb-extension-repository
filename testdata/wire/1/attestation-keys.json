@@ -1,0 +1,9 @@
+{
+  "keys": [
+    {
+      "fingerprint": "sha256:d2038be9a35306e78c335ce3b86beca22de9c87dfd0b68e27afbd0a280a98b2c",
+      "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq2mb96cl945GEipWql++\nOVAjwMb7jOb9tpr9DN955qHiqVi6OeE2Tqo8tAt+sxdc9Q0KvPSHaxbEusC2ldBZ\nTsAudofN7dkNYHnRXa9enLZ5lfdKkBvwSsc++3Lywalt/3k9zgMMzISN2i5di25m\n4PlTF+wepSmHw2DYfZel/Qk3owD14OHuBLNzz9DIxiMgXssNLQJMTiPRWJRWK3kr\ndqiVljZdGV+4xpGdlLbpi8Ve1G4lxLlUth9uFWB6k1YzwSzpU3DYrHryAQhUxO09\nteNVPHpZmMNUon8klUVHoTL8aifvB6WkR7mcnMLah6K56MfgAw4sv9cuaJKmss01\nmQIDAQAB\n-----END PUBLIC KEY-----\n",
+      "state": "active"
+    }
+  ]
+}

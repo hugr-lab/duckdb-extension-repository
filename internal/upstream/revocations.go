@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -31,8 +32,36 @@ const (
 	// a run's counts of the pass
 	countRevoked         = "revoked"           // revocations applied
 	countRevokedOnSource = "revoked_on_source" // stored, the switch off: shown, not applied
-	outcomeRevocations   = "revocations"       // a problem of the pass itself
+	// countUnknownState counts the source's revocations of this upstream's builds in a state this
+	// kista does not know, taken as yanks (spec 0046): the source is newer
+	countUnknownState  = "revocations_unknown"
+	outcomeRevocations = "revocations" // a problem of the pass itself
 )
+
+// errNewerAPI is a dash route (-/revocations, -/names) answering an api above 1 (spec 0046): wire
+// major 1 is frozen at "api": 1 and a next major is a new route, so this is not read as 1. The run
+// fails, reads nothing and forgets nothing.
+var errNewerAPI = errors.New("the source's routes answer an api newer than this kista reads (1): upgrade this kista")
+
+// unknownStateRE is a revocation state's word as it may be shown: a later release's state.
+var unknownStateRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,15}$`)
+
+// OlderThanSource says, from an upstream's last run, that this kista is older than its source
+// (spec 0046), or nothing: for the administrators' view.
+func OlderThanSource(lastRun string) string {
+	var r Result
+	if lastRun == "" || json.Unmarshal([]byte(lastRun), &r) != nil {
+		return ""
+	}
+	switch {
+	case strings.Contains(r.Error, errNewerAPI.Error()):
+		return "This kista is older than its source: its revocations and names are not read until an upgrade."
+	case r.Counts[countUnknownState] > 0:
+		return fmt.Sprintf("This kista is older than its source: %d revocations in a state it does not know are taken as yanks.",
+			r.Counts[countUnknownState])
+	}
+	return ""
+}
 
 // remoteRevocations is what a pass read of a remote's -/revocations route.
 type remoteRevocations struct {
@@ -89,6 +118,9 @@ func (s *Service) readRevocations(ctx context.Context, tenant string, u store.Up
 		}
 		if json.Unmarshal(buf.Bytes(), &ans) != nil || ans.API == nil || ans.Rows == nil {
 			return out, errNotKista
+		}
+		if *ans.API > 1 { // spec 0046: checked as a guard, before anything of the answer is kept
+			return remoteRevocations{}, errNewerAPI
 		}
 		out.kista = true
 		if page == 0 {
@@ -157,10 +189,11 @@ func (s *Service) getPage(ctx context.Context, cred *credential.Credential, tok,
 // reads the remote's revocations, matches them by build to this upstream's builds and stores them,
 // then applies those due when the switch is on (counted and summed up in one problem when it is
 // off). Its failures are the run's problems; the run goes on. A dry run only reads: it stores,
-// applies and counts nothing.
-func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u store.Upstream, a authz.Actor, res *Result) {
+// applies and counts nothing. The one error it returns fails the run: a source answering a newer
+// api (spec 0046), of which nothing is read, stored or forgotten.
+func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u store.Upstream, a authz.Actor, res *Result) error {
 	if u.Kind != store.UpstreamRepo || u.Mode != store.ModeMirror {
-		return
+		return nil
 	}
 	problem := func(name, platform, detail string) {
 		if len(res.Problems) < maxProblems {
@@ -171,12 +204,14 @@ func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u s
 	got, err := s.readRevocations(ctx, sc.Tenant.Name, u, etag)
 	var ae *egress.AuthError
 	switch {
+	case errors.Is(err, errNewerAPI):
+		return fmt.Errorf("%w: %w", errFailed, err)
 	case errors.Is(err, credential.ErrClient):
 		problem("", "", "the identity provider refuses kista's own client")
-		return
+		return nil
 	case errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden) && !u.Revocations && !u.RemoteKista &&
 		!u.AnyMirror():
-		return // a remote that refuses the route is no kista known to this upstream: nothing to say every run
+		return nil // a remote that refuses the route is no kista known to this upstream: nothing to say every run
 	case errors.Is(err, errNotKista):
 		// kept: a suspended or unreachable kista is still the one switched on, or whose names "*" takes
 		if u.Revocations || u.AnyMirror() {
@@ -186,40 +221,45 @@ func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u s
 				problem("", "", err.Error())
 			}
 		}
-		return
+		return nil
 	case err != nil && !got.kista:
 		problem("", "", "reading the source's revocations: "+err.Error())
-		return
+		return nil
 	case err != nil: // cut over a cap: what was read is stored, nothing unlisted is forgotten
 		problem("", "", err.Error())
 	}
 	if res.DryRun {
-		return
+		return nil
 	}
 	builds, err := s.Store.UpstreamBuilds(ctx, u.TenantID, u.ID)
 	if err != nil {
 		problem("", "", err.Error())
-		return
+		return nil
 	}
 	if !got.notModified {
-		if err := s.storeRevocations(ctx, u, builds, got); err != nil {
+		if err := s.storeRevocations(ctx, u, builds, got, res); err != nil {
 			problem("", "", "storing the source's revocations: "+err.Error())
-			return
+			return nil
 		}
 	} else if err := s.Store.InTenantTx(ctx, u.TenantID, nil, func(tx *store.Tx) error {
 		return tx.SetUpstreamRemote(ctx, u.ID, true, got.etag)
 	}); err != nil {
 		problem("", "", err.Error())
-		return
+		return nil
 	}
 	s.applyRevocations(ctx, u, a, res, problem)
+	return nil
 }
 
 // storeRevocations stores the rows matching this upstream's builds (state and reason as last seen).
 // A stored row the remote no longer lists (after a complete read) or whose build is gone is
 // forgotten: deleted when nothing was applied or lifted of it, otherwise kept, unlisted, so it is
-// still lifted and a remote dropping it for a run undoes no lift.
-func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds map[[4]string]string, got remoteRevocations) error {
+// still lifted and a remote dropping it for a run undoes no lift. A row in a state this kista does
+// not know (spec 0046: a later release's) is a yank, the source's word before its reason: it never
+// lowers a stored stronger state, and it is listed, so it forgets nothing; once this kista is
+// upgraded the same row arrives with its real state and applies by the usual precedence. A run and
+// a bundle's import share this.
+func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds map[[4]string]string, got remoteRevocations, res *Result) error {
 	stored, err := s.Store.UpstreamRevocations(ctx, u.ID)
 	if err != nil {
 		return err
@@ -228,10 +268,17 @@ func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds
 	for _, id := range builds {
 		ids[id] = true
 	}
+	held := map[string]store.UpstreamRevocation{}
+	for _, r := range stored {
+		held[r.BuildID] = r
+	}
 	listed := map[string]bool{}
-	return s.Store.InTenantTx(ctx, u.TenantID, nil, func(tx *store.Tx) error {
+	unknown := 0
+	err = s.Store.InTenantTx(ctx, u.TenantID, nil, func(tx *store.Tx) error {
+		clear(listed) // the transaction may run again
+		unknown = 0
 		for _, row := range got.rows {
-			if store.RevocationRank(row.State) == 0 || !bodyHashRe.MatchString(row.BodyHash) {
+			if !bodyHashRe.MatchString(row.BodyHash) {
 				continue
 			}
 			id, ok := builds[[4]string{row.Name, row.Version, row.Platform, row.BodyHash}]
@@ -239,9 +286,21 @@ func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds
 				continue // nothing revoked ahead of time; a row listed twice taken once
 			}
 			listed[id] = true
+			state, reason := row.State, row.Reason
+			if store.RevocationRank(state) == 0 {
+				unknown++
+				word := "unknown"
+				if unknownStateRE.MatchString(row.State) {
+					word = row.State
+				}
+				state, reason = store.RevokeYanked, strings.TrimSuffix(word+": "+row.Reason, ": ")
+				if cur, ok := held[id]; ok && store.RevocationRank(cur.State) > store.RevocationRank(state) {
+					state, reason = cur.State, cur.Reason // listed still, and no weaker than it was
+				}
+			}
 			if err := tx.PutUpstreamRevocation(ctx, store.UpstreamRevocation{UpstreamID: u.ID, BuildID: id, TenantID: u.TenantID,
-				BodyHash: row.BodyHash, Name: row.Name, PackageVersion: row.Version, Platform: row.Platform, State: row.State,
-				Reason: store.CleanReason(row.Reason)}); err != nil {
+				BodyHash: row.BodyHash, Name: row.Name, PackageVersion: row.Version, Platform: row.Platform, State: state,
+				Reason: store.CleanReason(reason)}); err != nil {
 				return err
 			}
 		}
@@ -256,11 +315,17 @@ func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds
 			return nil
 		}
 		etag := ""
-		if got.complete { // a cut read is read again whole next time
+		// a cut read is read again whole next time; so is one with a state this kista does not know
+		// (spec 0046): once upgraded, it must read the row's real state, not be answered 304
+		if got.complete && unknown == 0 {
 			etag = got.etag
 		}
 		return tx.SetUpstreamRemote(ctx, u.ID, true, etag)
 	})
+	if err == nil && unknown > 0 {
+		res.Counts[countUnknownState] = unknown
+	}
+	return err
 }
 
 var bodyHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -371,7 +436,7 @@ func (s *Service) importRevocations(ctx context.Context, t store.Tenant, tg *tar
 			got.rows = append(got.rows, release.RevokedRow{Name: r.Name, Version: r.Version, Platform: r.Platform, BodyHash: r.BodyHash,
 				State: r.State, Reason: r.Reason})
 		}
-		if err := s.storeRevocations(ctx, tg.u, builds, got); err != nil {
+		if err := s.storeRevocations(ctx, tg.u, builds, got, res); err != nil {
 			problem("", "", "storing the bundle's revocations: "+err.Error())
 			return
 		}

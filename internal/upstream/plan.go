@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -192,7 +193,7 @@ func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, sel Pl
 }
 
 // planFeeds lists a plan's feeds (spec 0014 phase 1b): the tenant's active bundle-mode feeds (all,
-// or the named ones), merged by URL, each with the bodies it offers now and the last seq received
+// or the named ones; each takes again what it passed over, spec 0046), merged by URL, each with the bodies it offers now and the last seq received
 // (the lowest among feeds of one URL, so no feed's range starts above its cursor), and the plan's
 // sources whose files it may then be offered.
 func (s *Service) planFeeds(ctx context.Context, t store.Tenant, names []string, ups []store.Upstream, sources []bundle.PlanSource) ([]bundle.PlanFeed, error) {
@@ -257,6 +258,18 @@ func (s *Service) planFeeds(ctx context.Context, t store.Tenant, names []string,
 		}
 		bodies, err := s.Store.OfferedBodies(ctx, f)
 		if err != nil {
+			return nil, err
+		}
+		// spec 0046: what the feed passed over at a lower reader level than this binary's (or without
+		// content, level 0) is asked for again: its cursors go back before the plan reads them
+		level := attachment.ReaderLevel
+		if s.Feeds != nil {
+			level = s.Feeds.ReaderLevel()
+		}
+		if err := s.Store.InTenantTx(ctx, t.ID, []string{store.FeedLock(t.ID)}, func(tx *store.Tx) error {
+			_, err := tx.RetakeFeedCursors(ctx, f.ID, level)
+			return err
+		}); err != nil {
 			return nil, err
 		}
 		cur, err := s.Store.FeedCursors(ctx, f.ID)

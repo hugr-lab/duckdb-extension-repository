@@ -86,8 +86,9 @@ func TestManifestLicenses(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := bundle.DecodeStrict(data, &oldManifest{}); !errors.Is(err, bundle.ErrInvalid) {
-			t.Errorf("an older reader took a manifest with %s: %v", name, err)
+		// spec 0046: a reader that knows no licences ignores the members (v0.1.x refused them)
+		if err := bundle.Decode(data, &oldManifest{}); err != nil {
+			t.Errorf("an older reader refused a manifest with %s: %v", name, err)
 		}
 	}
 	// a bundle without licences is the same document as before
@@ -95,7 +96,7 @@ func TestManifestLicenses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := bundle.DecodeStrict(data, &oldManifest{}); err != nil || strings.Contains(string(data), "licen") {
+	if err := bundle.Decode(data, &oldManifest{}); err != nil || strings.Contains(string(data), "licen") {
 		t.Errorf("a bundle without licences: %v", err)
 	}
 }
@@ -106,7 +107,7 @@ func TestPlanLicenses(t *testing.T) {
 	if err := p.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	// an older exporter, which knows no licence request, refuses the plan
+	// an older exporter, which knows no licence request, ignores it (spec 0046; v0.1.x refused the plan)
 	type oldPlan struct {
 		Format     string              `json:"format"`
 		CreatedAt  time.Time           `json:"created_at"`
@@ -119,12 +120,12 @@ func TestPlanLicenses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := bundle.DecodeStrict(data, &oldPlan{}); !errors.Is(err, bundle.ErrInvalid) {
-		t.Errorf("an older exporter took a plan asking for licences: %v", err)
+	if err := bundle.Decode(data, &oldPlan{}); err != nil {
+		t.Errorf("an older exporter refused a plan asking for licences: %v", err)
 	}
 	q := p
 	q.Licenses, q.LicenseHolder = false, ""
-	if data, _ = json.Marshal(q); bundle.DecodeStrict(data, &oldPlan{}) != nil {
+	if data, _ = json.Marshal(q); bundle.Decode(data, &oldPlan{}) != nil {
 		t.Error("a plan without licences is not the same document as before")
 	}
 	for name, change := range map[string]func(p *bundle.Plan){

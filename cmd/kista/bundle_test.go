@@ -68,13 +68,15 @@ func bundleFixture(t *testing.T, dir, bundleFP string, edit func(*bundle.Manifes
 		p.Sources = append(p.Sources, ps)
 	}
 	planData, _ := json.Marshal(p)
+	planData = skew.rewrite(t, planData, skew.plan)
 	plan = filepath.Join(dir, "plan.json")
 	os.WriteFile(plan, planData, 0o644)
 	m.Plan.SHA256 = sha(planData)
 	md, _ := json.Marshal(m)
+	md = skew.rewrite(t, md, skew.manifest)
 	var out bytes.Buffer
 	w := bundle.NewWriter(&out)
-	if err := bundle.WriteHead(w, md, nil); err != nil {
+	if err := bundle.WriteHead(w, md, skew.key); err != nil {
 		t.Fatal(err)
 	}
 	w.Entry("sources/1/well-known.json", int64(len(wk)), bytes.NewReader(wk))

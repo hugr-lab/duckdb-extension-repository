@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"slices"
 	"strconv"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
@@ -86,10 +85,13 @@ func ValidFeedURL(u string) error {
 	return nil
 }
 
+// validFeedKinds checks a plan feed's kinds by their grammar, not against the kinds this binary
+// knows (spec 0046): an older exporter reads a newer site's plan. A site's own feed settings stay a
+// closed vocabulary, where a typo must fail.
 func validFeedKinds(kinds []string) error {
 	for i, k := range kinds {
-		if !slices.Contains(attachment.Kinds, k) || i > 0 && kinds[i-1] >= k {
-			return fmt.Errorf("%w: feed kinds %v: known kinds, sorted, each once", ErrInvalid, kinds)
+		if !attachment.KindRE.MatchString(k) || i > 0 && kinds[i-1] >= k {
+			return fmt.Errorf("%w: feed kinds: each [a-z][a-z0-9-]{0,15}, sorted, each once", ErrInvalid)
 		}
 	}
 	return nil
@@ -221,7 +223,7 @@ func ParseBatch(data []byte) ([]BatchEntry, error) {
 		return nil, fmt.Errorf("%w: a batch over %d bytes", ErrInvalid, MaxBatch)
 	}
 	var out []BatchEntry
-	if err := DecodeStrict(data, &out); err != nil {
+	if err := Decode(data, &out); err != nil {
 		return nil, err
 	}
 	for _, e := range out {

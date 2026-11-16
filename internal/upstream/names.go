@@ -65,6 +65,9 @@ func (s *Service) readNames(ctx context.Context, tenant string, u store.Upstream
 		if json.Unmarshal(buf.Bytes(), &ans) != nil || ans.API == nil || ans.Names == nil {
 			return out, errNotKista
 		}
+		if *ans.API > 1 { // spec 0046: checked as a guard, before anything of the answer is kept
+			return remoteNames{}, errNewerAPI
+		}
 		out.names = append(out.names, *ans.Names...)
 		if len(out.names) > maxRemoteNames {
 			out.names = out.names[:maxRemoteNames]
@@ -98,6 +101,9 @@ func (s *Service) discover(ctx context.Context, sc store.ServeChannel, u store.U
 		}
 	}
 	got, rerr := s.readNames(ctx, sc.Tenant.Name, u)
+	if errors.Is(rerr, errNewerAPI) { // spec 0046: the run fails; no name is read or removed
+		return u, fmt.Errorf("%w: %w", errFailed, rerr)
+	}
 	if rerr != nil {
 		problem(rerr.Error())
 		if len(got.names) == 0 {

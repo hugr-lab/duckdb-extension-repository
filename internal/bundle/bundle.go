@@ -141,7 +141,7 @@ func Open(r io.Reader, now time.Time, pinned func(fingerprint string) bool) (*Bu
 		}
 	}
 	var m Manifest
-	if err := DecodeStrict(b.ManifestBytes, &m); err != nil {
+	if err := Decode(b.ManifestBytes, &m); err != nil {
 		return nil, err
 	}
 	if err := m.Validate(now); err != nil {

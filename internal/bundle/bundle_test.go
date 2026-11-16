@@ -172,7 +172,8 @@ func TestKeysAndSignature(t *testing.T) {
 	}
 }
 
-func TestDecodeStrict(t *testing.T) {
+// Spec 0046: unknown members are ignored; duplicates, trailing data and another shape are refused.
+func TestDecode(t *testing.T) {
 	var v struct {
 		A int `json:"a"`
 		B struct {
@@ -180,21 +181,24 @@ func TestDecodeStrict(t *testing.T) {
 		} `json:"b"`
 	}
 	for doc, ok := range map[string]bool{
-		`{"a":1,"b":{"c":2}}`:            true,
-		`{"a":1,"b":{"c":2},"z":3}`:      false, // unknown field
-		`{"a":1,"a":2}`:                  false,
-		`{"a":1,"b":{"c":2,"c":3}}`:      false, // nested duplicate
-		`{"a":1,"b":{"c":2}} {}`:         false, // trailing data
-		`[{"a":1},{"a":1}]`:              false, // an array: not the struct
-		`{"a":1,"b":{"c":2}}` + "\n\t  ": true,
+		`{"a":1,"b":{"c":2}}`:                          true,
+		`{"a":1,"b":{"c":2},"z":3}`:                    true,  // an unknown member is ignored
+		`{"a":1,"b":{"c":2,"y":{"x":[1,{"w":null}]}}}`: true,  // at any depth
+		`{"a":1,"b":{"c":2},"z":{"k":1,"k":2}}`:        false, // a duplicate inside an unknown member
+		`{"a":1,"b":{"c":2},"Z":3}`:                    false, // the name rule holds for unknown members too
+		`{"a":1,"a":2}`:                                false,
+		`{"a":1,"b":{"c":2,"c":3}}`:                    false, // nested duplicate
+		`{"a":1,"b":{"c":2}} {}`:                       false, // trailing data
+		`[{"a":1},{"a":1}]`:                            false, // an array: not the struct
+		`{"a":1,"b":{"c":2}}` + "\n\t  ":               true,
 	} {
-		if err := bundle.DecodeStrict([]byte(doc), &v); (err == nil) != ok {
+		if err := bundle.Decode([]byte(doc), &v); (err == nil) != ok {
 			t.Errorf("%s: %v", doc, err)
 		}
 	}
 	// keys equal in two sibling objects are not duplicates
 	var w []map[string]int
-	if err := bundle.DecodeStrict([]byte(`[{"a":1},{"a":2}]`), &w); err != nil {
+	if err := bundle.Decode([]byte(`[{"a":1},{"a":2}]`), &w); err != nil {
 		t.Error(err)
 	}
 }
@@ -219,7 +223,7 @@ func TestManifestValidate(t *testing.T) {
 		"a core .well-known":       func(m *bundle.Manifest) { m.Sources[0].WellKnown = m.Sources[1].WellKnown },
 		"a .well-known path":       func(m *bundle.Manifest) { m.Sources[1].WellKnown.Path = "sources/../x/well-known.json" },
 		"a cell twice":             func(m *bundle.Manifest) { m.Sources[0].Cells[1].Name = "httpfs" },
-		"an unknown outcome":       func(m *bundle.Manifest) { m.Sources[0].Cells[1].Outcome = "lost" },
+		"no outcome":               func(m *bundle.Manifest) { m.Sources[0].Cells[1].Outcome = "" },
 		"a file on a missing cell": func(m *bundle.Manifest) { m.Sources[0].Cells[1].File = m.Sources[1].Cells[0].File },
 		"a file path":              func(m *bundle.Manifest) { m.Sources[1].Cells[0].File = "files/../x.gz" },
 		"a file not its hash":      func(m *bundle.Manifest) { m.Sources[1].Cells[0].SHA256 = strings.Repeat("e", 64) },
@@ -479,7 +483,7 @@ func TestReaderRefusals(t *testing.T) {
 		"a short signature":      cat(entry(bundle.ManifestEntry, '0', f.manifest(t)), entry(bundle.SigEntry, '0', make([]byte, 63)), eoa),
 		"a signature, no key":    cat(entry(bundle.ManifestEntry, '0', f.manifest(t)), sig, src, eoa),
 		"a key, no signature":    cat(entry(bundle.ManifestEntry, '0', f.manifest(t)), entry(bundle.PubEntry, '0', []byte("x")), eoa),
-		"a manifest not strict":  cat(entry(bundle.ManifestEntry, '0', append(f.manifest(t)[:len(f.manifest(t))-1], []byte(`,"x":1}`)...)), eoa),
+		"a manifest's key twice": cat(entry(bundle.ManifestEntry, '0', append(f.manifest(t)[:len(f.manifest(t))-1], []byte(`,"id":"x"}`)...)), eoa),
 		"a symlink manifest":     cat(entry(bundle.ManifestEntry, '2', nil), eoa),
 		"a truncated head":       head[:600],
 		"a bad header checksum":  cat(func() []byte { h := entry(bundle.ManifestEntry, '0', f.manifest(t)); h[0] = 'K'; return h }(), eoa),
@@ -595,7 +599,7 @@ func TestStrictKeys(t *testing.T) {
 		Outcome string `json:"outcome"`
 	}
 	for _, doc := range []string{`{"outcome":"missing","OUTCOME":"fetched"}`, `{"Outcome":"x"}`, `{"\u017fources":1}`, `{"outcome\u0000":"x"}`} {
-		if err := bundle.DecodeStrict([]byte(doc), &v); !errors.Is(err, bundle.ErrInvalid) {
+		if err := bundle.Decode([]byte(doc), &v); !errors.Is(err, bundle.ErrInvalid) {
 			t.Errorf("%s: %v", doc, err)
 		}
 	}

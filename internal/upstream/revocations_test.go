@@ -33,6 +33,7 @@ type fakeKista struct {
 	// to its first cursor, "empty" pages on from an empty page
 	status int
 	bad    string
+	api    int // the route's "api" (0: 1): a later wire major, spec 0046
 }
 
 func (k *fakeKista) set(rows ...release.RevokedRow) {
@@ -63,6 +64,7 @@ func (k *fakeKista) serve(w http.ResponseWriter, q *http.Request) {
 		return
 	}
 	b, _ := json.Marshal(k.rows)
+	b = append(b, byte(k.api))
 	sum := sha256.Sum256(b)
 	etag := `"` + hex.EncodeToString(sum[:8]) + `"`
 	start := 0
@@ -81,7 +83,7 @@ func (k *fakeKista) serve(w http.ResponseWriter, q *http.Request) {
 		size = 1000
 	}
 	end := min(start+size, len(k.rows))
-	ans := map[string]any{"api": 1, "rows": append([]release.RevokedRow{}, k.rows[start:end]...)}
+	ans := map[string]any{"api": max(k.api, 1), "rows": append([]release.RevokedRow{}, k.rows[start:end]...)}
 	if end < len(k.rows) {
 		ans["next"] = "p" + strconv.Itoa(end)
 	}

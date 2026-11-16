@@ -27,7 +27,7 @@ const (
 // The rules a report can break: an Error's Rule, stable for the SDK's tests.
 const (
 	RuleJSON    = "json"    // not a JSON object of the report's members and types
-	RuleStatus  = "status"  // not a licence status, or missing
+	RuleStatus  = "status"  // missing (a status this kista does not know is counted as other)
 	RuleLicense = "license" // not a licence id ([A-Za-z0-9_-]{1,64})
 	RuleEvents  = "events"  // more than 32 events, or more than 16 counters in one
 	RuleName    = "name"    // an event or counter name is not [a-z][a-z0-9_.]{0,63}
@@ -49,6 +49,10 @@ func refuse(rule, format string, args ...any) error {
 // Statuses are the licence statuses a report may give: a licence's, or missing for none.
 var Statuses = []string{string(license.Invalid), string(license.NotCovered), string(license.NotYetValid), string(license.Valid),
 	string(license.Grace), string(license.Expired), "missing"}
+
+// StatusOther is what a status this kista does not know is counted under (spec 0046): a later
+// SDK's, never refused.
+const StatusOther = "other"
 
 var (
 	nameRe = regexp.MustCompile(`^[a-z][a-z0-9_.]{0,63}$`)
@@ -74,7 +78,8 @@ type Event struct {
 }
 
 // Parse reads a report and checks its rules. Unknown members are ignored (a later SDK may send
-// more); an event named twice counts as one, summed.
+// more), and a status this kista does not know becomes StatusOther; an event named twice counts as
+// one, summed.
 func Parse(b []byte) (Report, error) {
 	var r Report
 	if len(b) > MaxSize {
@@ -91,8 +96,11 @@ func Parse(b []byte) (Report, error) {
 	if r.Version == "" || r.Platform == "" || r.DuckDBVersion == "" {
 		return r, refuse(RuleVersion, "version, platform and duckdb_version are required")
 	}
+	if r.Status == "" {
+		return r, refuse(RuleStatus, "status is required: one of %v", Statuses)
+	}
 	if !slices.Contains(Statuses, r.Status) {
-		return r, refuse(RuleStatus, "status is one of %v", Statuses)
+		r.Status = StatusOther
 	}
 	if r.License != "" && !jtiRe.MatchString(r.License) {
 		return r, refuse(RuleLicense, "license is a licence id, [A-Za-z0-9_-]{1,64}")

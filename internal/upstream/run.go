@@ -299,7 +299,9 @@ func (s *Service) run(ctx context.Context, u store.Upstream, res *Result, renew 
 	actor := authz.Actor{Kind: authz.ActorSystem, ID: "upstream:" + sc.Tenant.Name + "/" + u.Name}
 	res.actor = actor.String()
 	// spec 0039: the revocation pass first, whatever follows (the tenant's room, the matrix's caps)
-	s.revocationPass(rctx, sc, u, actor, res)
+	if err := s.revocationPass(rctx, sc, u, actor, res); err != nil {
+		return err
+	}
 	if u.AnyMirror() { // spec 0039: "*" on a mirror takes the names its kista remote lists
 		if u, err = s.discover(rctx, sc, u, res); err != nil {
 			return err
