@@ -1,6 +1,6 @@
 # Spec 0045: Received reports: the `report` kind, the feed over catalogue builds, and documents handed downstream
 
-- **Status**: draft (revised 2026-11-16 after three reviews, the owner's answers and a joint re-review)
+- **Status**: accepted (2026-11-16; the owner's answers of 2026-11-16; three reviews and a joint re-review applied)
 - **Date**: 2026-11-16
 - **Author**: vgsml, Claude
 
