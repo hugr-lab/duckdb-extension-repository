@@ -150,10 +150,13 @@ No new table. `feed_cursors` gains `waiting_from` (the lowest `seq` passed over)
 count), `waiting_why` (the last reason, for display) and `reader_level`.
 
 - **The reader level** is an integer constant in `internal/attachment`, raised whenever the kinds,
-  the media types, a readable document version or `v` grow.
+  the media types, a readable document version or `v` grow. A release that adds a kind (spec
+  0045's `report`) raises it.
 - **Waiting**: the cursor moves past the statement; `waiting_from` keeps the lowest, `waiting` is
-  raised, `reader_level` is the binary's. No document is fetched except where it had to be read
-  to find out. Nothing is stored that can be exhausted, so there is no cap.
+  raised, `reader_level` is the binary's. A row has one level: while it has waiting state, a new
+  wait keeps the lower one (an old replica waited at seq 12, the new one waits at seq 15; two
+  waits of different reasons). No document is fetched except where it had to be read to find
+  out. Nothing is stored that can be exhausted, so there is no cap.
 - **Retake**, before a feed's run and when a plan is written (not at a bundle's import): a cursor
   whose `reader_level` is below the binary's goes back to `waiting_from - 1` and its waiting state
   is cleared. This is a new store operation: `SetFeedCursor` only moves forward. An older replica
@@ -170,13 +173,21 @@ count), `waiting_why` (the last reason, for display) and `reader_level`.
 
 A feed with `export` on keeps a waiting statement exactly as it keeps a refusal today: in
 `feed_refusals`, bytes and signature, under `limits.ceilings.feed_kept` (unchanged in meaning).
-A bundle, and spec 0045's relay, carry it without content, with a note. Later statements of the
-body flow.
+A bundle, and spec 0045's relay, carry it without content. Its note is its kept reason, one of
+this spec's waiting reasons (`newer`, `unknown kind`, `media type`, `document version`). Later
+statements of the body flow.
 
 The receiver verifies it as any statement. One it cannot read waits by its own rules. One it can
-read, without content, also waits (`no content`) instead of being refused `bundle: no content`
-for good, with `reader_level` 0: every plan, or run, asks for it again until its content comes. A
-retake at the gateway replaces the kept row by the stored document.
+read waits too, but only when the note is one of those words, and at `reader_level` 0, so it is
+asked for again until the exporter is upgraded and carries the content. With any other note (a
+document removed or refused at the exporter, or of a kind its export feed does not take) it is
+refused `no content` for good, as today.
+
+A retake at the gateway deletes that feed's kept refusal rows of the body with `seq` at or above
+`waiting_from`; the replay keeps again what is still refused. Otherwise a waiting statement
+withdrawn or re-stated at the source before the upgrade would leave a kept row that every later
+bundle carries as waiting: the source sends only what it still offers, and `KeepFeedRefusal` does
+nothing on an existing row.
 
 ### The dash routes
 
@@ -189,11 +200,12 @@ retake at the gateway replaces the kept row by the stored document.
   never lowers a stored stronger state, and it is listed, so it never forgets a stored row (rule
   5). No rank changes. After an upgrade the same row arrives with its real state and applies by
   the existing precedence.
-- **Package type.** A reader of this release mirrors nothing from a channel that declares a type
-  other than its home channel's; such a read counts as incomplete and forgets nothing. Where a
-  channel declares its type is the package-type release item's, not this spec's.
+- **Package type.** How a remote channel declares its type is its own release item. It will be
+  declared in a way this release's reader already refuses or ignores safely; this spec adds no
+  rule for it.
 - **`POST …/feed`** reads `bodies` and `issuer` (spec 0045's relay selector, part of major 1 from
-  the start) and ignores other members. A request member that selects what is answered is a new
+  the start) and ignores other members. Before the relay exists, a request with an `issuer`
+  answers no statements. A request member that selects what is answered is a new
   route, never an added member: an older source would ignore it and answer something else.
 - `-/licenses`, `-/usage` and `-/license` carry no marker: major 1.
 
@@ -276,7 +288,7 @@ A docs page, **Compatibility** (`website/docs/compatibility.md`, linked from `up
   from a closed list, to administrators.
 - **Fail closed where ignoring could over-grant**: an audience that is not `readers` is
   `administrators`, in any major; an unknown revocation state is a yank; a higher `api` is not read
-  as 1; a channel of another type mirrors nothing.
+  as 1.
 - **Fail soft where it could only under-show**: an unknown kind, media type or document version
   waits.
 - **Rule 2 is a promise, not a check.** A producer that narrowed by an added member in major 1
@@ -296,9 +308,11 @@ A docs page, **Compatibility** (`website/docs/compatibility.md`, linked from `up
   feed's filter before waiting; the higher-major audience rule in its four cases; a review with an
   extra member at feed intake and at the attach route.
 - **Retake**: a raised reader level stores the document with no reset and re-judges an earlier
-  `size` refusal; a lower level retakes nothing; a reset with waiting state; a plan after a retake.
+  `size` refusal; a lower level retakes nothing; a second wait keeps the lower level; a reset
+  with waiting state; a plan after a retake.
 - **Export**: a waiting statement kept, carried through an export feed to a newer site, asked for
-  again and stored once its content comes.
+  again and stored once its content comes; a contentless statement with another note refused
+  `no content` for good; a gateway's retake deleting a kept row whose statement was withdrawn.
 - **Revocations**: an unknown state yanks, never lowers `blocked`, forgets nothing; after an
   upgrade the real state applies; `"api": 2` fails the run and keeps what is stored.
 - **Licences**: a `v: 2` token beside a stored `v: 1` keeps it; a name left out is removed.
@@ -320,7 +334,7 @@ Each sentence below becomes false and is amended with the code.
   cursor's outcomes gain "waits"). The spec does not state the `CHECK`; migration 0017's is dropped.
 - **0014**: `:455-456` and `:1373` (strict manifest: unknown members ignored); `:726-730` (what an
   export feed keeps gains waiting statements); `:851` and `:1494` (content not carried: waits when
-  the note says the exporter waits). The range rule (`:1490`, `:1496`) stands.
+  the note is a waiting reason, else refused as before). The range rule (`:1490`, `:1496`) stands.
 - **0021** `:229` and `website/docs/upstreams.md:970-973`: "decoded strictly" as the reason an
   older kista refuses a bundle with licences.
 - **0034** `:228-230`: the same reason, and "a source of a type an importer does not know is
