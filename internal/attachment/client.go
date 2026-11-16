@@ -56,6 +56,16 @@ type Feeds struct {
 	// TempDir holds a bundle import's documents while their batch is applied (spec 0014); "": the
 	// system's
 	TempDir string
+	// level stands in for ReaderLevel in tests (0: ReaderLevel)
+	level int
+}
+
+// ReaderLevel is the binary's reader level (spec 0046).
+func (f *Feeds) ReaderLevel() int {
+	if f.level != 0 {
+		return f.level
+	}
+	return ReaderLevel
 }
 
 // FeedSpec is what an administrator gives to add a feed.
@@ -233,7 +243,13 @@ func (f *Feeds) List(ctx context.Context, a authz.Actor, tenant string) ([]store
 	}
 	var out []store.Feed
 	err = f.Store.InTx(ctx, "", func(tx *store.Tx) error {
-		out, err = tx.ListFeeds(ctx, t.ID)
+		if out, err = tx.ListFeeds(ctx, t.ID); err != nil {
+			return err
+		}
+		waiting, err := tx.FeedsWaiting(ctx, t.ID)
+		for i := range out {
+			out[i].Waiting = waiting[out[i].ID]
+		}
 		return err
 	})
 	return out, err
@@ -247,7 +263,11 @@ func (f *Feeds) Get(ctx context.Context, a authz.Actor, tenant, name string) (st
 	}
 	var out store.Feed
 	err = f.Store.InTx(ctx, "", func(tx *store.Tx) error {
-		out, err = tx.GetFeed(ctx, t.ID, name)
+		if out, err = tx.GetFeed(ctx, t.ID, name); err != nil {
+			return err
+		}
+		waiting, err := tx.FeedsWaiting(ctx, t.ID)
+		out.Waiting = waiting[out.ID]
 		return err
 	})
 	return out, err
@@ -435,7 +455,8 @@ type RunResult struct {
 	Error   string         `json:"error,omitempty"`
 }
 
-// Refusal is a statement a run refused for good: its cursor moved past it.
+// Refusal is a statement a run refused for good: its cursor moved past it. A statement that waits
+// for an upgrade (spec 0046) is not one: it is counted as waiting.
 type Refusal struct {
 	IssuerID string `json:"issuer_id,omitempty"`
 	BodyHash string `json:"body_hash,omitempty"`
@@ -599,6 +620,14 @@ func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) err
 	if err != nil {
 		return err
 	}
+	// spec 0046: what a binary of a lower reader level passed over is taken again, before the cursors
+	// are read
+	if err := r.retake(ctx); errors.Is(err, errOvertaken) {
+		r.res.Counts["overtaken"]++
+		return nil
+	} else if err != nil {
+		return err
+	}
 	cursors, err := f.Store.FeedCursors(ctx, r.fd.ID)
 	if err != nil {
 		return err
@@ -619,6 +648,22 @@ func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) err
 		return errHeldByQuota
 	}
 	return nil
+}
+
+// retake rewinds the feed's cursors that passed over statements at a reader level below this
+// binary's (spec 0046), with what the feed kept for export of the rewound ranges: the run then
+// judges those ranges again.
+func (r *run) retake(ctx context.Context) error {
+	n := 0
+	err := r.write(ctx, false, func(tx *store.Tx) error {
+		var err error
+		n, err = tx.RetakeFeedCursors(ctx, r.fd.ID, r.f.ReaderLevel())
+		return err
+	})
+	if err == nil && n > 0 {
+		r.f.Log.Info("attachment: a feed takes again what it passed over", "feed", r.fd.Name, "bodies", n)
+	}
+	return err
 }
 
 // authorize takes a token for the feed's credential.
@@ -755,8 +800,9 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 	return nil
 }
 
-// one handles a statement: verified, then stored, refused for good (its cursor moves past it), or
-// failed for now (its body's cursor stays for the next run).
+// one handles a statement: verified, then stored, refused for good or left waiting for an upgrade
+// (its cursor moves past it either way; spec 0046), or failed for now (its body's cursor stays for
+// the next run).
 func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cursors map[string]int64, failed map[string]bool) error {
 	stmt, err1 := base64.StdEncoding.DecodeString(w.Statement)
 	sig, err2 := base64.StdEncoding.DecodeString(w.Signature)
@@ -781,7 +827,12 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 		return hold("encoding")
 	}
 	st, err := Verify(stmt, sig, r.pinned)
-	if err != nil {
+	malformed := errors.Is(err, ErrMalformed) // authentic, and it will not get better: refused for good
+	switch {
+	case malformed && st.Issuer == "":
+		r.refuse(Statement{}, "statement") // nothing files it: no cursor to move, none held
+		return nil
+	case err != nil && !malformed:
 		return hold("signature") // unverified: nothing of it is trusted, not even its body
 	}
 	if st.Issuer != r.fd.URL { // the source tenant's URL is its identity
@@ -795,8 +846,13 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 	if failed[st.BodyHash] || st.Seq <= cursors[st.BodyHash] {
 		return nil // after a failure, the body's later statements wait for the next run; or a replay
 	}
-	reason, err := r.store(ctx, st, stmt, sig)
+	reason, err := "statement", error(nil)
+	if !malformed {
+		reason, err = r.store(ctx, st, stmt, sig)
+	}
+	waits := Waits(reason) // passed over until an upgrade, not refused (spec 0046)
 	if err == nil && reason != "" && r.fd.Export {
+		// an export feed keeps a waiting statement as it keeps a refusal, under its reason
 		err = r.keepRefusal(ctx, st, stmt, sig, reason)
 	}
 	var tr transient
@@ -812,10 +868,17 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 		return nil
 	case err != nil:
 		return err
+	case waits:
+		r.res.Counts["waiting"]++
 	case reason != "":
 		r.refuse(st, reason)
 	}
-	err = r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, st.BodyHash, st.Seq) })
+	err = r.write(ctx, false, func(tx *store.Tx) error {
+		if err := tx.SetFeedCursor(ctx, r.fd.ID, st.BodyHash, st.Seq); err != nil || !waits {
+			return err
+		}
+		return tx.AddFeedWait(ctx, r.fd.ID, store.FeedWait{BodyHash: st.BodyHash, From: st.Seq, Count: 1, Why: reason, Level: r.f.ReaderLevel()})
+	})
 	if err == nil {
 		cursors[st.BodyHash] = st.Seq
 	}
@@ -864,7 +927,8 @@ func (r *run) download(ctx context.Context, st Statement) ([]byte, string, error
 	return buf.Bytes(), "", nil
 }
 
-// keepRefusal keeps an export feed's refusal with the statement's bytes (spec 0014).
+// keepRefusal keeps an export feed's refusal, or a statement that waits (spec 0046), with the
+// statement's bytes (spec 0014).
 func (r *run) keepRefusal(ctx context.Context, st Statement, stmt, sig []byte, reason string) error {
 	err := r.write(ctx, true, func(tx *store.Tx) error {
 		return tx.KeepFeedRefusal(ctx, r.t.ID, store.FeedRefusal{FeedID: r.fd.ID, BodyHash: st.BodyHash, Seq: st.Seq, Reason: reason,
@@ -919,8 +983,10 @@ func (r *run) keep(ctx context.Context, st Statement, stmt, sig []byte) error {
 }
 
 // store stores a verified statement: a withdrawal marks its document, a newer statement about a
-// document already held updates it, a new one is fetched and inserted. It answers a refusal's
-// reason, a transient error, or another error that stops the run.
+// document already held updates it, a new one is fetched and inserted. It answers a reason, a
+// transient error, or another error that stops the run. The reason is a refusal's, for good, or one
+// of the waiting reasons (Waits; spec 0046): a newer format, a kind, media type or document version
+// this binary does not read, of which nothing is applied until an upgrade takes it again.
 func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string, error) {
 	t := r.t
 	var existing *store.Attachment
@@ -936,7 +1002,22 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		return "", err
 	}
 	sigText := base64.StdEncoding.EncodeToString(sig)
-	if st.Withdrawn {
+	if st.Major() > 1 && !st.Withdrawn {
+		// a newer format: only its frozen members are read. It waits; when it is about a document
+		// held here, of the same body, newer than what is held and not for readers, the document is
+		// narrowed to administrators first, and never widened back (spec 0046)
+		if existing != nil && existing.RemovedAt.IsZero() && existing.Visibility != store.VisibleAdministrators &&
+			st.Audience != store.VisibleReaders && st.Seq > existing.Seq && st.BodyHash == existing.BodyHash {
+			err := r.f.Store.InTenantTx(ctx, t.ID, []string{lock(t)}, func(tx *store.Tx) error { return tx.NarrowFeedAttachment(ctx, existing) })
+			if err != nil {
+				return "", err
+			}
+			r.f.Log.Info("attachment: a document narrowed to administrators by a statement in a newer format", "feed", r.fd.Name,
+				"issuer_id", st.IssuerID)
+		}
+		return WaitNewer, nil
+	}
+	if st.Withdrawn { // of any major: a withdrawal can only remove
 		if existing == nil || !existing.RemovedAt.IsZero() && existing.Seq < st.Seq {
 			return "", r.keep(ctx, st, stmt, sig) // nothing held of it: an export feed keeps it for a site
 		}
@@ -960,8 +1041,11 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 	if len(r.fd.Kinds) > 0 && !slices.Contains(r.fd.Kinds, st.Kind) {
 		return "kind", nil
 	}
+	if !slices.Contains(Kinds, st.Kind) {
+		return WaitKind, nil
+	}
 	if mt, err := CanonicalMediaType(st.Kind, st.MediaType); err != nil || mt != st.MediaType {
-		return "media type", nil
+		return WaitMedia, nil
 	}
 	if ValidTitle(st.Title) != nil {
 		return "title", nil
@@ -1017,7 +1101,10 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 	if int64(len(content)) != st.Size || blob.ContentHash(content) != st.ContentHash {
 		return "content", nil
 	}
-	summary, err := Summarize(st.Kind, st.MediaType, content)
+	summary, err := SummarizeReceived(st.Kind, st.MediaType, content)
+	if errors.Is(err, ErrDocumentVersion) {
+		return WaitDocument, nil
+	}
 	if err != nil {
 		return "document", nil
 	}

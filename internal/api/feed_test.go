@@ -175,6 +175,32 @@ func TestFeedBetweenServers(t *testing.T) {
 			t.Errorf("%s: %d, %d statements", who, s, n)
 		}
 	}
+	// spec 0046: the route reads bodies and issuer and ignores other members (a newer subscriber's);
+	// a request that names an issuer asks for a relay's statements, and is answered none here
+	for name, c := range map[string]struct {
+		ask    string
+		status int
+		n      int
+	}{
+		"an unknown member":       {`{"bodies":[{"body_hash":"` + body + `","after_seq":0}],"since":"2026-11-01","want":{"kinds":["report"]}}`, 200, 1},
+		"an issuer":               {`{"bodies":[{"body_hash":"` + body + `","after_seq":0}],"issuer":"https://other.example/api/v1/tenants/x"}`, 200, 0},
+		"an issuer, no grant":     {`{"bodies":[],"issuer":"https://other.example/api/v1/tenants/x"}`, 404, 0},
+		"a key twice":             {`{"bodies":[],"bodies":[]}`, 400, 0},
+		"bodies of another shape": {`{"bodies":"all"}`, 400, 0},
+	} {
+		token := tok("feeder")
+		if name == "an issuer, no grant" {
+			token = tok("ivan")
+		}
+		r := m.call(t, "POST", "/api/v1/tenants/acme/feed", token, c.ask)
+		n := 0
+		if r.status == 200 {
+			n = len(r.json(t)["statements"].([]any))
+		}
+		if r.status != c.status || n != c.n {
+			t.Errorf("the feed route, %s: %d, %d statements", name, r.status, n)
+		}
+	}
 	for id, want := range map[string]int{rv.ID: 200, sb.ID: 404, store.NewID(): 404} {
 		if r := m.call(t, "GET", "/api/v1/tenants/acme/feed/documents/"+id, tok("feeder"), ""); r.status != want {
 			t.Errorf("document %s: %d", id, r.status)

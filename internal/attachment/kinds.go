@@ -74,17 +74,48 @@ func CanonicalMediaType(kind, declared string) (string, error) {
 
 // ValidTitle checks a title: at most 200 bytes of printable text.
 func ValidTitle(t string) error {
-	if t == "" || len(t) > maxTitle || !utf8.ValidString(t) || strings.ContainsFunc(t, func(r rune) bool {
-		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
-	}) {
+	if len(t) > maxTitle || !printable(t) {
 		return fmt.Errorf("%w: a title is 1 to %d bytes of printable text", store.ErrInvalid, maxTitle)
 	}
 	return nil
 }
 
-// Summarize checks a document against its kind and media type and computes its summary (spec 0011:
-// once, at intake). A document it cannot summarise is refused.
+// printable is a title's predicate: text that is not empty, valid UTF-8, with no control or format
+// character.
+func printable(t string) bool {
+	return t != "" && utf8.ValidString(t) && !strings.ContainsFunc(t, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	})
+}
+
+// ErrDocumentVersion is a document of its kind and media type in a version this binary does not
+// read (spec 0046): it wraps ErrDocument. Received from a feed, such a document waits for an upgrade
+// (or is stored by its kind's floor); attached here, it is refused.
+var ErrDocumentVersion = fmt.Errorf("%w: a version this kista does not read", ErrDocument)
+
+// Floor is what a kind reads of a document whatever its version (spec 0046): its summary. A kind
+// that declares one stores and shows a received document of a version this binary does not read
+// instead of leaving it waiting; the rest of the document is never interpreted.
+type Floor func(mediaType string, content []byte) (map[string]any, error)
+
+// floors are the kinds' declared floors. No kind of this release declares one: every one waits on
+// a version it does not read (spec 0045's report declares its own).
+var floors = map[string]Floor{}
+
+// Summarize checks a document attached here against its kind and media type and computes its
+// summary (spec 0011: once, at intake). A document it cannot summarise is refused.
 func Summarize(kind, mediaType string, content []byte) (string, error) {
+	return summarize(kind, mediaType, content, false)
+}
+
+// SummarizeReceived is Summarize for a document received from a feed or a bundle (spec 0046): a
+// review's unknown members are ignored, and a document in a version this binary does not read is
+// ErrDocumentVersion unless its kind declares a floor, which then summarises it.
+func SummarizeReceived(kind, mediaType string, content []byte) (string, error) {
+	return summarize(kind, mediaType, content, true)
+}
+
+func summarize(kind, mediaType string, content []byte, received bool) (string, error) {
 	var sum map[string]any
 	var err error
 	if kind == store.KindNotes {
@@ -109,12 +140,15 @@ func Summarize(kind, mediaType string, content []byte) (string, error) {
 		case OSVScanner:
 			sum, err = osvScanner(content)
 		case Review:
-			sum, err = review(content)
+			sum, err = review(content, received)
 		case Sigstore, DSSE:
 			sum, err = provenance(mediaType, content)
 		default:
 			err = fmt.Errorf("%w: media type %s", ErrDocument, mediaType)
 		}
+	}
+	if floor := floors[kind]; received && floor != nil && errors.Is(err, ErrDocumentVersion) {
+		sum, err = floor(mediaType, content)
 	}
 	if err != nil {
 		return "", err
@@ -197,11 +231,11 @@ func cyclonedxSBOM(b []byte) (map[string]any, error) {
 		SpecVersion string         `json:"specVersion"`
 		Components  []cdxComponent `json:"components"`
 	}
-	if err := json.Unmarshal(b, &d); err != nil || d.BOMFormat != "CycloneDX" {
+	if err := json.Unmarshal(b, &d); err != nil || d.BOMFormat != "CycloneDX" || d.SpecVersion == "" {
 		return nil, fmt.Errorf("%w: not a CycloneDX BOM", ErrDocument)
 	}
 	if !strings.HasPrefix(d.SpecVersion, "1.") {
-		return nil, fmt.Errorf("%w: CycloneDX %q", ErrDocument, d.SpecVersion)
+		return nil, fmt.Errorf("%w: CycloneDX %q", ErrDocumentVersion, clipWord(d.SpecVersion))
 	}
 	licences := map[string]bool{}
 	components, crypto := 0, 0
@@ -238,8 +272,11 @@ func spdx(b []byte) (map[string]any, error) {
 			LicenseConcluded string `json:"licenseConcluded"`
 		} `json:"packages"`
 	}
-	if err := json.Unmarshal(b, &d); err != nil || !strings.HasPrefix(d.SPDXVersion, "SPDX-2.") {
-		return nil, fmt.Errorf("%w: not an SPDX 2 document", ErrDocument)
+	if err := json.Unmarshal(b, &d); err != nil || !strings.HasPrefix(d.SPDXVersion, "SPDX-") {
+		return nil, fmt.Errorf("%w: not an SPDX document", ErrDocument)
+	}
+	if !strings.HasPrefix(d.SPDXVersion, "SPDX-2.") {
+		return nil, fmt.Errorf("%w: %q", ErrDocumentVersion, clipWord(d.SPDXVersion))
 	}
 	licences := map[string]bool{}
 	for _, p := range d.Packages {
@@ -375,8 +412,11 @@ func sarif(b []byte) (map[string]any, error) {
 			} `json:"results"`
 		} `json:"runs"`
 	}
-	if err := json.Unmarshal(b, &d); err != nil || d.Version != "2.1.0" {
-		return nil, fmt.Errorf("%w: not SARIF 2.1.0", ErrDocument)
+	if err := json.Unmarshal(b, &d); err != nil || d.Version == "" {
+		return nil, fmt.Errorf("%w: not SARIF", ErrDocument)
+	}
+	if d.Version != "2.1.0" {
+		return nil, fmt.Errorf("%w: SARIF %q", ErrDocumentVersion, clipWord(d.Version))
 	}
 	counts, n, scanned := map[string]int{}, 0, ""
 	for _, r := range d.Runs {
@@ -471,10 +511,15 @@ type ReviewFinding struct {
 	Detail   string `json:"detail"`
 }
 
-func review(b []byte) (map[string]any, error) {
+// review reads a kista.review.v1 document. Attached here, a member it does not know is refused (a
+// typo must fail); received from a feed or a bundle, it is ignored (spec 0046): a later analyser
+// may say more.
+func review(b []byte, received bool) (map[string]any, error) {
 	var r ReviewV1
 	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
+	if !received {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(&r); err != nil || r.Schema != "kista.review.v1" {
 		return nil, fmt.Errorf("%w: not a kista.review.v1 document", ErrDocument)
 	}
@@ -615,4 +660,12 @@ func firstOf(ss ...string) string {
 		}
 	}
 	return ""
+}
+
+// clipWord clips a document's own word for an error message: a version is shown, never trusted.
+func clipWord(s string) string {
+	if len(s) > 40 {
+		s = strings.ToValidUTF8(s[:40], "")
+	}
+	return s
 }

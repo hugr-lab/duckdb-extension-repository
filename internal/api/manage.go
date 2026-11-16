@@ -35,6 +35,17 @@ const noStore = "no-store"
 // limit bytes (maxBody for most routes), within a read deadline, no unknown or duplicate keys,
 // nothing after the object.
 func body(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	return readBody(w, r, v, limit, true)
+}
+
+// wireBody is body for a wire route another kista calls (spec 0046: the feed): members it does not
+// know are ignored, so a newer subscriber is answered. The management routes stay strict: a newer
+// client fails loudly instead of dropping what was asked.
+func wireBody(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	return readBody(w, r, v, limit, false)
+}
+
+func readBody(w http.ResponseWriter, r *http.Request, v any, limit int64, strict bool) bool {
 	mt, ps, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mt != "application/json" || len(ps) > 1 || len(ps) == 1 && !strings.EqualFold(ps["charset"], "utf-8") {
 		problem(w, http.StatusUnsupportedMediaType, typeMediaType, "the body is application/json")
@@ -62,7 +73,9 @@ func body(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
 		return false
 	}
 	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
+	if strict {
+		d.DisallowUnknownFields()
+	}
 	if err := d.Decode(v); err != nil {
 		problem(w, http.StatusBadRequest, typeInvalid, "the body does not match the request: "+jsonProblem(err))
 		return false
