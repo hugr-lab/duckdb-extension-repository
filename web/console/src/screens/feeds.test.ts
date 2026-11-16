@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { feedBody, feedBundleLine, feedCounts, feedStatus, type Feed, feedKinds } from './Feeds'
+import { feedBody, feedBundleLine, feedCounts, feedOlder, feedStatus, type Feed, feedKinds } from './Feeds'
+import { upstreamOlder } from './Upstreams'
 import { originText } from './Reports'
 
 // Spec 0011 phase 1b in the console: what a new feed sends, a run in a line, who stands behind a document.
@@ -28,6 +29,17 @@ describe('feeds', () => {
   })
   it('reads a run as its counts', () => {
     expect(feedCounts({ last_run: { counts: { offered: 40, received: 2, refused: 1, withdrawn: 0 } } } as unknown as Feed)).toBe('received 2 · refused 1')
+  })
+  it('says a source is newer than this kista (spec 0046)', () => {
+    expect(feedOlder({})).toBe('')
+    expect(feedOlder({ waiting: { 'unknown kind': 0 } })).toBe('')
+    expect(feedOlder({ waiting: { 'unknown kind': 2, newer: 1 } })).toBe(
+      'This kista is older than its source: documents wait for an upgrade (newer, unknown kind).')
+    expect(upstreamOlder(undefined)).toBe('')
+    expect(upstreamOlder({ started: '', ended: '', counts: { released: 3 } })).toBe('')
+    expect(upstreamOlder({ started: '', ended: '', counts: { revocations_unknown: 2 } })).toMatch(/2 revocations in a state it does not know/)
+    expect(upstreamOlder({ started: '', ended: '', counts: {}, error: "the run failed: the source's routes answer an api newer than this kista reads (1): upgrade this kista" }))
+      .toMatch(/not read until an upgrade/)
   })
   it('names a feed document by its verified source', () => {
     expect(originText({ origin: 'feed', issuer: 'https://enterest.example/api/v1/tenants/acme', source_origin: 'tenant', attached_by: 'f-1' })).toBe(

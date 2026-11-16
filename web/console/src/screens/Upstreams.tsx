@@ -97,6 +97,13 @@ export function counts(r?: RunResult): [string, number][] {
 }
 
 /** A run's counts in a line: released 12 · unchanged 340 · missing 3. */
+/** Spec 0046: an upstream whose source is newer than this kista, in a line; '' otherwise. */
+export function upstreamOlder(r?: RunResult) {
+  if (r?.error?.includes('an api newer than this kista reads')) return 'This kista is older than its source: its revocations and names are not read until an upgrade.'
+  const n = r?.counts?.revocations_unknown ?? 0
+  return n > 0 ? `This kista is older than its source: ${n} revocations in a state it does not know are taken as yanks.` : ''
+}
+
 export function countsLine(r?: RunResult) {
   if (!r) return ''
   return counts(r).map(([k, n]) => `${k} ${n}`).join(' · ') || 'nothing to do'
@@ -407,6 +414,7 @@ function LastRun({ u, onRefresh }: { u: Upstream; onRefresh: () => void }) {
         <div className="flex flex-col gap-3">
           <p className="m-0">{when(r.started)} – {when(r.ended)}{r.dry_run && <span className="chip ml-2 bg-surface-soft text-ink">dry run</span>}</p>
           {r.error && <ErrorBox error={r.error} />}
+          {upstreamOlder(r) && <Note>{upstreamOlder(r)}</Note>}
           <div className="flex flex-wrap gap-1.5">
             {counts(r).length === 0 ? <span className="text-ink-muted">nothing to do</span> : counts(r).map(([k, n]) => <span key={k} className="chip bg-surface-soft text-ink">{k} {n}</span>)}
           </div>

@@ -31,6 +31,8 @@ export interface Feed {
   last_run_at?: string
   last_run?: { counts?: Record<string, number>; refused?: { issuer_id?: string; reason: string }[]; error?: string }
   run_requested: boolean
+  /** Statements passed over because this kista is older than its source, by reason (spec 0046). */
+  waiting?: Record<string, number>
   etag: string
 }
 
@@ -78,6 +80,12 @@ export function feedStatus(f: Feed) {
   return statusWords[f.status] ?? f.status
 }
 
+/** Spec 0046: a feed whose source is newer than this kista, in a line; '' when nothing waits. */
+export function feedOlder(f: Pick<Feed, 'waiting'>) {
+  const why = Object.entries(f.waiting ?? {}).filter(([w, n]) => n > 0 && w !== '').map(([w]) => w).sort()
+  return why.length === 0 ? '' : `This kista is older than its source: documents wait for an upgrade (${why.join(', ')}).`
+}
+
 /** A run's counts, those above zero, in a line. */
 export function feedCounts(f: Feed) {
   return Object.entries(f.last_run?.counts ?? {}).filter(([k, n]) => n > 0 && k !== 'offered').map(([k, n]) => `${k} ${n}`).join(' · ')
@@ -122,6 +130,7 @@ export function Feeds() {
                 {f.last_success_at && f.last_success_at !== f.last_run_at && <div className="text-ink-muted">last success {when(f.last_success_at)}</div>}
                 <div className="text-ink-muted" title="held: statements waiting at the cap on what export feeds keep">{feedCounts(f)}</div>
                 {f.last_error && <div className="text-danger break-words">{f.last_error}</div>}
+                {feedOlder(f) && <div className="text-warning">{feedOlder(f)}</div>}
                 {f.run_requested && <div className="text-warning">a sync is requested</div>}
               </span>
             )],
