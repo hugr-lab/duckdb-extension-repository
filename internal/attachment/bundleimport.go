@@ -239,7 +239,7 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 	case err != nil: // a store error fails this target only
 		fi.Fail(err)
 		return nil
-	case Waits(reason):
+	case r.waits:
 		// this binary cannot read it: it waits for this kista's upgrade (spec 0046)
 		fi.wait(st, reason, r.f.ReaderLevel())
 	case reason == noContent && Waits(s.Note):
@@ -286,8 +286,11 @@ func (fi *FeedImport) check(st Statement, s BundleStatement) {
 		wait()
 		return
 	}
-	if mt, err := CanonicalMediaType(st.Kind, st.MediaType); err != nil || mt != st.MediaType {
+	if mt, err := CanonicalMediaType(st.Kind, st.MediaType); err != nil {
 		wait()
+		return
+	} else if mt != st.MediaType {
+		r.refuse(st, "media type")
 		return
 	}
 	switch {
@@ -354,6 +357,17 @@ func (fi *FeedImport) Finish(ctx context.Context, actor string, whole bool) (Run
 			}
 			if f.Mode != store.FeedBundle || f.State != store.FeedActive || f.BundleID != fi.bundle {
 				return errors.New("attachment: the feed was reset, paused or changed during the import")
+			}
+			// a plan written meanwhile took a cursor back (spec 0046: what waited is asked for again):
+			// moving it forward from where the import started would pass over what the plan asks for
+			now, err := tx.FeedCursors(fctx, r.fd.ID)
+			if err != nil {
+				return err
+			}
+			for body := range fi.ranges {
+				if now[body] < fi.cursors[body] {
+					return errors.New("attachment: a plan written during the import took the feed's cursors back: import a bundle of that plan")
+				}
 			}
 			for body, to := range moves {
 				if err := tx.SetFeedCursor(fctx, r.fd.ID, body, to); err != nil {

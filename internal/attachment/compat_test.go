@@ -51,6 +51,35 @@ type newerSource struct {
 	seq   int64
 	stmts []sourceStatement
 	docs  map[string][]byte // by issuer id
+	down  map[string]bool   // documents that fail to download for now
+	// onKeys runs as the keys file is fetched: a run's first request
+	onKeys func()
+}
+
+// spoil breaks a statement's signature.
+func (s *newerSource) spoil(seq int64) {
+	for i := range s.stmts {
+		if s.stmts[i].seq == seq {
+			s.stmts[i].sig = make([]byte, len(s.stmts[i].sig))
+		}
+	}
+}
+
+// wire is the source's statements of a body numbered in (after, upTo], as a bundle carries them.
+func (s *newerSource) wire(body string, after, upTo int64) []attachment.BundleStatement {
+	var out []attachment.BundleStatement
+	for _, st := range s.stmts {
+		if st.body == body && st.seq > after && st.seq <= upTo {
+			out = append(out, attachment.BundleStatement{Statement: st.stmt, Signature: st.sig})
+		}
+	}
+	return out
+}
+
+func (s *newerSource) keysFile() []byte {
+	pemStr, _ := extfile.MarshalPublicKeyPEM(&s.key.PublicKey)
+	b, _ := json.Marshal(map[string]any{"keys": []any{map[string]any{"fingerprint": s.fp, "public_key": pemStr}}, "since": "a later release's member"})
+	return b
 }
 
 type sourceStatement struct {
@@ -127,9 +156,10 @@ func (s *newerSource) Get(_ context.Context, raw string) ([]byte, http.Header, e
 	if !strings.HasSuffix(raw, "/attestation-keys") {
 		return nil, nil, egress.ErrNotFound
 	}
-	pemStr, _ := extfile.MarshalPublicKeyPEM(&s.key.PublicKey)
-	b, _ := json.Marshal(map[string]any{"keys": []any{map[string]any{"fingerprint": s.fp, "public_key": pemStr}}, "since": "a later release's member"})
-	return b, nil, nil
+	if s.onKeys != nil {
+		s.onKeys()
+	}
+	return s.keysFile(), nil, nil
 }
 
 func (s *newerSource) PostJSON(_ context.Context, _ string, _ http.Header, body []byte, _ int64) ([]byte, error) {
@@ -162,6 +192,8 @@ func (s *newerSource) Download(_ context.Context, raw string, o egress.DownloadO
 	switch {
 	case !ok:
 		return egress.Download{}, egress.ErrNotFound
+	case s.down[raw[strings.LastIndex(raw, "/")+1:]]:
+		return egress.Download{}, errors.New("the source is busy")
 	case int64(len(doc)) > o.MaxBytes:
 		return egress.Download{}, egress.ErrTooLarge
 	}
@@ -395,7 +427,7 @@ func TestFeedNewerAudience(t *testing.T) {
 	src.offer(s.other, "c", doc, admins, v2) // 6: another body than the document's: nothing
 	s.add("src", nil)
 	res := s.run("src")
-	if res.Counts["received"] != 3 || res.Counts["waiting"] != 3 || res.Error != "" {
+	if res.Counts["received"] != 3 || res.Counts["waiting"] != 3 || res.Counts["narrowed"] != 1 || res.Error != "" {
 		t.Fatalf("the run: %+v", res)
 	}
 	docs := s.docs()
@@ -428,6 +460,34 @@ func TestFeedNewerAudience(t *testing.T) {
 	}
 	if docs["a"].Visibility != store.VisibleAdministrators { // statement 1, replayed by the second feed, widens nothing
 		t.Errorf("document a was widened back")
+	}
+	if res.Counts["narrowed"] != 0 { // statement 4 again, at the second feed: narrowed once
+		t.Errorf("a replay narrowed again: %+v", res.Counts)
+	}
+
+	// the narrowing holds: the document's audience is administrators whatever its stored statement
+	// says, and an administrator does not widen it, as one never widens a document its source keeps
+	// to administrators
+	readers := store.VisibleReaders
+	a := docs["a"]
+	if !a.Narrowed || attachment.Audience(a) != store.VisibleAdministrators || attachment.Audience(docs["b"]) != store.VisibleReaders {
+		t.Fatalf("the narrowed document: narrowed %v, audience %q", a.Narrowed, attachment.Audience(a))
+	}
+	if _, err := s.svc.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), a.ID, &readers, nil, 0); !errors.Is(err, store.ErrInvalid) {
+		t.Fatalf("an administrator widened a narrowed document: %v", err)
+	}
+	// a statement this kista reads, newer than the document's, says who may see it again: the
+	// mark goes, the visibility stays the administrators' to widen
+	src.offer(s.body, "a", doc, nil, nil) // 9, for readers
+	if res := s.run("src"); res.Counts["updated"] != 1 {
+		t.Fatalf("a readable newer statement: %+v", res)
+	}
+	a = s.docs()["a"]
+	if a.Narrowed || a.Seq != 9 || attachment.Audience(a) != store.VisibleReaders || a.Visibility != store.VisibleAdministrators {
+		t.Fatalf("after a readable newer statement: %+v", a)
+	}
+	if got, err := s.svc.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), a.ID, &readers, nil, 0); err != nil || got.Visibility != store.VisibleReaders {
+		t.Fatalf("widening it then: %+v %v", got, err)
 	}
 }
 

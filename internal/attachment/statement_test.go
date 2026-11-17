@@ -121,7 +121,7 @@ func TestVerify(t *testing.T) {
 	}
 
 	// spec 0046: an unknown member is signed like the others and ignored, at any depth
-	x, xs := member(`"a":{"b":[1,"c",true,null,{"d":-2}]},"a2":"x"`)
+	x, xs := member(`"a":{"b":[1,"c",true,{"d":-2}]},"a2":"x"`)
 	if got, err := Verify(x, xs, pinned); err != nil || got.Kind != "review" || got.Seq != 7 || got.Major() != 1 || got.V != 0 {
 		t.Errorf("an extra member: %+v %v", got, err)
 	}
@@ -167,10 +167,15 @@ func TestVerify(t *testing.T) {
 		"audience a list":         {raw(`"audience":"readers"`, `"audience":["readers"]`), true},
 		"withdrawn a string":      {raw(`"title":"R"`, `"title":"R","withdrawn":"yes"`), true},
 		"kind null":               {raw(`"kind":"review"`, `"kind":null`), true},
-		"bad body":                {func() ([]byte, []byte) { s := base; s.BodyHash = "x"; return sign(s) }, false},
-		"zero seq":                {func() ([]byte, []byte) { s := base; s.Seq = 0; return sign(s) }, false},
-		"seq a string":            {raw(`"seq":7`, `"seq":"7"`), false},
-		"issuer a number":         {raw(`"issuer":"https://src.example/api/v1/tenants/x"`, `"issuer":1`), false},
+		// an unknown member carries integers, strings, booleans, arrays and objects only
+		"a null in an unknown member": {raw(`"title":"R"`, `"title":"R","unknown":null`), true},
+		"a nested null":               {raw(`"title":"R"`, `"title":"R","unknown":{"a":[1,{"b":null}]}`), true},
+		// the document's id unreadable: issuer, body and seq still file it
+		"issuer_id a number": {raw(`"issuer_id":"d1"`, `"issuer_id":7`), true},
+		"bad body":           {func() ([]byte, []byte) { s := base; s.BodyHash = "x"; return sign(s) }, false},
+		"zero seq":           {func() ([]byte, []byte) { s := base; s.Seq = 0; return sign(s) }, false},
+		"seq a string":       {raw(`"seq":7`, `"seq":"7"`), false},
+		"issuer a number":    {raw(`"issuer":"https://src.example/api/v1/tenants/x"`, `"issuer":1`), false},
 	}
 	for name, c := range malformed {
 		x, s := c.f()
@@ -178,7 +183,8 @@ func TestVerify(t *testing.T) {
 		if !errors.Is(err, ErrMalformed) || errors.Is(err, ErrStatement) {
 			t.Errorf("%s: %v", name, err)
 		}
-		if filed := st.Issuer == base.Issuer && st.BodyHash == base.BodyHash && st.Seq == 7 && st.IssuerID == "d1"; filed != c.filed ||
+		if filed := st.Issuer == base.Issuer && st.BodyHash == base.BodyHash && st.Seq == 7 &&
+			(st.IssuerID == "d1" || name == "issuer_id a number" && st.IssuerID == ""); filed != c.filed ||
 			st.Kind != "" || st.Title != "" {
 			t.Errorf("%s: filed as %+v", name, st)
 		}

@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -221,20 +222,38 @@ func Waits(word string) bool {
 	return word == WaitNewer || word == WaitKind || word == WaitMedia || word == WaitDocument
 }
 
-// OlderThanSource says, from what a feed passed over by reason, that this kista is older than the
-// feed's source (spec 0046), or nothing: for the administrators' view.
+// OlderThanSource says, from what a feed passed over by each body's last reason, that this kista
+// is older than the feed's source (spec 0046), or nothing: for the administrators' view.
 func OlderThanSource(waiting map[string]int) string {
+	why, n := reasons(waiting)
+	if n == 0 {
+		return ""
+	}
+	return "This kista is older than its source: documents wait for an upgrade (" + why + ")."
+}
+
+// ExporterOlderThanSource says, from the statements a bundle-mode feed received without content
+// because the exporting kista could not read them, that the exporting kista is the older one (spec
+// 0046), or nothing. This kista reads them: it asks for them again with every plan.
+func ExporterOlderThanSource(waiting map[string]int) string {
+	why, n := reasons(waiting)
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("The exporting kista is older than its source: %d statements arrived without content (%s).", n, why)
+}
+
+func reasons(waiting map[string]int) (string, int) {
 	var why []string
+	total := 0
 	for w, n := range waiting {
 		if n > 0 && w != "" {
 			why = append(why, "`"+w+"`")
+			total += n
 		}
 	}
-	if len(why) == 0 {
-		return ""
-	}
 	sort.Strings(why)
-	return "This kista is older than its source: documents wait for an upgrade (" + strings.Join(why, ", ") + ")."
+	return strings.Join(why, ", "), total
 }
 
 // ReaderLevel is what this binary reads of a feed (spec 0046): raised whenever the kinds, the media
@@ -344,8 +363,9 @@ func typed(m map[string]any, table map[string]byte) error {
 // over the received bytes; the bytes are their own canonical form (so no fraction or exponent in any
 // member). A failure there is ErrStatement: nothing of the statement is trusted. Then its members
 // are read: unknown ones are ignored; a frozen or known one of the wrong type or out of its bound is
-// ErrMalformed, with the statement's issuer, body and seq when they can be read (the statement is
-// authentic: its reader files it and moves on). A statement of a major above 1 answers its frozen
+// ErrMalformed, with the statement's issuer, body and seq when those three can be read (the
+// statement is authentic: its reader files it and moves its body's cursor past it; when they cannot
+// be read, no cursor can move, and the statement is refused again whenever it is sent). A statement of a major above 1 answers its frozen
 // members only: nothing else of it is read.
 func Verify(stmt, sig []byte, pinned map[string]*rsa.PublicKey) (Statement, error) {
 	if len(stmt) == 0 || len(stmt) > MaxStatement || !utf8.Valid(stmt) {
@@ -377,14 +397,24 @@ func Verify(stmt, sig []byte, pinned map[string]*rsa.PublicKey) (Statement, erro
 	malformed := func(why string) (Statement, error) {
 		return filed, fmt.Errorf("%w: %s", ErrMalformed, why)
 	}
+	filed = fileable(frozen(m))
 	if err := typed(m, frozenMembers); err != nil {
-		if typed(m, map[string]byte{"issuer": 's', "issuer_id": 's', "seq": 'i', "body_hash": 's'}) == nil {
-			filed = fileable(frozen(m))
-		}
 		return malformed(err.Error())
 	}
 	s := frozen(m)
-	filed = fileable(s)
+	// a member this reader does not know carries integers, strings, booleans, arrays and objects
+	// only, in any major
+	for name, v := range m {
+		if _, ok := frozenMembers[name]; ok || name == "summary" {
+			continue
+		}
+		if _, ok := knownMembers[name]; ok {
+			continue
+		}
+		if hasNull(v) {
+			return malformed("a null in " + name)
+		}
+	}
 	if _, ok := m["v"]; ok && s.V < 1 {
 		return malformed("v")
 	}
@@ -403,7 +433,23 @@ func Verify(stmt, sig []byte, pinned map[string]*rsa.PublicKey) (Statement, erro
 	return s, nil
 }
 
-// frozen reads a statement's frozen members, their types checked.
+func hasNull(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case []any:
+		return slices.ContainsFunc(x, hasNull)
+	case map[string]any:
+		for _, e := range x {
+			if hasNull(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// frozen reads a statement's frozen members; one of another type reads as its zero.
 func frozen(m map[string]any) Statement {
 	str := func(name string) string { v, _ := m[name].(string); return v }
 	num := func(name string) int64 {
@@ -416,13 +462,17 @@ func frozen(m map[string]any) Statement {
 		BodyHash: str("body_hash"), Audience: str("audience"), Withdrawn: withdrawn}
 }
 
-// fileable is what files a statement that cannot be read: its issuer, document, body and seq, when
-// each is within its bound; none otherwise.
+// fileable is what files a statement that cannot be read: its issuer, body and seq, when each is
+// within its bound (and its document's id, when that is too); none otherwise.
 func fileable(s Statement) Statement {
+	id := s.IssuerID
+	if id == "" || len(id) > 64 {
+		id, s.IssuerID = "", "-"
+	}
 	if s.checkFrozen() != nil {
 		return Statement{}
 	}
-	return Statement{Issuer: s.Issuer, IssuerID: s.IssuerID, Seq: s.Seq, BodyHash: s.BodyHash}
+	return Statement{Issuer: s.Issuer, IssuerID: id, Seq: s.Seq, BodyHash: s.BodyHash}
 }
 
 func clipID(s string) string {

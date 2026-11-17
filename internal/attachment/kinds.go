@@ -267,12 +267,20 @@ func cyclonedxSBOM(b []byte) (map[string]any, error) {
 
 func spdx(b []byte) (map[string]any, error) {
 	var d struct {
-		SPDXVersion string `json:"spdxVersion"`
+		SPDXVersion string          `json:"spdxVersion"`
+		Context     json.RawMessage `json:"@context"`
 		Packages    []struct {
 			LicenseConcluded string `json:"licenseConcluded"`
 		} `json:"packages"`
 	}
-	if err := json.Unmarshal(b, &d); err != nil || !strings.HasPrefix(d.SPDXVersion, "SPDX-") {
+	if err := json.Unmarshal(b, &d); err != nil {
+		return nil, fmt.Errorf("%w: not an SPDX document", ErrDocument)
+	}
+	// SPDX 3 is JSON-LD: no spdxVersion at its top, its @context one of spdx.org's
+	if d.SPDXVersion == "" && bytes.Contains(d.Context, []byte("spdx.org")) {
+		return nil, fmt.Errorf("%w: SPDX 3 (JSON-LD)", ErrDocumentVersion)
+	}
+	if !strings.HasPrefix(d.SPDXVersion, "SPDX-") {
 		return nil, fmt.Errorf("%w: not an SPDX document", ErrDocument)
 	}
 	if !strings.HasPrefix(d.SPDXVersion, "SPDX-2.") {
@@ -329,8 +337,9 @@ func vulnSummary(counts map[string]int, notAffected int, scannedAt string) map[s
 
 func cyclonedxVulns(b []byte) (map[string]any, error) {
 	var d struct {
-		BOMFormat string `json:"bomFormat"`
-		Metadata  struct {
+		BOMFormat   string `json:"bomFormat"`
+		SpecVersion string `json:"specVersion"`
+		Metadata    struct {
 			Timestamp string `json:"timestamp"`
 		} `json:"metadata"`
 		Vulnerabilities []struct {
@@ -344,6 +353,10 @@ func cyclonedxVulns(b []byte) (map[string]any, error) {
 	}
 	if err := json.Unmarshal(b, &d); err != nil || d.BOMFormat != "CycloneDX" {
 		return nil, fmt.Errorf("%w: not a CycloneDX VDR or VEX", ErrDocument)
+	}
+	// a VDR without a specVersion was always read; one that names another major is not
+	if d.SpecVersion != "" && !strings.HasPrefix(d.SpecVersion, "1.") {
+		return nil, fmt.Errorf("%w: CycloneDX %q", ErrDocumentVersion, clipWord(d.SpecVersion))
 	}
 	counts, notAffected := map[string]int{}, 0
 	for i, v := range d.Vulnerabilities {
@@ -511,9 +524,9 @@ type ReviewFinding struct {
 	Detail   string `json:"detail"`
 }
 
-// review reads a kista.review.v1 document. Attached here, a member it does not know is refused (a
-// typo must fail); received from a feed or a bundle, it is ignored (spec 0046): a later analyser
-// may say more.
+// review reads a kista.review.v1 document. Attached here, a member or a verdict it does not know
+// is refused (a typo must fail); received from a feed or a bundle, the member is ignored and the
+// verdict makes the review wait (spec 0046): a later analyser may say more.
 func review(b []byte, received bool) (map[string]any, error) {
 	var r ReviewV1
 	dec := json.NewDecoder(bytes.NewReader(b))
@@ -526,6 +539,10 @@ func review(b []byte, received bool) (map[string]any, error) {
 	switch r.Verdict {
 	case "approved", "conditional", "rejected":
 	default:
+		if received && r.Verdict != "" {
+			// a verdict of a later release is not guessed at: the review waits (spec 0046)
+			return nil, fmt.Errorf("%w: a review's verdict %q", ErrDocumentVersion, clipWord(r.Verdict))
+		}
 		return nil, fmt.Errorf("%w: a review's verdict is approved, conditional or rejected", ErrDocument)
 	}
 	at, err := time.Parse(time.RFC3339, r.AnalysedAt)

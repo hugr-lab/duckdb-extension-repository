@@ -38,10 +38,12 @@ type upstreamJSON struct {
 	Extensions []entryJSON     `json:"extensions"`
 	LastRunAt  string          `json:"last_run_at,omitempty"`
 	LastRun    json.RawMessage `json:"last_run,omitempty"`
-	CreatedAt  string          `json:"created_at"`
-	CreatedBy  string          `json:"created_by"`
-	Credential string          `json:"credential,omitempty"` // a configured credential's name (spec 0009 phase 3)
-	Usage      string          `json:"usage"`                // forward | off (spec 0012 phase 1c)
+	// OlderThanSource: what the last run met of a source newer than this kista (spec 0046)
+	OlderThanSource *upstream.SourceAhead `json:"older_than_source,omitempty"`
+	CreatedAt       string                `json:"created_at"`
+	CreatedBy       string                `json:"created_by"`
+	Credential      string                `json:"credential,omitempty"` // a configured credential's name (spec 0009 phase 3)
+	Usage           string                `json:"usage"`                // forward | off (spec 0012 phase 1c)
 	// spec 0039: the remote answers kista's revocations; the switch applying them
 	RemoteKista bool `json:"remote_kista"`
 	Revocations bool `json:"revocations"`
@@ -84,6 +86,9 @@ func (h *Handler) upstreamOf(u store.Upstream, channels map[string]string, c cal
 		o.Run = "dry_run_requested"
 	case !u.RequestedAt.IsZero():
 		o.Run = "requested"
+	}
+	if a, ok := upstream.AheadOf(u.LastRun); ok {
+		o.OlderThanSource = &a
 	}
 	if u.LastRun != "" && json.Valid([]byte(u.LastRun)) {
 		o.LastRun = json.RawMessage(u.LastRun)
