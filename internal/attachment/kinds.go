@@ -56,7 +56,7 @@ var ErrDocument = errors.New("attachment: the document")
 func CanonicalMediaType(kind, declared string) (string, error) {
 	mt, params, err := mime.ParseMediaType(declared)
 	if err != nil {
-		return "", fmt.Errorf("%w: media type %q", store.ErrInvalid, declared)
+		return "", fmt.Errorf("%w: %w: %q", store.ErrInvalid, errMediaSyntax, declared)
 	}
 	if mt == "application/json" && params["profile"] == "osv-scanner" {
 		mt = OSVScanner
@@ -70,6 +70,28 @@ func CanonicalMediaType(kind, declared string) (string, error) {
 		return "", fmt.Errorf("%w: kind %q (%s)", store.ErrInvalid, kind, strings.Join(Kinds, ", "))
 	}
 	return "", fmt.Errorf("%w: a %s is %s, not %q", store.ErrInvalid, kind, strings.Join(mediaTypes[kind], " or "), declared)
+}
+
+var errMediaSyntax = errors.New("not a media type")
+
+// RefusedMediaSpelling refuses, for good, a statement whose media type is one its kind takes in
+// another spelling (a parameter, another case), or is no media type at all: a statement names the
+// canonical form. Its own word, apart from the waiting reason WaitMedia, so that neither a kept
+// row nor a bundle's note can be read as the other.
+const RefusedMediaSpelling = "media type spelling"
+
+// MediaTypeVerdict judges a statement's media type for its kind (a kind this binary knows): ""
+// when the kind takes it as written, WaitMedia when the kind does not take it here (a later
+// release may), RefusedMediaSpelling otherwise.
+func MediaTypeVerdict(kind, declared string) string {
+	mt, err := CanonicalMediaType(kind, declared)
+	switch {
+	case errors.Is(err, errMediaSyntax), err == nil && mt != declared:
+		return RefusedMediaSpelling
+	case err != nil:
+		return WaitMedia
+	}
+	return ""
 }
 
 // ValidTitle checks a title: at most 200 bytes of printable text.

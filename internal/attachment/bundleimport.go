@@ -239,7 +239,7 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 	case err != nil: // a store error fails this target only
 		fi.Fail(err)
 		return nil
-	case r.waits:
+	case Waits(reason):
 		// this binary cannot read it: it waits for this kista's upgrade (spec 0046)
 		fi.wait(st, reason, r.f.ReaderLevel())
 	case reason == noContent && Waits(s.Note):
@@ -286,11 +286,12 @@ func (fi *FeedImport) check(st Statement, s BundleStatement) {
 		wait()
 		return
 	}
-	if mt, err := CanonicalMediaType(st.Kind, st.MediaType); err != nil {
+	switch v := MediaTypeVerdict(st.Kind, st.MediaType); {
+	case v == WaitMedia:
 		wait()
 		return
-	} else if mt != st.MediaType {
-		r.refuse(st, "media type")
+	case v != "":
+		r.refuse(st, v)
 		return
 	}
 	switch {

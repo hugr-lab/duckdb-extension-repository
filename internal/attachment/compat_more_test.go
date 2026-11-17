@@ -21,19 +21,44 @@ func TestFeedMediaSpelling(t *testing.T) {
 	s := newSubscriber(t)
 	s.src.offer(s.body, "spelt", []byte(reviewDoc), func(st *attachment.Statement) { st.MediaType = attachment.Review + "; charset=utf-8" }, nil)
 	s.src.offer(s.body, "later", []byte(reviewDoc), func(st *attachment.Statement) { st.MediaType = "application/vnd.kista.review.v9+json" }, nil)
+	s.src.offer(s.body, "none", []byte(reviewDoc), func(st *attachment.Statement) { st.MediaType = "not a media type;;" }, nil)
 	f := s.add("src", func(sp *attachment.FeedSpec) { sp.Export = true })
 	res := s.run("src")
-	if reasons(res)["media type"] != 1 || res.Counts["refused"] != 1 || res.Counts["waiting"] != 1 || res.Error != "" {
+	if reasons(res)[attachment.RefusedMediaSpelling] != 2 || res.Counts["refused"] != 2 || res.Counts["waiting"] != 1 || res.Error != "" {
 		t.Fatalf("the run: %+v", res)
 	}
 	w, _ := s.st.FeedWaits(ctx, f.ID)
 	if x := w[s.body]; x.From != 2 || x.Count != 1 || x.Why != attachment.WaitMedia {
 		t.Fatalf("the waiting state: %+v", w)
 	}
-	// both are kept for export under the same word; only the second is recorded as waiting
+	// each is kept for export under its own word: a site never reads the refusal's note as a wait
 	rs, _ := s.st.FeedRefusals(ctx, f.ID, s.body, 0, 10)
-	if len(rs) != 2 || rs[0].Reason != "media type" || rs[1].Reason != attachment.WaitMedia {
+	if len(rs) != 3 || rs[0].Reason != "media type spelling" || rs[1].Reason != "media type" || rs[2].Reason != "media type spelling" ||
+		attachment.Waits(rs[0].Reason) || !attachment.Waits(rs[1].Reason) {
 		t.Fatalf("kept: %+v", rs)
+	}
+}
+
+// A change of a feed that is committed answers with its record even when what the feed passed over
+// cannot be read then: the counts are left out, the change is not reported as failed.
+func TestFeedChangeAnswersWithoutCounts(t *testing.T) {
+	s := newSubscriber(t)
+	s.src.offer(s.body, "r", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "report", "application/x-report" }, nil)
+	s.add("src", nil)
+	s.run("src")
+	readers := false
+	got, err := s.feeds.Change(ctx, admin, "acme", "src", attachment.FeedChange{Readers: &readers}, 0)
+	if err != nil || got.Waiting[attachment.WaitKind] != 1 || got.Readers {
+		t.Fatalf("a change: %+v %v", got.Waiting, err)
+	}
+	s.feeds.FailWaitingRead(errors.New("the database is away"))
+	readers = true
+	got, err = s.feeds.Change(ctx, admin, "acme", "src", attachment.FeedChange{Readers: &readers}, 0)
+	if err != nil || !got.Readers || got.Waiting != nil {
+		t.Fatalf("a change whose counts could not be read: %+v %v %v", got.Readers, got.Waiting, err)
+	}
+	if got, err := s.feeds.Sync(ctx, admin, "acme", "src"); err != nil || got.RequestedAt.IsZero() || got.Waiting != nil {
+		t.Fatalf("a sync whose counts could not be read: %+v %v", got.Waiting, err)
 	}
 }
 
@@ -224,29 +249,34 @@ func TestBundleWaits(t *testing.T) {
 	src.offer(s.body, "newer", []byte(reviewDoc), nil, v2)                                                                                     // 3: waits here
 	src.offer(s.body, "gone", []byte(`{"not":"carried"}`), nil, nil)                                                                           // 4: readable, carried without content, the exporter's wait
 	src.offer(s.body, "spelt", []byte(reviewDoc), func(st *attachment.Statement) { st.MediaType = attachment.Review + ";charset=utf-8" }, nil) // 5
-	five := src.offer(s.body, "bad", []byte(reviewDoc), nil, nil)                                                                              // 6: does not verify
-	src.spoil(five)
+	// 6: readable, carried without content, the exporter refused it for its media type's spelling:
+	// not a wait, whatever the word resembles
+	src.offer(s.body, "gone2", []byte(`{"not":"carried either"}`), nil, nil)
+	seven := src.offer(s.body, "bad", []byte(reviewDoc), nil, nil) // 7: does not verify
+	src.spoil(seven)
 	delete(src.docs, "gone")
-	notes := map[int64]string{4: attachment.WaitKind}
+	delete(src.docs, "gone2")
+	notes := map[int64]string{4: attachment.WaitKind, 6: attachment.RefusedMediaSpelling}
 
-	fi, fd := s.bundleImport("air", 0, 6, true, notes)
+	fi, fd := s.bundleImport("air", 0, 7, true, notes)
 	res, err := fi.Finish(ctx, "os:1:t", true)
-	if err != nil || res.Counts["would_wait"] != 3 || res.Counts["would_store"] != 1 || reasons(res)["media type"] != 1 ||
-		reasons(res)["signature"] != 1 || res.Counts["waiting"] != 0 {
+	if err != nil || res.Counts["would_wait"] != 3 || res.Counts["would_store"] != 1 || reasons(res)[attachment.RefusedMediaSpelling] != 1 ||
+		reasons(res)["bundle: no content"] != 1 || reasons(res)["signature"] != 1 || res.Counts["waiting"] != 0 {
 		t.Fatalf("the dry run: %+v %v", res, err)
 	}
 	if cur, _ := s.st.FeedCursors(ctx, fd.ID); len(cur) != 0 {
 		t.Fatalf("a dry run moved cursors: %v", cur)
 	}
 
-	fi, _ = s.bundleImport("air", 0, 6, false, notes)
+	fi, _ = s.bundleImport("air", 0, 7, false, notes)
 	res, err = fi.Finish(ctx, "os:1:t", true)
-	if err != nil || fi.Failed() != nil || res.Counts["waiting"] != 3 || res.Counts["received"] != 1 || reasons(res)["media type"] != 1 {
+	if err != nil || fi.Failed() != nil || res.Counts["waiting"] != 3 || res.Counts["received"] != 1 ||
+		reasons(res)[attachment.RefusedMediaSpelling] != 1 || reasons(res)["bundle: no content"] != 1 {
 		t.Fatalf("the import: %+v %v %v", res, err, fi.Failed())
 	}
 	// the cursor stops below the statement that does not verify; the waits are recorded with it: a
 	// row has one level, the lower (0: the exporter's)
-	if cur, _ := s.st.FeedCursors(ctx, fd.ID); cur[s.body] != 5 {
+	if cur, _ := s.st.FeedCursors(ctx, fd.ID); cur[s.body] != 6 {
 		t.Fatalf("the cursor: %v", cur)
 	}
 	w, _ := s.st.FeedWaits(ctx, fd.ID)

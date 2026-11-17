@@ -824,8 +824,7 @@ func (c *feedCheck) entry(it bundle.Item) {
 
 // unknownMedia reports a statement whose kind does not take its media type here.
 func unknownMedia(st attachment.Statement) bool {
-	_, err := attachment.CanonicalMediaType(st.Kind, st.MediaType)
-	return err != nil
+	return attachment.MediaTypeVerdict(st.Kind, st.MediaType) == attachment.WaitMedia
 }
 
 // finish reports the last feed's statements whose document never came.

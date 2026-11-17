@@ -58,6 +58,8 @@ type Feeds struct {
 	TempDir string
 	// level stands in for ReaderLevel in tests (0: ReaderLevel)
 	level int
+	// readWaiting stands in, in tests, for the read of what a feed passed over after a change
+	readWaiting func(context.Context, *store.Feed) error
 }
 
 // ReaderLevel is the binary's reader level (spec 0046).
@@ -271,6 +273,24 @@ func (f *Feeds) Get(ctx context.Context, a authz.Actor, tenant, name string) (st
 	return out, err
 }
 
+// fillWaiting fills what a feed passed over into the answer of a change that is committed already:
+// a failure to read it is logged, and the record goes without the counts, never as the change's
+// error.
+func (f *Feeds) fillWaiting(ctx context.Context, fd *store.Feed) {
+	read := f.readWaiting
+	if read == nil {
+		read = func(ctx context.Context, fd *store.Feed) error {
+			return f.Store.InTx(ctx, "", func(tx *store.Tx) error { return showWaiting(ctx, tx, fd) })
+		}
+	}
+	if err := read(ctx, fd); err != nil {
+		fd.Waiting, fd.WaitingSource = nil, nil
+		if f.Log != nil {
+			f.Log.Warn("attachment: reading what a feed passed over, after its change", "feed", fd.Name, "error", err)
+		}
+	}
+}
+
 // showWaiting fills what a feed passed over, for the administrators' view.
 func showWaiting(ctx context.Context, tx *store.Tx, f *store.Feed) error {
 	waiting, err := tx.FeedsWaiting(ctx, f.TenantID)
@@ -381,7 +401,8 @@ func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, 
 	if err != nil {
 		return out, err
 	}
-	return out, f.Store.InTx(ctx, "", func(tx *store.Tx) error { return showWaiting(ctx, tx, &out) })
+	f.fillWaiting(ctx, &out)
+	return out, nil
 }
 
 // Remove removes a feed (expected: its version, 0 for any); its documents stay unless documents is
@@ -449,7 +470,8 @@ func (f *Feeds) Sync(ctx context.Context, a authz.Actor, tenant, name string) (s
 	if err != nil {
 		return out, err
 	}
-	return out, f.Store.InTx(ctx, "", func(tx *store.Tx) error { return showWaiting(ctx, tx, &out) })
+	f.fillWaiting(ctx, &out)
+	return out, nil
 }
 
 // --- runs ---
@@ -514,8 +536,6 @@ type run struct {
 	token    string
 	// quota: an export feed held a body at the quota; the run ends failing
 	quota bool
-	// waits: store's last reason is a waiting one, not a refusal (the words overlap: media type)
-	waits bool
 	// content reads a new document's content: from its source (a run), or from a bundle (spec 0014);
 	// a reason refuses the statement for good
 	content func(ctx context.Context, st Statement) ([]byte, string, error)
@@ -661,12 +681,6 @@ func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) err
 		return errHeldByQuota
 	}
 	return nil
-}
-
-// wait answers store with a waiting reason.
-func (r *run) wait(why string) (string, error) {
-	r.waits = true
-	return why, nil
 }
 
 // retake rewinds the feed's cursors that passed over statements at a reader level below this
@@ -869,7 +883,7 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 	if !malformed {
 		reason, err = r.store(ctx, st, stmt, sig)
 	}
-	waits := !malformed && r.waits // passed over until an upgrade, not refused (spec 0046)
+	waits := !malformed && Waits(reason) // passed over until an upgrade, not refused (spec 0046)
 	if err == nil && reason != "" && r.fd.Export {
 		// an export feed keeps a waiting statement as it keeps a refusal, under its reason
 		err = r.keepRefusal(ctx, st, stmt, sig, reason)
@@ -1003,11 +1017,10 @@ func (r *run) keep(ctx context.Context, st Statement, stmt, sig []byte) error {
 
 // store stores a verified statement: a withdrawal marks its document, a newer statement about a
 // document already held updates it, a new one is fetched and inserted. It answers a reason, a
-// transient error, or another error that stops the run. The reason is a refusal's, for good, or,
-// with r.waits set, a waiting reason (spec 0046): a newer format, a kind, media type or document
+// transient error, or another error that stops the run. The reason is a refusal's, for good, or
+// one of the waiting reasons (Waits; spec 0046): a newer format, a kind, media type or document
 // version this binary does not read, of which nothing is applied until an upgrade takes it again.
 func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string, error) {
-	r.waits = false
 	t := r.t
 	var existing *store.Attachment
 	err := r.f.Store.InTx(ctx, "", func(tx *store.Tx) error {
@@ -1040,7 +1053,7 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 				r.res.Counts["narrowed"]++
 			}
 		}
-		return r.wait(WaitNewer)
+		return WaitNewer, nil
 	}
 	if st.Withdrawn { // of any major: a withdrawal can only remove
 		if existing == nil || !existing.RemovedAt.IsZero() && existing.Seq < st.Seq {
@@ -1067,14 +1080,12 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		return "kind", nil
 	}
 	if !slices.Contains(Kinds, st.Kind) {
-		return r.wait(WaitKind)
+		return WaitKind, nil
 	}
-	// a media type the kind does not take here waits; another spelling of one it takes is refused
-	// for good, as it always was (a statement names the canonical form)
-	if mt, err := CanonicalMediaType(st.Kind, st.MediaType); err != nil {
-		return r.wait(WaitMedia)
-	} else if mt != st.MediaType {
-		return "media type", nil
+	// a media type the kind does not take here waits; another spelling of one it takes, or what
+	// is no media type, is refused for good, under a word of its own
+	if v := MediaTypeVerdict(st.Kind, st.MediaType); v != "" {
+		return v, nil
 	}
 	if ValidTitle(st.Title) != nil {
 		return "title", nil
@@ -1132,7 +1143,7 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 	}
 	summary, err := SummarizeReceived(st.Kind, st.MediaType, content)
 	if errors.Is(err, ErrDocumentVersion) {
-		return r.wait(WaitDocument)
+		return WaitDocument, nil
 	}
 	if err != nil {
 		return "document", nil
