@@ -36,38 +36,42 @@ var (
 // members reads a JSON object's members by their exact names, each as its raw value. Go's decoder
 // matches names without regard to case and keeps the last of two silently, so a document could say
 // one thing to this reader and another to the next: a member named in read that the object carries
-// twice, in any letter case, is refused. Members not named in read are carried unread.
-func members(raw json.RawMessage, read ...string) (map[string]json.RawMessage, error) {
+// twice, in any letter case, is refused. Members not named in read are carried unread. other names
+// the read members the object carries only in another spelling (Attention for attention): not
+// read, and not to be taken for absent.
+func members(raw json.RawMessage, read ...string) (out map[string]json.RawMessage, other map[string]bool, err error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
-		return nil, errors.New("not an object")
+		return nil, nil, errors.New("not an object")
 	}
-	out := map[string]json.RawMessage{}
+	out, other = map[string]json.RawMessage{}, map[string]bool{}
 	seen := map[string]bool{}
 	for dec.More() {
 		t, err := dec.Token()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		name, _ := t.(string)
 		var v json.RawMessage
 		if err := dec.Decode(&v); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, r := range read {
 			if !strings.EqualFold(name, r) {
 				continue
 			}
 			if seen[r] {
-				return nil, fmt.Errorf("the member %s twice", r)
+				return nil, nil, fmt.Errorf("the member %s twice", r)
 			}
 			seen[r] = true
 			if name == r {
 				out[r] = v
+			} else {
+				other[r] = true
 			}
 		}
 	}
-	return out, nil
+	return out, other, nil
 }
 
 // reportInt reads an integer of 0 to 2^31 written without a fraction or an exponent.
@@ -99,7 +103,7 @@ func reportList(raw json.RawMessage, max int, count string, read ...string) ([]m
 	}
 	out := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
-		m, err := members(e, read...)
+		m, _, err := members(e, read...)
 		if err != nil {
 			return nil, false
 		}
@@ -135,7 +139,7 @@ func report(content []byte, bodyHash string) (map[string]any, error) {
 	bad := func(why string) (map[string]any, error) {
 		return nil, fmt.Errorf("%w: a report's %s", ErrDocument, why)
 	}
-	m, err := members(content, "envelope", "report", "issue", "issued_at", "depth", "subject", "attention", "kinds_evaluated", "sections", "html")
+	m, other, err := members(content, "envelope", "report", "issue", "issued_at", "depth", "subject", "attention", "kinds_evaluated", "sections", "html")
 	if err != nil {
 		return nil, fmt.Errorf("%w: not a report: %v", ErrDocument, err)
 	}
@@ -165,7 +169,7 @@ func report(content []byte, bodyHash string) (map[string]any, error) {
 	if h := m["html"]; len(h) == 0 || h[0] != '"' {
 		return bad("html is a string") // checked as JSON already; never parsed, never read further
 	}
-	subject, err := members(m["subject"], "bodies")
+	subject, _, err := members(m["subject"], "bodies")
 	if err != nil {
 		return bad("subject.bodies is 1 to 1000 of {hash, read}")
 	}
@@ -175,7 +179,7 @@ func report(content []byte, bodyHash string) (map[string]any, error) {
 	}
 	listed, read := false, true
 	for _, raw := range bodies {
-		b, err := members(raw, "hash", "read")
+		b, _, err := members(raw, "hash", "read")
 		if err != nil {
 			return bad("subject.bodies entry is {hash, read}")
 		}
@@ -194,9 +198,13 @@ func report(content []byte, bodyHash string) (map[string]any, error) {
 	}
 	sum := map[string]any{"envelope": envelope, "report": id, "issue": issue, "issued_at": at.UTC().Format(time.RFC3339), "depth": depth,
 		"bodies": len(bodies), "read": read}
-	incomplete := false
+	// a summary member spelled only in another letter case is not read, and must not read as
+	// "nothing to say": the summary is incomplete
+	incomplete := other["attention"] || other["kinds_evaluated"] || other["sections"]
 	if raw, ok := m["attention"]; !ok {
-		sum["attention"] = []map[string]any{}
+		if !other["attention"] {
+			sum["attention"] = []map[string]any{}
+		}
 	} else if list, ok := reportList(raw, reportMaxAttention, "count", "kind", "count"); ok {
 		sum["attention"] = list
 	} else {

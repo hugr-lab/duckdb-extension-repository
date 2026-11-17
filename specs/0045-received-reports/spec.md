@@ -69,7 +69,7 @@ as any document (spec 0011). It carries no verdict; kista computes none. `review
 | `issue` | integer, 0 to 2^31 | shown; sorts heads a producer did not chain |
 | `issued_at` | RFC 3339 | shown |
 | `depth` | 1 to 32 bytes of `[a-z0-9_.-]` | how far the analysis went, shown on every row |
-| `subject.bodies` | 1 to 1,000 of `{hash: 64 hex, read: boolean}` | the body attached to must be listed; whether it was read |
+| `subject.bodies` | 1 to 1,000 of `{hash: 64 lowercase hex, read: boolean}` | the body attached to must be listed; whether it was read |
 | `attention` | at most 32 of `{kind: 1 to 32 bytes of [a-z0-9_.-], count: 0 to 2^31}` | points of attention by kind |
 | `kinds_evaluated` | integer, 0 to 2^31, optional | "none" differs from "not evaluated" |
 | `sections` | at most 16 of `{name, status}`, each 1 to 32 bytes of `[a-z0-9_.-]`, optional | coverage |
@@ -406,6 +406,15 @@ What the implementation found, where the text above says less or otherwise. None
   - A relayed answer that ends at a statement the feed cannot verify is logged and counted on the
     feed's record (`relay_stopped`, `relay_stopped_at`; migration 0055 holds the two columns).
   - A kept refusal replaces the earlier kept row of the same `issuer_id` and body.
+- **After the reviews** (the kind and its summaries):
+  - A summary member spelled only in another letter case (`Attention` without `attention`) is not
+    read and sets `incomplete`; a strict member spelled so is missing, and the report refused.
+  - A document with a second JSON value after the first is refused, for every JSON kind.
+  - A vulnerability is `informational` only when every rating it carries is `info` or `none`.
+  - A CycloneDX property of another shape leaves its component unmarked, never refuses the
+    document. `hash` is 64 lowercase hex.
+  - At the list bound a document is never read as fully checked: "N of at least M components
+    checked".
 - **A via feed whose relay answers no `keys`** (it does not hand the issuer on) is `failing` too,
   with a text of its own; no fingerprint is shown in either.
 - **Tests.** The end-to-end chain runs in `internal/api` (three servers over TLS: issuer, relaying

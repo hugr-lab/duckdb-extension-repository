@@ -123,7 +123,9 @@ export function vulnerabilitiesText(s: Record<string, unknown>) {
   const counted = typeof s.components === 'number'
   const components = num(s.components)
   const checked = num(s.checked)
-  const unchecked = counted && checked < components
+  // at the bound kista stopped counting: the document has components it never looked at, so it is
+  // not known to be fully checked
+  const unchecked = counted && (checked < components || components >= listBound)
   const coverage = counted && (unchecked || components === 0) ? `${checked} of ${least(components)} components checked` : ''
   const parts: string[] = []
   if (findings > 0) {

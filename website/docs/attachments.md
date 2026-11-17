@@ -107,7 +107,7 @@ no verdict and kista computes none ([spec 0045](https://github.com/hugr-lab/duck
 | `issue` | integer, 0 to 2^31 | shown; sorts heads a producer did not chain |
 | `issued_at` | RFC 3339 | shown |
 | `depth` | 1 to 32 bytes of `[a-z0-9_.-]` | how far the analysis went |
-| `subject.bodies` | 1 to 1,000 of `{hash: 64 hex, read: boolean}` | the body attached to must be listed; whether it was read |
+| `subject.bodies` | 1 to 1,000 of `{hash: 64 lowercase hex, read: boolean}` | the body attached to must be listed; whether it was read |
 | `attention` | at most 32 of `{kind: 1 to 32 bytes of [a-z0-9_.-], count: 0 to 2^31}` | points of attention by kind |
 | `kinds_evaluated` | integer, 0 to 2^31, optional | "none" differs from "not evaluated" |
 | `sections` | at most 16 of `{name, status}`, each 1 to 32 bytes of `[a-z0-9_.-]`, optional | coverage |
@@ -120,10 +120,12 @@ no verdict and kista computes none ([spec 0045](https://github.com/hugr-lab/duck
   `html`. A document that breaks one is refused (`400` at an attach, the refusal `document` at a
   feed or a bundle), and so is one whose `subject.bodies` does not list the body it is attached to.
 - **Everything else is carried unread.** Members are read by exact name; a document that repeats a
-  read member, in any letter case, is refused. Integers are written without a fraction or exponent.
+  read member, in any letter case, is refused, and so is one that holds a second JSON value after
+  the object. Integers are written without a fraction or exponent.
 - **A summary list that breaks its rule does not lose the report.** An `attention` or `sections`
   entry outside its grammar or bounds, or a `kinds_evaluated` that is not such an integer, drops
-  that member from the summary and sets `incomplete`; the console's row then says "summary
+  that member from the summary and sets `incomplete`; so does one of the three spelled only in
+  another letter case (`Attention` without `attention`), which is not read; the console's row then says "summary
   incomplete: open the report".
 - **`html`** is semantic HTML only: headings, paragraphs, lists, tables, code, `details`; no style,
   no script, no external resource. kista checks only that it is a string; its size is the
@@ -140,13 +142,17 @@ after the highest issue was withdrawn sees the lower one as current.
 
 ### Vulnerabilities summaries
 
-- `info` and `none` are `informational`: counted apart, outside `findings`.
+- `info` and `none` are `informational`: counted apart, outside `findings`. A vulnerability is
+  informational only when every rating it carries is `info` or `none`; one that also has an
+  unrated or unknown rating stays a finding.
 - In a CycloneDX document a component is **checked** only when it carries the property
   `kista:vulnerabilities:check` exactly once with the value `checked`; one that carries it exactly
   once with `not_checked` is counted as marked not checked. The summary has `components` (all of
-  them), `checked` and `not_checked`.
+  them), `checked` and `not_checked`. A property of another shape (a value that is not a string)
+  leaves its component unmarked; it does not refuse the document.
 - The console never says "no findings" while a component is unchecked or unmarked, but "N of M
-  components checked"; a count that reached the list bound (100,000) says "at least".
+  components checked"; a count that reached the list bound (100,000) says "at least", and a
+  document at that bound is never read as fully checked ("N of at least M components checked").
 - Freshness is the statement's `valid_until`: the console's 30-day flag shows only on a document
   without an unexpired one.
 

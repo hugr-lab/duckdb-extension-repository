@@ -158,6 +158,9 @@ describe('a vulnerabilities summary', () => {
     expect(vulnerabilitiesText({ findings: 0, informational: 2, components: 3, checked: 3 })).toBe('no findings; 2 informational')
     expect(vulnerabilitiesText({ findings: 99990, unknown: 99990, not_affected: 10 })).toBe('at least 99990 findings: 99990 unknown; 10 not affected')
     expect(vulnerabilitiesText({ findings: 0, components: 100000, checked: 99999 })).toBe('99999 of at least 100000 components checked')
+    // 100,001 components, the first 100,000 checked: kista counted to its bound and no further
+    expect(vulnerabilitiesText({ findings: 0, components: 100000, checked: 100000 })).toBe('100000 of at least 100000 components checked')
+    expect(vulnerabilitiesText({ findings: 1, high: 1, components: 100000, checked: 100000 })).toBe('1 findings: 1 high; 100000 of at least 100000 components checked')
     expect(summaryText('vulnerabilities', { findings: 0, components: 2, checked: 1 })).toBe('1 of 2 components checked')
   })
   it('is stale after 30 days only without an unexpired valid_until', () => {

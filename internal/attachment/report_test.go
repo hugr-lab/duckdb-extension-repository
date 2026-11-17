@@ -15,6 +15,8 @@ import (
 
 var reportBody = strings.Repeat("a", 64)
 
+const sbomDoc = `{"bomFormat":"CycloneDX","specVersion":"1.5","components":[{"type":"library"}]}`
+
 // reportDoc is a valid report about reportBody with members replaced or added (a nil value removes
 // one); raw appends text before the closing brace, for what a map cannot say (a duplicate).
 func reportDoc(over map[string]any, raw string) []byte {
@@ -94,9 +96,17 @@ func TestReport(t *testing.T) {
 	same("an unknown member in an entry", reportDoc(map[string]any{
 		"attention": []any{map[string]any{"kind": "network", "count": 3, "detail": "x"}, map[string]any{"kind": "native_code", "count": 0}}}, ""))
 	same("html of another shape of markup", reportDoc(map[string]any{"html": "<<<\u0000\u202e not html at all"}, ""))
-	// a member that only looks like a read one (another case, alone) is not read
-	if got, err := summaryOf(t, reportDoc(map[string]any{"kinds_evaluated": nil, "Kinds_Evaluated": 3}, "")); err != nil || got["kinds_evaluated"] != nil {
-		t.Errorf("a member in another case was read: %v %v", got, err)
+	// a summary member that only looks like a read one (another case, alone) is not read, and the
+	// summary says it is incomplete: never a reassuring empty line
+	for other, member := range map[string]string{"Kinds_Evaluated": "kinds_evaluated", "Attention": "attention", "SECTIONS": "sections"} {
+		got, err := summaryOf(t, reportDoc(map[string]any{member: nil, other: []any{map[string]any{"kind": "network", "count": 9}}}, ""))
+		if err != nil || got[member] != nil || got["incomplete"] != true {
+			t.Errorf("%s alone: %v %v", other, got, err)
+		}
+	}
+	// a strict member spelled otherwise is simply missing: refused
+	if _, err := summaryOf(t, reportDoc(map[string]any{"depth": nil, "Depth": "static"}, "")); !errors.Is(err, ErrDocument) {
+		t.Errorf("Depth alone: %v", err)
 	}
 
 	// a higher envelope version is stored and summarised alike, at an attach and from a feed: a
@@ -175,6 +185,8 @@ func TestReport(t *testing.T) {
 		"bodies twice in the subject":    reportDoc(map[string]any{"subject": nil}, `"subject":{"bodies":[{"hash":"`+reportBody+`","read":true}],"Bodies":[]}`),
 		"hash twice in a body":           reportDoc(map[string]any{"subject": nil}, `"subject":{"bodies":[{"hash":"`+reportBody+`","read":true,"Hash":"x"}]}`),
 		"read twice in a body":           reportDoc(map[string]any{"subject": nil}, `"subject":{"bodies":[{"hash":"`+reportBody+`","read":false,"read":true}]}`),
+		"a second value after it":        append(reportDoc(nil, ""), []byte(` {"html":"<p>another</p>"}`)...),
+		"a scalar after it":              append(reportDoc(nil, ""), []byte(" 1")...),
 		"nested too deep":                reportDoc(map[string]any{"x": json.RawMessage(strings.Repeat("[", 40) + strings.Repeat("]", 40))}, ""),
 	} {
 		for _, received := range []bool{false, true} {
@@ -310,6 +322,33 @@ func TestVulnerabilitiesSummary(t *testing.T) {
 	got = sum(CycloneDX, `{"bomFormat":"CycloneDX","components":[{"name":"a"},{"name":"b"}],"vulnerabilities":[]}`)
 	if got["findings"] != 0.0 || got["components"] != 2.0 || got["checked"] != 0.0 || got["not_checked"] != 0.0 {
 		t.Fatalf("nothing checked: %v", got)
+	}
+	// informational only when every rating says so: one that also carries an unrated or unknown
+	// rating stays a finding
+	got = sum(CycloneDX, `{"bomFormat":"CycloneDX","vulnerabilities":[{"ratings":[{"severity":"info"},{"severity":"unknown"}]},
+{"ratings":[{"severity":"none"},{}]},{"ratings":[{"severity":"info"},{"severity":"none"}]},{"ratings":[{"severity":"info"},{"severity":"medium"}]}]}`)
+	if got["findings"] != 3.0 || got["unknown"] != 2.0 || got["medium"] != 1.0 || got["informational"] != 1.0 {
+		t.Fatalf("mixed ratings: %v", got)
+	}
+	// a property of another shape does not refuse the document: the component is unmarked
+	got = sum(CycloneDX, `{"bomFormat":"CycloneDX","components":[
+{"properties":[{"name":"kista:vulnerabilities:check","value":true}]},
+{"properties":[{"name":"kista:vulnerabilities:check","value":{"checked":1}},{"name":7,"value":"x"}]},
+{"properties":"checked"},{"properties":[{"name":"kista:vulnerabilities:check","value":"checked"}]},
+{"properties":[{"name":"kista:vulnerabilities:check","value":"checked"},{"name":"kista:vulnerabilities:check","value":1}]}]}`)
+	if got["components"] != 5.0 || got["checked"] != 1.0 || got["not_checked"] != 0.0 {
+		t.Fatalf("properties of other shapes: %v", got)
+	}
+	// the counts stop at the list bound: a document with more components is not known fully checked,
+	// and the console says "at least"
+	many := strings.Repeat(`{"properties":[{"name":"kista:vulnerabilities:check","value":"checked"}]},`, maxListSize) + `{"name":"one more"}`
+	got = sum(CycloneDX, `{"bomFormat":"CycloneDX","components":[`+many+`]}`)
+	if got["components"] != float64(maxListSize) || got["checked"] != float64(maxListSize) {
+		t.Fatalf("over the list bound: %v", got)
+	}
+	// more than one JSON value is no document, of any kind
+	if _, err := Summarize(store.KindSBOM, CycloneDX, "", []byte(sbomDoc+` {"x":1}`)); !errors.Is(err, ErrDocument) {
+		t.Fatalf("an SBOM with a second value: %v", err)
 	}
 	// SARIF: none is informational, note stays low
 	got = sum(SARIF, `{"version":"2.1.0","runs":[{"results":[{"level":"none"},{"level":"note"},{"level":"error"}]}]}`)

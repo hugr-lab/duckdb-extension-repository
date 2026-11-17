@@ -198,10 +198,11 @@ func summarize(kind, mediaType, bodyHash string, content []byte, received bool) 
 	return string(b), nil
 }
 
-// checkJSON refuses what is not one JSON value within maxDepth levels.
+// checkJSON refuses what is not one JSON value within maxDepth levels: a second value after the
+// first is refused too (a reader that stops at the first would not see it).
 func checkJSON(b []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
-	depth := 0
+	depth, values := 0, 0
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -209,6 +210,11 @@ func checkJSON(b []byte) error {
 		}
 		if err != nil {
 			return fmt.Errorf("%w: not JSON: %v", ErrDocument, err)
+		}
+		if d, ok := tok.(json.Delim); depth == 0 && (!ok || d == '{' || d == '[') {
+			if values++; values > 1 {
+				return fmt.Errorf("%w: more than one JSON value", ErrDocument)
+			}
 		}
 		if d, ok := tok.(json.Delim); ok {
 			if d == '{' || d == '[' {
@@ -333,10 +339,6 @@ var severities = []string{"critical", "high", "medium", "low", "unknown"}
 // counted apart, outside findings.
 const informational = "informational"
 
-// ranks orders a vulnerability's ratings, the worst first: one rated only info or none is
-// informational, one without a rating unknown.
-var ranks = []string{"critical", "high", "medium", "low", informational, "unknown"}
-
 func severity(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
@@ -411,11 +413,21 @@ func cyclonedxVulns(b []byte) (map[string]any, error) {
 			notAffected++
 			continue
 		}
-		worst := "unknown"
+		// its worst rating; informational only when every rating it has is info or none: one that
+		// also carries an unrated or unknown rating stays a finding
+		worst, advisory := "unknown", len(v.Ratings) > 0
 		for _, r := range v.Ratings {
-			if s := severity(r.Severity); rank(s) < rank(worst) {
+			s := severity(r.Severity)
+			if s == informational {
+				continue
+			}
+			advisory = false
+			if rank(s) < rank(worst) {
 				worst = s
 			}
+		}
+		if advisory {
+			worst = informational
 		}
 		counts[worst]++
 	}
@@ -454,21 +466,33 @@ const (
 	CheckNotChecked = "not_checked"
 )
 
+// cdxChecked reads a component's properties loosely: a document whose properties are of another
+// shape (a value that is no string, properties that are no list) is not refused for it; such a
+// component is unmarked.
 type cdxChecked struct {
-	Properties []struct {
-		Name  string `json:"name"`
-		Value string `json:"value"`
-	} `json:"properties"`
-	Components []cdxChecked `json:"components"`
+	Properties json.RawMessage `json:"properties"`
+	Components []cdxChecked    `json:"components"`
 }
 
-// mark is the component's mark: the property's value when it is carried exactly once, else "".
+// mark is the component's mark: the property's value when it is carried exactly once, as a string,
+// else "".
 func (c cdxChecked) mark() string {
+	var props []struct {
+		Name  json.RawMessage `json:"name"`
+		Value json.RawMessage `json:"value"`
+	}
+	if json.Unmarshal(c.Properties, &props) != nil {
+		return ""
+	}
 	mark, n := "", 0
-	for _, p := range c.Properties {
-		if p.Name == CheckProperty {
-			mark = p.Value
-			n++
+	for _, p := range props {
+		var name, value string
+		if json.Unmarshal(p.Name, &name) != nil || name != CheckProperty {
+			continue
+		}
+		n++
+		if json.Unmarshal(p.Value, &value) == nil {
+			mark = value
 		}
 	}
 	if n != 1 {
@@ -478,12 +502,12 @@ func (c cdxChecked) mark() string {
 }
 
 func rank(s string) int {
-	for i, x := range ranks {
+	for i, x := range severities {
 		if x == s {
 			return i
 		}
 	}
-	return len(ranks)
+	return len(severities)
 }
 
 func openvex(b []byte) (map[string]any, error) {
