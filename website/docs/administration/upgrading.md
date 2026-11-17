@@ -192,9 +192,13 @@ so the operator declares it:
   against its issuer's URL.
 - **What changes.**
   - A sixth kind of document, `report`, with its media type `application/vnd.kista.report+json`;
-    a feed that names no kinds takes it. A feed whose `kinds` are set does not, until `report` is
-    added to them. The reader level rises, so a feed takes again, by itself, the reports an older
-    binary left waiting as an unknown kind.
+    a feed that names no kinds takes it. The reader level rises, so such a feed takes again, by
+    itself, the reports an older binary left waiting as an unknown kind.
+  - **A feed whose `kinds` are set refuses `report` for good** (`kind`) until `report` is added to
+    them (`feed set -kinds …,report`): its cursor moves past each report it refuses. Reports that
+    arrived before the kind was added do not come back by themselves: reset the feed's cursors
+    (remove the feed keeping its documents and add it again, or switch its `export` on; a
+    bundle-mode feed: `bundle reset -feed`), and it reads its source's history again.
   - **The default offer changes** (`offer: upstreams`): a feed and a bundle's plan now name the
     bodies of the catalogue builds that came from outside (an upstream's, a distributor's
     publisher's), released or not, where they named the bodies released from upstreams. A source

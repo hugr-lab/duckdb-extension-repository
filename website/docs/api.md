@@ -588,7 +588,7 @@ See [Access](access.md).
 
 | Route | Who |
 | --- | --- |
-| `GET, POST tenants/{t}/extensions/{ext}/attachments` | extension admin, auditor (`GET`); `POST` also publishers. `GET` takes `body_hash`, `kind` (`sbom`, `vulnerabilities`, `review`, `provenance`, `notes`, `report`), `origin`, and `source`, `version`, `head=true` (the chain heads held about a source's version) |
+| `GET, POST tenants/{t}/extensions/{ext}/attachments` | extension admin, auditor (`GET`); `POST` also publishers. `GET` takes `body_hash`, `kind` (`sbom`, `vulnerabilities`, `review`, `provenance`, `notes`, `report`), `origin`, and `source`, `version`, `head=true` (the chain heads held about a source's version; a withdrawn head is returned too, marked `withdrawn`) |
 | `GET, DELETE …/attachments/{id}`; `GET …/attachments/{id}/content` | extension admin, auditor (`GET`) |
 | `POST …/attachments/{id}/readers`, `/administrators`, `/feedable`, `/unfeedable` | tenant admin |
 | `GET tenants/{t}/blocks/{hash}/attachments`; `DELETE …/attachments/{id}` | tenant admin |

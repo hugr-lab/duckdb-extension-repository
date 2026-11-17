@@ -248,7 +248,7 @@ curl -X POST "https://repo.example.com/api/v1/tenants/acme/extensions/httpfs/att
 
 | Route | Who |
 | --- | --- |
-| `GET /api/v1/tenants/{t}/extensions/{ext}/attachments[?body_hash=&kind=&origin=&source=&version=&head=&cursor=&limit=]` | the extension's administrators, the tenant's auditors. `source` (`tenant`, `upstream:<name>`, `publisher:<name>`) and `version` narrow the list to the documents about that source's builds of that version; `head=true` to chain heads: together, what is held about a version that waits for a decision |
+| `GET /api/v1/tenants/{t}/extensions/{ext}/attachments[?body_hash=&kind=&origin=&source=&version=&head=&cursor=&limit=]` | the extension's administrators, the tenant's auditors. `source` (`tenant`, `upstream:<name>`, `publisher:<name>`) and `version` narrow the list to the documents about that source's builds of that version; `head=true` to chain heads, withdrawn ones included (each says `withdrawn`): together, what is held about a version that waits for a decision |
 | `GET …/extensions/{ext}/attachments/{id}` | the same: the record, with its ETag |
 | `GET …/extensions/{ext}/attachments/{id}/content` | the same: the document, as a download |
 | `POST …/extensions/{ext}/attachments?body_hash=&kind=[&supersedes=]` | administrators; publishers' credentials too |
@@ -759,7 +759,7 @@ attachments:            # file-only
 | `attachments.max_size` | 4 MiB | bytes, 64 KiB to 16 MiB (0: the default) |
 | `attachments.max_reads` | 8 | 1 to 256 (0: the default) |
 | `attachments.feed_interval` | 6h | at least 5m |
-| `attachments.feed_answer_max` | 1 MiB | 128 KiB to 1 MiB (0: the default): a relayed issuer's keys file (64 KiB at most) and one statement always fit |
+| `attachments.feed_answer_max` | 1 MiB | 128 KiB to 1 MiB (leave it out for the default; `0` is refused): room for a relayed issuer's keys file and a statement |
 
 The block is file-only: there are no `KISTA_ATTACHMENTS_*` variables. Statements also need
 `serve.public_url`. See [Configuration](configuration.md).

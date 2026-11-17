@@ -61,6 +61,6 @@ func validateAttachments(bad func(string, ...any), c Config) {
 		bad("attachments.feed_interval must be 0 (6h) or at least 5m")
 	}
 	if m := c.Attachments.FeedAnswerMax; m != 0 && (m < 128<<10 || m > 1<<20) {
-		bad("attachments.feed_answer_max must be 0 (1 MiB) or within 128 KiB..1 MiB")
+		bad("attachments.feed_answer_max must be within 128 KiB..1 MiB (unset: 1 MiB)")
 	}
 }
