@@ -594,19 +594,30 @@ waiting = waiting + ?, waiting_why = ? WHERE feed_id = ? AND body_hash = ?`,
 
 // FeedWaits reads a feed's waiting state per body.
 func (s *Store) FeedWaits(ctx context.Context, feedID string) (map[string]FeedWait, error) {
+	var out map[string]FeedWait
+	err := s.InTx(ctx, "", func(tx *Tx) (err error) { out, err = tx.FeedWaits(ctx, feedID); return })
+	return out, err
+}
+
+// FeedWaits reads a feed's waiting state per body, in a transaction.
+func (t *Tx) FeedWaits(ctx context.Context, feedID string) (map[string]FeedWait, error) {
+	rows, err := t.query(ctx, `SELECT body_hash, waiting_from, waiting, waiting_why, reader_level FROM feed_cursors
+WHERE feed_id = ? AND waiting_from IS NOT NULL`, feedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	out := map[string]FeedWait{}
-	err := s.eachRow(ctx, `SELECT body_hash, waiting_from, waiting, waiting_why, reader_level FROM feed_cursors
-WHERE feed_id = ? AND waiting_from IS NOT NULL`, []any{feedID}, func(sc func(...any) error) error {
+	for rows.Next() {
 		var w FeedWait
 		var why sql.NullString
-		if err := sc(&w.BodyHash, &w.From, &w.Count, &why, &w.Level); err != nil {
-			return err
+		if err := rows.Scan(&w.BodyHash, &w.From, &w.Count, &why, &w.Level); err != nil {
+			return nil, err
 		}
 		w.Why = why.String
 		out[w.BodyHash] = w
-		return nil
-	})
-	return out, err
+	}
+	return out, rows.Err()
 }
 
 // FeedWaiting counts what a feed passed over, by each body's last reason (for display: the count
