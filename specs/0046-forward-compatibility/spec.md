@@ -366,8 +366,15 @@ A docs page, **Compatibility** (`website/docs/compatibility.md`, linked from `up
   of an unknown kind, one with an extra member and one with `v: 2`. That harness builds bundles
   and runs the CLI; it does not reach an online remote, so the online cases (the feed, `api`, the
   relay) stay in their packages' tests above.
-- **Fixtures**: `testdata/wire/1/` holds the bytes this release writes for each format, signed.
-  They are never edited; every later release reads them.
+- **Fixtures**: `testdata/wire/1/` holds what this release writes on each wire format another
+  kista reads, as its own producers wrote it once: the serve handler's `.well-known`, `-/names`
+  and `-/revocations`, the API's attestation keys, feed answer and feed document, the feed client's
+  request, a plan encoded as `bundle plan` writes it, and the signed bundle an export made for it
+  (a file, a licence, a revocation, statements). The licence in the bundle is an issuer's (kista
+  issues none), signed with the repository's test key; `-/licenses` has no fixture. They are never
+  edited. `internal/api/wire_test.go` reads them with this release's readers (a mirror's run, a
+  feed's run, an import), and makes them again with its producers: a producer that no longer
+  writes a member a fixture has fails the test.
 
 ## Changes to earlier specs and docs
 

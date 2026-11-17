@@ -1,7 +1,1 @@
-{
-  "api": 1,
-  "names": [
-    "acl",
-    "tresor"
-  ]
-}
+{"api":1,"names":["demo","tresor","wire"]}

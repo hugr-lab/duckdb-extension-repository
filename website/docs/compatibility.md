@@ -148,8 +148,9 @@ type stays within them.
 - **Rule 2 is a promise, not a check.** A producer that narrowed by an added member in major 1
   would be over-applied by an older reader, and no reader can detect it. The frozen `audience`
   bounds what that could expose.
-- Each row is held by a test: the wire fixtures (`testdata/wire/1/`, the bytes `v0.2.0` writes,
-  which every later release reads), the strict config loader, `min_reader`, the console's
-  `contract` constant.
+- Each row is held by a test: the wire fixtures (`testdata/wire/1/`: what `v0.2.0`'s own producers
+  wrote on the dash routes, the feed and a bundle, which every later release reads and must still
+  write every member of), the strict config loader, `min_reader`, the console's `contract`
+  constant.
 
 The trial tags `v0.1.0` to `v0.1.4` are outside these rules.

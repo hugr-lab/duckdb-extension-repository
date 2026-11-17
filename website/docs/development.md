@@ -536,5 +536,7 @@ start with the
 - A change to a wire format, the admin API, the CLI's output, the config file, the schema or the
   console's mount contract follows the rules of [Compatibility](compatibility.md): what a later
   release may add, and what it never changes within a major. The wire fixtures in
-  `testdata/wire/1/` are the bytes `v0.2.0` writes; they are never edited or regenerated, and
-  `cmd/kista/skew_test.go` reads them and plays a newer exporter's bundle against this binary.
+  `testdata/wire/1/` are what `v0.2.0`'s producers wrote (its README says which wrote what); they
+  are never edited or regenerated. `internal/api/wire_test.go` reads them with the real readers and
+  fails when a producer stops writing a member they have; `cmd/kista/skew_test.go` plays a newer
+  exporter's bundle against this binary.

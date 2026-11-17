@@ -1,9 +1,1 @@
-{
-  "keys": [
-    {
-      "fingerprint": "sha256:d2038be9a35306e78c335ce3b86beca22de9c87dfd0b68e27afbd0a280a98b2c",
-      "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq2mb96cl945GEipWql++\nOVAjwMb7jOb9tpr9DN955qHiqVi6OeE2Tqo8tAt+sxdc9Q0KvPSHaxbEusC2ldBZ\nTsAudofN7dkNYHnRXa9enLZ5lfdKkBvwSsc++3Lywalt/3k9zgMMzISN2i5di25m\n4PlTF+wepSmHw2DYfZel/Qk3owD14OHuBLNzz9DIxiMgXssNLQJMTiPRWJRWK3kr\ndqiVljZdGV+4xpGdlLbpi8Ve1G4lxLlUth9uFWB6k1YzwSzpU3DYrHryAQhUxO09\nteNVPHpZmMNUon8klUVHoTL8aifvB6WkR7mcnMLah6K56MfgAw4sv9cuaJKmss01\nmQIDAQAB\n-----END PUBLIC KEY-----\n",
-      "state": "active"
-    }
-  ]
-}
+{"keys":[{"id":"01a1e6e1-b909-71c5-aa09-f6796649976b","fingerprint":"sha256:73e44d0860130822116de6914d60855aa508368f78c1e259b86aee49de216299","state":"active","public_key":"-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAz3MnxaSVtryEa75u9Bmc\nWHkw2wHigj+/eLSqZYqzNTOX+wPhigSPQGv0DiTQkqyBMq8Q92EnqoxiKCD3v/Nc\nw3wdugVkeWQJZBnwhjmUq05RvC+LyGDndlHTo3Evx/D3yWcqmIhbfVD1mVtdhdAA\ns+EHCLewcZF7IrYAhka1sN0pS7BwPbmrOYcuGVunu5NhARg9TuyLHDW69sydDm+3\nGVWDDaPFUiBe/kb95No/kXf0l7f22NLzduIsjLqoOQ2RtTHVKRU5WuXF+9BXZ/h/\nveTCxjSK7Sce6DnIYFXlezT8KE1br4H7Xqd0DW52m3J+Nbmh/nLkpS2pH1Ms2XLt\nSQIDAQAB\n-----END PUBLIC KEY-----\n"}]}

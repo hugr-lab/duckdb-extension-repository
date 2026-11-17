@@ -1,0 +1,40 @@
+{
+  "format": "kista-bundle-plan/v1",
+  "created_at": "2026-11-17T00:21:55.741034Z",
+  "tenant": "site",
+  "bundle_keys": [
+    "sha256:7f7500e7efc48f80e3ee5ace75885af5d8c401743f4824546e5bfb6a7a137f01"
+  ],
+  "sources": [
+    {
+      "kind": "repository",
+      "prefix": "https://kista.example/acme/prod",
+      "keys": [
+        "sha256:f7ff628ae1c86a0f2589cd46a4c761778d5b8d58aba10e28c94023431e7f6b58"
+      ],
+      "cells": [
+        {
+          "duckdb_version": "v2.0.0",
+          "platform": "linux_amd64",
+          "name": "wire",
+          "versions": []
+        }
+      ]
+    }
+  ],
+  "feeds": [
+    {
+      "url": "https://kista.example/api/v1/tenants/acme",
+      "keys": [
+        "sha256:73e44d0860130822116de6914d60855aa508368f78c1e259b86aee49de216299"
+      ],
+      "kinds": [],
+      "sources": [
+        0
+      ],
+      "bodies": []
+    }
+  ],
+  "licenses": true,
+  "accepts_revocations": true
+}
