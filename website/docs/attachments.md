@@ -462,7 +462,7 @@ For each run:
 Cursors are per (feed, body):
 
 - **Stored, or refused for good**: the cursor moves past the statement, and a refusal is recorded
-  with its reason: `kind` (not accepted by the feed), `media type` (another spelling of a type the
+  with its reason: `kind` (not accepted by the feed), `media type spelling` (another spelling of a type the
   kind takes: a statement names the canonical form), `title`, `size`, `content` (does
   not match the statement), `document` (does not parse as its media type), `changed` (a held
   document's content or body differs), `body` (a withdrawal for another body), `not held`,
@@ -478,7 +478,8 @@ Cursors are per (feed, body):
   wait for an upgrade". An upgraded kista takes them again by
   itself ([Compatibility](compatibility.md#waiting-and-taking-again)). A bundle-mode feed counts
   apart (`waiting_without_content`) the statements that arrived without content because the
-  exporting kista could not read them, and says "The exporting kista is older than its source".
+  exporting kista could not read them, and says "The exporting kista is older than its source". A
+  body with both kinds of wait is counted there whole, until the exporter carries the content.
 - **A transient failure** (a fetch, egress, a document the source no longer serves): the cursor
   stays, and the body's later statements wait for the next run.
 - **Not verified** (`encoding`, `signature`: an unpinned key, bad bytes or a field name that breaks

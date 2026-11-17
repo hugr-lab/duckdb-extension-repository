@@ -130,7 +130,7 @@ refused `kind`, as today):
 | `v` above 1, otherwise | waits (`newer`) |
 | a kind the binary does not know | waits (`unknown kind`) |
 | known kind, a `media_type` the kind does not take here | waits (`media type`) |
-| known kind, another spelling of a media type it takes (a parameter, another case) | refused for good (`media type`), as before: a statement names the canonical form |
+| known kind, another spelling of a media type it takes (a parameter, another case), or what is no media type | refused for good (`media type spelling`): a statement names the canonical form. The word is its own, apart from the waiting reason, so neither a kept row nor a bundle's note is read as the other |
 | a document version the binary does not read (item 3; also SPDX 3 as JSON-LD, a CycloneDX VDR other than `1.x`, a review's unknown `verdict`) | waits (`document version`) |
 | an `audience` other than `readers` | stored for `administrators` |
 | an `origin` that passes `ValidTitle`'s predicate, at most 80 bytes | stored and shown as text |
@@ -216,7 +216,7 @@ nothing on an existing row.
   with that reason.
 - **A revocation with an unknown state is a yank.** At intake (`storeRevocations`, shared with the
   bundle import) a state other than the three is stored as `yanked`, with the source's word
-  prefixed to `reason` when it is `[a-z][a-z0-9_-]{0,15}`, else under the fixed label `unknown` (the word goes before
+  prefixed to `reason` when it is `[a-z][a-z0-9_-]{0,15}`, else (an empty or missing state too) under the fixed label `unknown` (the word goes before
   the source's cleaned reason, which is cut to leave it room). It never lowers a stronger state
   stored for a row the source still listed (one the source had dropped is not brought back by a
   state this kista cannot read), and it is listed, so it never forgets a stored row (rule 5). Such
@@ -253,11 +253,16 @@ nothing on an existing row.
 - **One unknown thing fails its own part**: a source of an unknown package type is left out with a
   problem; a cell with an unknown outcome is that cell's problem; an unknown revocation state is a
   yank; a licence of a higher `v` is refused by itself.
-  - Nothing of a left-out source is decoded, and none of a cell's members beside its key once its
-    outcome is unknown; such a cell counts as naming its extension for the source's licences.
+  - Nothing of a left-out source is decoded. Of a cell in an unknown outcome, beside its key, only
+    its `file` is read, to read that entry through; none of its other members is checked. Such a
+    cell counts as naming its extension for the source's licences.
   - The tar entries of a part left out (a left-out source's, the file of a cell in an unknown
-    outcome) are read through without counting toward the cap on entries read through (64 MiB):
-    the bundle's size and the import's watchdog bound them.
+    outcome) are read through without counting toward the cap on entries read through (64 MiB),
+    and nothing is remembered of them: a reader's memory does not grow with entries the manifest
+    does not name. What bounds them is the bundle's whole size, which every import path caps by
+    the same managed setting: `bundles.max_size` for an upload, and for the bytes
+    `kista admin bundle import` reads from a file, standard input or `imports/`. The import's
+    watchdog bounds only idle time and rate, not a total.
   - `kista bundle sign` skips a licence of a higher `v` by itself, naming it, and signs the bundle.
   - The refusal of a higher `format` names the reader ("this kista is older than the bundle's
     writer"): the reader may be an importer, an exporter reading a plan, `sign` or `inspect`.
@@ -276,7 +281,12 @@ bundle's tar, a licence's payload members, forwarded usage.
   body's last one.
 - Statements that arrived without content because the **exporting** kista could not read them
   (level 0) are not this kista's to upgrade for, and are said apart: "The exporting kista is older
-  than its source: N statements arrived without content (`unknown kind`)."
+  than its source: N statements arrived without content (`unknown kind`)." A body's row has one
+  level, the lower: a body with waits of both kinds is shown whole under this line until the
+  exporter carries the content.
+- An upstream's `older_than_source` is what it last learned by reading its source's revocations
+  (or meeting a newer `api`): a run that does not reach them (a dry run, a failure, a bundle that
+  carries none) keeps it, since the yanks stored then still stand.
 - A higher `api` is the upstream's `failing` state with its reason.
 - **What was added** (additive members and counts, by the compatibility rules):
   - a feed's record: `waiting` and `waiting_without_content` (counts by each body's last reason);
@@ -372,8 +382,10 @@ A docs page, **Compatibility** (`website/docs/compatibility.md`, linked from `up
   request, a plan encoded as `bundle plan` writes it, and the signed bundle an export made for it
   (a file, a licence, a revocation, statements). The licence in the bundle is an issuer's (kista
   issues none), signed with the repository's test key; `-/licenses` has no fixture. They are never
-  edited. `internal/api/wire_test.go` reads them with this release's readers (a mirror's run, a
-  feed's run, an import), and makes them again with its producers: a producer that no longer
+  edited: a list of their SHA-256 is checked. `internal/api/wire_test.go` reads them with this
+  release's readers (a mirror's run, a feed's run, an import; the feed route answers the fixture's
+  request, and an exporter takes the fixture's plan, though its pins are the fixture's source's, so
+  no bundle is made from it), and makes them again with its producers: a producer that no longer
   writes a member a fixture has fails the test.
 
 ## Changes to earlier specs and docs

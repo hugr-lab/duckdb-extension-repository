@@ -43,21 +43,21 @@ list, to administrators.
 | A statement of a higher `v` | leaves it **waiting** (`newer`). A withdrawal is applied: it can only remove. One about a document it holds, newer than what it holds, of the same body and not for `readers`, narrows the document to administrators first (`narrowed` in the run): its audience is then administrators, and no administrator widens it, until a statement this kista reads says who may see it |
 | A statement of a kind it does not know | waiting (`unknown kind`), unless the feed's own `kinds` leave the kind out: then it is refused, as any kind the administrator left out |
 | A known kind with a media type the kind does not take here | waiting (`media type`) |
-| A known kind with another spelling of a media type it takes (a parameter, another case) | refused for good (`media type`), as before: a statement names the canonical form |
+| A known kind with another spelling of a media type it takes (a parameter, another case), or with what is no media type | refused for good (`media type spelling`): a statement names the canonical form |
 | A document in a version it does not read (CycloneDX other than 1.x, SPDX other than 2.x, SPDX 3 as JSON-LD too, SARIF other than 2.1.0, a review with a `verdict` it does not know) | waiting (`document version`) |
 | An `audience` other than `readers` | the document is stored for administrators |
 | An `origin` it does not know | stored and shown as text (printable, at most 80 bytes) |
 | A statement that does not verify, or breaks the member-name rule | the body is held, as before (`signature`) |
 | An authentic statement with a known member of the wrong type or out of its bounds, or `null` in a member it does not know | refused for good (`statement`): its body's cursor moves past it when its `issuer`, `body_hash` and `seq` can be read; when they cannot, no cursor can move, and it is refused again whenever the source sends it |
 | A `kista.review.v1` document with a member it does not know | read, at a feed and from a bundle; the attach route stays strict |
-| A [revocation](upstreams.md#revocations-from-a-kista) in a state it does not know | a yank, the source's word before its reason; it never lowers a stronger state stored for a row the source still listed, and forgets nothing |
+| A [revocation](upstreams.md#revocations-from-a-kista) in a state it does not know (an empty or missing one too) | a yank, the source's word before its reason; it never lowers a stronger state stored for a row the source still listed, and forgets nothing |
 | `-/names` or `-/revocations` answering an `api` above 1 | the upstream's run fails with its reason; nothing is read, stored or forgotten. Switching the upstream's revocations on, or giving it `*`, is refused with the same reason |
 | A [licence](licensing.md) of a higher `v` | refused (`v`). In the relay, the licence stored for its name stays until its own expiry and grace; a name left out is still removed |
 | An SDK usage report with a `status` it does not know | counted under `other` |
 | A [bundle](upstreams.md#bundle-mode)'s plan, manifest or batch with a member it does not know | reads it as before; the member is ignored |
 | A plan or a manifest of a higher `format` | refused whole, saying that the kista reading it is the one to upgrade ("this kista is older than the bundle's writer"): the manifest binds every file |
-| A bundle's source of a package type it does not know | left out with a problem, at an import and (a plan's) at an export; nothing of it is read, its entries are read through without counting toward the cap on entries read through, and the rest is taken |
-| A bundle's cell with an outcome it does not know | that cell's problem; what the cell holds stays, and nothing else of the cell is read |
+| A bundle's source of a package type it does not know | left out with a problem, at an import and (a plan's) at an export; nothing of it is read, its entries are read through without counting toward the cap on entries read through (the bundle's whole size is bounded by `bundles.max_size`, for an upload and for what `bundle import` reads), and the rest is taken |
+| A bundle's cell with an outcome it does not know | that cell's problem; what the cell holds stays. Of the cell only its file's name is read, to read that entry through |
 | A bundle's licence of a higher `v`, at `kista bundle sign` | skipped by itself, named in a line; the bundle is signed |
 | A request to `POST …/feed` with a member it does not know | answered as before; with `issuer` (a relay's selector) it answers no statements |
 
@@ -106,6 +106,10 @@ The exporting kista is older than its source: 2 statements arrived without conte
 
 The cost is the gateway's to end: until it is upgraded, every plan asks each such body's range again
 from its first waiting statement, and every bundle carries that range again.
+
+A body's row has one level, the lower. A body with both kinds of wait (a statement this kista
+cannot read, and one that arrived without content) is shown whole under the exporter's line until
+the exporter carries the content; this kista's own line shows the bodies that have only its own.
 
 ### The member-name rule
 

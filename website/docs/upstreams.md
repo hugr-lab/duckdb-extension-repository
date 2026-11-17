@@ -564,7 +564,8 @@ reads):
    source is never touched.
 3. It stores them with the remote's state and reason (cleaned: printable, at most 400 bytes). A row
    in a state this kista does not know (a newer source's) is stored as a yank, the source's word
-   before its reason (`recalled: …`; `unknown` when it is not a short lower-case word): it never
+   before its reason (`recalled: …`; `unknown` when it is not a short lower-case word, or is empty
+   or missing): it never
    lowers a stronger state stored for a row the source still listed (one it had dropped is not
    brought back), it counts as listed, and the run counts it
    (`revocations_unknown`) and says on the upstream's page and in `upstream show` that this kista is
@@ -586,7 +587,9 @@ a new route. The value is still checked: a source answering a higher one **fails
 reason, and nothing is read, stored or forgotten ([Compatibility](compatibility.md)). Such a source
 is not taken as a kista of this wire major either: switching the upstream's revocations on, or
 adding `*` to it, is refused (`400`) with the same reason. The upstream's record says so
-(`older_than_source`: `api`, or `revocations_unknown` with the count).
+(`older_than_source`: `api`, or `revocations_unknown` with the count), and keeps saying it through
+runs that do not reach the source's revocations (a dry run, a failure): the yanks stored then still
+stand.
 
 A remote that answers no revocations (an older kista, another server, a suspended or deleted
 tenant; a `401` or `403` to an upstream switched off that knows no kista there) is not a kista: the switch cannot be turned on (`400`), and for an upstream switched on
@@ -1040,7 +1043,9 @@ outcomes, and a gzip entry or file that does not match the signed manifest (dama
 **Stalls and limits.** An input that sends nothing for 5 minutes, or less than `upstreams.min_rate`
 once 30 seconds of waiting have passed, ends the import; what completed stays (each release is
 atomic). One file is spooled at a time: the spool (`blob.spool_dir`) needs about `blob.max_body`
-free, beside what `kista serve` uses. The import ends at the tar's end-of-archive blocks.
+free, beside what `kista serve` uses. The import ends at the tar's end-of-archive blocks. It reads
+at most `bundles.max_size` of its input, from a file, standard input or `imports/` as from an
+upload: a bundle past that stops, as a truncated one does.
 
 **`imports/`.** `blob:<domain>/imports/<name>` reads an object under the domain's `imports/`
 prefix, `<name>` matching `[a-z0-9][a-z0-9._-]{0,127}`. kista only reads there: it never writes,

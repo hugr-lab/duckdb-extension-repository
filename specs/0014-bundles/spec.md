@@ -727,7 +727,8 @@ tenant administrator's, like the feed's other settings) also keeps:
   signature. Every permanent refusal follows verification (a statement that does not verify holds
   the cursor instead), so the bytes are always there. The reasons are those spec 0011's client
   records as permanent, except `unrequested`, which has no body: a kind not accepted, the media
-  type (another spelling of one the kind takes), the title, the size, `changed`, `body`, `content`,
+  type's spelling (`media type spelling`: another spelling of one the kind takes, or no media type),
+  the title, the size, `changed`, `body`, `content`,
   `document`, a body not held, `limits`, `statement` (spec 0046: authentic, a member out of its
   bounds); and, kept the same way under its reason, a statement that waits for this kista's
   upgrade (spec 0046: `newer`, `unknown kind`, `media type` for a type the kind does not take
