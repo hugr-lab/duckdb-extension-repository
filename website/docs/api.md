@@ -64,9 +64,10 @@ its writer (a `sub` or a client claim). Either failure answers `401`.
 - **JSON bodies** are `application/json` (optionally `charset=utf-8`; otherwise `415`), one object, at
   most 64 KiB (`413`). Unknown and duplicate keys are refused (`400`), so a newer client fails
   loudly instead of dropping what it asked. The one exception is the feed route another kista calls
-  (`POST …/tenants/{t}/feed`): it reads `bodies` and `issuer` and ignores other members, and a
-  request that names an `issuer` (a relay's selector) is answered no statements
-  ([Compatibility](compatibility.md)). A route that takes no body refuses one.
+  (`POST …/tenants/{t}/feed`): it reads `bodies` and `issuer` and ignores other members
+  ([Compatibility](compatibility.md)); a request that names an `issuer` is answered that issuer's
+  statements as the tenant hands them on, never the tenant's own
+  ([Handing received documents on](attachments.md#handing-received-documents-on)). A route that takes no body refuses one.
 - **Raw bodies**: the publication route takes the extension file (`application/octet-stream`); the
   attachment route takes the document with its media type; a licence import takes the licence (at
   most 16 KiB). All need `Content-Length`.
@@ -587,14 +588,14 @@ See [Access](access.md).
 
 | Route | Who |
 | --- | --- |
-| `GET, POST tenants/{t}/extensions/{ext}/attachments` | extension admin, auditor (`GET`); `POST` also publishers |
+| `GET, POST tenants/{t}/extensions/{ext}/attachments` | extension admin, auditor (`GET`); `POST` also publishers. `GET` takes `body_hash`, `kind` (`sbom`, `vulnerabilities`, `review`, `provenance`, `notes`, `report`), `origin`, and `source`, `version`, `head=true` (the chain heads held about a source's version) |
 | `GET, DELETE …/attachments/{id}`; `GET …/attachments/{id}/content` | extension admin, auditor (`GET`) |
 | `POST …/attachments/{id}/readers`, `/administrators`, `/feedable`, `/unfeedable` | tenant admin |
 | `GET tenants/{t}/blocks/{hash}/attachments`; `DELETE …/attachments/{id}` | tenant admin |
 | `POST tenants/{t}/attestation-keys` | server |
 | `GET tenants/{t}/attestation-keys/{id}`; `POST …/{id}/activate`, `/retire` | tenant admin |
-| `POST tenants/{t}/feed`; `GET tenants/{t}/feed/documents/{issuer_id}` | principal holding `feed` (not a management route) |
-| `GET, POST tenants/{t}/feeds`; `GET, POST, DELETE …/feeds/{name}`; `POST …/feeds/{name}/sync` (`409` for a bundle-mode feed) | tenant admin |
+| `POST tenants/{t}/feed`; `GET tenants/{t}/feed/documents/{issuer_id}` | principal holding `feed` (not a management route). With `issuer` in the request (`?issuer=` on the content route): another issuer's documents the tenant hands on, with that issuer's keys file as `keys` in the answer and a `note` on each statement without content |
+| `GET, POST tenants/{t}/feeds`; `GET, POST, DELETE …/feeds/{name}`; `POST …/feeds/{name}/sync` (`409` for a bundle-mode feed) | tenant admin. `POST …/feeds` takes `via`, the relaying tenant's URL, at creation only; a change that names it is `400` |
 
 See [Attachments and the feed](attachments.md).
 

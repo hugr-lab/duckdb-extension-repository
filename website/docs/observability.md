@@ -139,7 +139,7 @@ are all the kinds in `internal/audit`:
 | | `attachment.remove` | `ext:<name>/attachment:<id>` | `body_hash`, `kind`, `origin`, `size`, `statement` |
 | | `attestation_key.add` | `attestation-key:<id>` | `key`, `fingerprint`, `scheme`, `state` |
 | | `attestation_key.activate`, `attestation_key.retire` | `attestation-key:<id>` | `key`, `fingerprint`, `from`, `forced` |
-| | `feed.add` | `feed:<name>` | `name`, `url`, `credential`, `kinds`, `readers`, `offer`, `channels`, `keys`, `mode`, `export` |
+| | `feed.add` | `feed:<name>` | `name`, `url`, `credential`, `kinds`, `readers`, `offer`, `channels`, `keys`, `mode`, `export`, and `via` for a feed taken through a relay |
 | | `feed.change` | `feed:<name>` | `name`, `change` (with `export`, `cursors: reset` or `kept: dropped`) |
 | | `feed.remove` | `feed:<name>` | `name`, `documents`, `export` |
 | | `feed.run` | `feed:<name>` | `feed`, `counts`, `refused`, `bundle` and `dry_run` (an import's), `error` (a class: `unauthorized`, `egress-host`, `refused`, `unreachable`, `credential`, `token`, `keys`, `limits`, `failed`) |

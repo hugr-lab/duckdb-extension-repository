@@ -381,6 +381,38 @@ signature, and the fingerprint registry (and on Azure, AWS and Google Cloud the
 accepts statements only under keys it pinned, only for bodies it holds, and verifies every field it
 shows; content is fetched only from the fixed path under the configured feed URL, through egress.
 
+**Documents handed on** ([spec 0045](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0045-received-reports/spec.md)).
+A tenant whose feed has `export` set hands that source's documents on, online and in bundles, with
+the issuer's statements unchanged: it signs nothing.
+
+- **Integrity.** The downstream verifies each statement against keys its administrator pinned, the
+  content against the statement, and a report against its own list of bodies. A relay, a gateway
+  or a bundle cannot alter, retitle or re-bind a document.
+- **Keys.** Pins come from the issuer, out of band. kista shows no fingerprint a relay sent, so a
+  relay cannot talk an administrator into pinning its key. A rotation at the issuer stops documents
+  until the new key is pinned.
+- **A relay can withhold**, and what it omits is omitted for good: the downstream's cursor passes
+  it, and moves no further than the body's own verified statements. A lower issue of a report can
+  show as current when the highest was withdrawn before the downstream first received the body's
+  documents: a source retracts with a higher issue.
+- **Leaving a tenant** takes `export` on the source's feed and a `feed` grant; setting `export`
+  widens what every existing holder of `feed` receives. A feed with `via` contacts only `via`: its
+  issuer's URL is an identity.
+- **What a source learns** from the default offer: the hashes of every build the tenant received
+  from outside, undecided ones and other upstreams' included; never the tenant's own builds.
+
+**A report's page.** A report carries its issuer's HTML, which is hostile input. kista never parses
+it and never serves it as `text/html`. The console shows it in a frame with an empty `sandbox`
+(no script, no form, no `meta` refresh, a unique origin), under a `meta` policy that lets nothing
+load but kista's one stylesheet, and the console's `frame-src 'none'` stops a link from navigating
+the frame ([Console](console.md#a-reports-page)). In the embedded mount the host's policy governs:
+link navigation inside the frame is the host's `frame-src` to block. The downloaded page is a file
+opened outside kista, under its own `meta` policy and no sandbox: it loads nothing and runs
+nothing, but its links, and a `meta` refresh in it, are followed by the browser. What the page
+says is not promised: it is the issuer's word, inside a border that names the issuer from the
+record. A report's summary members have fixed names, grammars and bounds; a list that breaks its
+rule is left out and flagged, never shown.
+
 ## Bundles
 
 An air-gapped site takes extensions from **bundles** a connected kista exports

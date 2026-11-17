@@ -60,7 +60,7 @@ Two items in the mockup's notes need nothing new:
 | --- | --- | --- |
 | **Main** (the catalogue matrix) | `held_until` in `GET …/catalogue`; `waiting` and `waits_until` in each channel's `GET …/sources` | the matrix from `GET …/catalogue` and each signed channel's `GET …/sources` and `GET …/follows`; `+ Rule…` and `Set rule…` (`PUT …/sources/{name}`); the "decisions wait" banner (counted as the queue below) |
 | **Catalogue-Entry** (one page per name, its sources side by side) | `waiting` and `waits_until` | each channel's rule set in place (`PUT …/sources/{name}`, `PUT …/follows/{source}`); Place, Promote and Clear; licences per entry (`GET …/licenses?source=`, `…/license-keys?source=`, spec 0035); reports per build (`GET …/extensions/{ext}/attachments?body_hash=`, spec 0011); downloads (`GET …/stats/downloads?extension=&channel=`). The "Take only versions matching" field waits for version constraints, deferred to a spec of their own (decision Q-D), and is not shown. |
-| **Decisions** (the queue) | decisions (Skip, Dismiss, Undo); `waiting`, `waits_until`, `held_until`; the `source.waiting` event, which "Tell me of these…" explains (decision Q-A) | the groups, computed below; Promote (K4's dialog; spec 0043 names the previous stage), Place, Make auto or manual (`PUT …/sources/{name}`), Place early (`…/releases/place` with `early`), Purge (`DELETE …/catalogue/builds/{id}`), Open the block; the Report & licence drawer (specs 0035 and 0011) |
+| **Decisions** (the queue) | decisions (Skip, Dismiss, Undo); `waiting`, `waits_until`, `held_until`; the `source.waiting` event, which "Tell me of these…" explains (decision Q-A) | the groups, computed below; Promote (K4's dialog; spec 0043 names the previous stage), Place, Make auto or manual (`PUT …/sources/{name}`), Place early (`…/releases/place` with `early`), Purge (`DELETE …/catalogue/builds/{id}`), Open the block; the Report & licence drawer (specs 0035 and 0011); on the row of a version that waits, what is held about it (spec 0045: who stands behind each report, its issue, depth and points of attention, the vulnerabilities line), from `GET …/extensions/{ext}/attachments?source=&version=&head=true` |
 | **Decisions-Rule** (set a rule from the queue) | none: the mockup's notify checkbox is dropped (decision Q-A) | the dialog and its `PUT …/sources/{name}`; "What happens" computed from the source's and the channel's holds |
 | **Org-Blocks** | `builds` in the block answers | Block…, Unblock (`POST`, `DELETE …/blocks`) |
 | **Org-Events** | none | the family chips send spec 0040's `kind` list |
@@ -538,7 +538,8 @@ console.
   licence keys its builds declare from `…/license-keys/{name}?source=`, and its versions), then the
   name's **Reports** (every body's: a report belongs to a body, and the page shows them once). The
   **Report & licence** drawer in the queue shows the licence and reports, its toggle with
-  `aria-expanded`.
+  `aria-expanded`. The row itself says what is held about a waiting version, and a report's page is
+  opened from the Reports block, in an isolated frame (spec 0045).
 - **A channel's administrator** who is not an auditor gets an **Events** tab on the channel's page,
   reading `subject=channel:<c>`, which offers neither the serving plane's kinds nor their families.
 - **Tests.** Unit tests of the matrix's cells, the queue's groups, Skip and Dismiss with Undo, the

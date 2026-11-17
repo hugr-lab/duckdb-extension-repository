@@ -720,7 +720,11 @@ creation; a change to it is `400`.
 
 **What a gateway's feed keeps.** An online feed keeps the statements it stored and drops the rest.
 To answer a site's plan, an online feed with **`export`** set (a new setting, off by default; a
-tenant administrator's, like the feed's other settings) also keeps:
+tenant administrator's, like the feed's other settings) also keeps what follows. Spec 0045 widens
+the setting's meaning without changing what it keeps: the source's documents may leave in a bundle
+**and online**, to every holder of `feed` on the tenant's channels, answered on the feed route to a
+request that names the issuer. It also makes a kept refusal replace the earlier kept row of the
+same document. With `export` set, the feed keeps:
 - **the keys file**: the source's `GET …/attestation-keys` answer as the last run fetched it (at
   most 64 KiB), with its fetch time;
 - **its permanent refusals**, per (feed, body): the `seq`, the reason and the statement's bytes and

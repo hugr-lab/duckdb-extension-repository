@@ -43,8 +43,9 @@ Other targets:
   - `/ui/server/…`: server administration;
   - `/ui/t/{tenant}/…`: a tenant.
 - Each scope gets its own **Content Security Policy**: no inline script, `connect-src` and
-  `form-action` limited to kista and that scope's identity providers, and `frame-ancestors` from
-  `ui.frame_ancestors` (none by default). A tenant's identity provider never appears in another
+  `form-action` limited to kista and that scope's identity providers, `frame-src 'none'` (the one
+  frame the console builds, [a report's page](#a-reports-page), is never navigated to a URL), and
+  `frame-ancestors` from `ui.frame_ancestors` (none by default). A tenant's identity provider never appears in another
   scope's policy.
 - `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff` on every answer. Hashed assets
   are cached for a year; `index.html` and the micro-frontend module are `no-cache` with a strong
@@ -157,7 +158,7 @@ the server's administration or another tenant (each scope signs in on its own).
 | --- | --- | --- |
 | **Catalogue** | tenant administrators | the home (spec 0041): a matrix of every source and name of the [catalogue](catalogue.md) (its icon, summary and versions, held ones with their end of hold) against the tenant's signed channels (in [the channels' order](administration/tenants-and-channels.md#the-channels-order)'s sequence, then the others by name, on the entry page too), each column headed by the channel's follows and hold; a cell shows the channel's rule (its mode and current version), the version that waits (**→ waits**, less a skip), when the next automatic placement is while a hold lasts, a failed placement, "serves it from …" when the channel's rule names another source, a follow's skip with its reason, and **+ Rule…** (or **Set rule…** where the channel has one). Filtered by name prefix and source; "decisions wait" links to the queue. **Add a build…** (a caller with `publish` tenant-wide, which `admin` does not imply) [adds a build to the catalogue](publishing.md#publishing-into-the-catalogue) from a `.duckdb_extension` file: its name is taken from the file name and its version and platform from its footer, read in the browser (kista reads it again and decides; a field the file does not tell is left empty to type), private unless public is chosen. A compressed file (`.duckdb_extension.gz`) is not sent: upload the uncompressed extension; nor is a DuckDB-Wasm (`wasm_*`) build, which kista does not take. A build the catalogue holds already is said so |
 | Entry page | tenant administrators | one name with every source of it side by side: its icon (64 px) and summary; **Rules**, each channel's rule for the name edited in place (its source and mode; the unsaved changes listed, one change per channel on **Save**), with the channel's downloads of it over 30 days, **Promote…** from the channel and **Clear…**; then per source its licence and the licence keys its builds declare, **Edit…** of the icon and summary on the tenant's own sources (never a distributor's entry: the summary, a PNG file, or removing the icon; a summary-only edit sends the icon back by its hash), and each version's builds, their state (held until when, withdrawn and why, revoked), visibility and where each is placed. **Place…** places a version into a signed channel where the caller holds `promote` on the name (which `admin` does not imply), privately, not current, or early for a held version (a channel administrator's); **Purge…** deletes a build placed nowhere; a server administrator withdraws a distributor's version with **Withdraw…** and a reason. The name's **Reports** below. Version constraints in a rule are not offered: a spec of their own |
-| **Needs a decision** | tenant administrators | the [decision queue](catalogue.md#know-what-waits) (spec 0041), filtered by channel: new versions under manual rules (**Promote…** from a channel that holds the version, the channel's previous stage in the order first, else **Place…**, either only with `promote` on the name; **Skip**; **Make auto**), holds ending within a day (**Place early…** and **Purge…** of the version the hold is of, as kista names it), names a follow skips (**Set rule…**, **Dismiss**), names in no channel or taken by some channels only (**Place…**, **Set rule…**, **Dismiss**, and a link to purge on the entry's page), placements that failed (**Open the block**, **Make manual**). Skip and Dismiss are decisions kept in kista, the same for every administrator; **Undo** removes the ones the page wrote (one another administrator changed since is left, and the page says so). **Set rule…** says what happens next: nothing by itself under `manual`, or under `auto` the newest version once the later of its source's and the channel's holds has passed. **Report & licence** shows an item's licence and the name's reports; **Tell me of these…** says where `source.waiting` goes (kista sends it to no one itself) |
+| **Needs a decision** | tenant administrators | the [decision queue](catalogue.md#know-what-waits) (spec 0041), filtered by channel: new versions under manual rules (**Promote…** from a channel that holds the version, the channel's previous stage in the order first, else **Place…**, either only with `promote` on the name; **Skip**; **Make auto**), holds ending within a day (**Place early…** and **Purge…** of the version the hold is of, as kista names it), names a follow skips (**Set rule…**, **Dismiss**), names in no channel or taken by some channels only (**Place…**, **Set rule…**, **Dismiss**, and a link to purge on the entry's page), placements that failed (**Open the block**, **Make manual**). Skip and Dismiss are decisions kept in kista, the same for every administrator; **Undo** removes the ones the page wrote (one another administrator changed since is left, and the page says so). **Set rule…** says what happens next: nothing by itself under `manual`, or under `auto` the newest version once the later of its source's and the channel's holds has passed. The row of a version that waits says what is held about it ([below](#a-waiting-versions-row)); **Report & licence** shows an item's licence and the name's reports; **Tell me of these…** says where `source.waiting` goes (kista sends it to no one itself) |
 | **Channels** | any administrator | the channels; a new channel (tenant administrators); a channel's DuckDB versions added and removed (its administrators). A tenant administrator records [the channels' order](administration/tenants-and-channels.md#the-channels-order) with **Set the order…** (each signed channel names its next, or nothing) and, once it is set, switches between **List** and **Pipeline**; a channel's administrator sees the list of its own channels only |
 | Channels: Pipeline | tenant administrators | the order (spec 0043) as stages, a chain after another: each stage's card (its follows, its rules counted by mode, "as it lands" included, its DuckDB versions, its hold and its names, its retention in force (spec 0042: `keep 3 · grace 720h`, or why there is none), and what waits for it: "N versions wait", while reading "Reading what waits…", or that it could not be read); under the cards, one matrix per chain, a row per name and a column per stage, so a name's progress reads in one row: in each stage its rule and current version, "serves it from …" when its rule names another source than the previous stage's, or "no rule", and what waits from the previous stage. A version waits in a cell (a DuckDB version of the stage and a platform), as the placement pass finds a rule's waiting version, when it is the previous stage's current there, the stage does not hold it already (an active release anywhere: the pass completes it), the stage never had it in that slot, and it is newer than everything the stage has or had on every cell its build serves (active, deprecated, yanked, withdrawn or purged); less a skip, the newest of the cells is offered. **Report & licence** opens the version's licence, the reports of its builds current in the waiting cells, each under its platform and slot (none for a build of no known body), a link to every report on the entry's page, then **Promote…** (K4's dialog, from the previous stage, the version filled in; with `promote` on the name in the stage and `publish` in the previous one, else the panel names the right missing), under a manual rule **Skip** (a decision, as in the queue), and **Not now**. **Edit the order…** changes it: the dialog lists the channels the order names too, the edges of channels it does not list are kept, and an order another administrator changed meanwhile is read again. The order is for display only: kista places and promotes as before |
 | Channel: Extensions | channel administrators; an extension administrator sees its own extensions | the channel's extensions from the index, by name prefix, with the current version for a chosen DuckDB version and platform |
@@ -182,12 +183,66 @@ the server's administration or another tenant (each scope signs in on its own).
 **Reports** lists the documents attached to a release's body: kind, title, origin (the tenant, a
 publisher, or a feed and its verified issuer), date, expiry, and summary. Administrators download a
 document (saved as a file, never opened) and remove it, and attach one on a release's page; tenant
-administrators also mark it `readers` or feedable. **Feeds**, on the Upstreams page, lists subscriptions with their status, last run and last
-success; they are added, synced, paused, resumed and removed there. Changing a feed's credential,
+administrators also mark it `readers` or feedable. A vulnerabilities summary never reads "no
+findings" while a component is unchecked or unmarked, but "N of M components checked"; a scan is
+flagged stale after 30 days only when its statement carries no unexpired `valid_until`. **Feeds**,
+on the Upstreams page, lists subscriptions with their status, last run and last
+success; they are added (with `via`, for a feed taken through a relaying tenant), synced, paused,
+resumed and removed there. **Hand on…** sets a feed's `export` ("Hand on: to bundles and to kistas
+that take this tenant's feed"): the confirmation names the source and says that every holder of
+`feed` on a channel will receive its documents. Changing a feed's credential,
 keys, kinds or readers is done with the API or the CLI. See [Attachments and the feed](attachments.md).
 A feed whose source sends what this kista is too old to read, and an upstream whose last run met a
 revocation state or a route version it does not know, say so in a line ("This kista is older than
 its source: …"); see [Compatibility](compatibility.md).
+
+### A waiting version's row {#a-waiting-versions-row}
+
+In **Needs a decision**, the row of a version that waits (under a manual rule, or held) says what
+is held about that source's version, from one read
+(`GET …/extensions/{ext}/attachments?source=&version=&head=true`):
+
+- who stands behind each report, from kista's record, never from the document: "Report from
+  `<issuer host>`, signature verified", or "The tenant's own report, attached by `<principal>`". A
+  feed's and the tenant's are separate lines;
+- then its issue, date, depth, the points of attention by kind with their counts, the sections not
+  `analysed`, and whether the build was read. The issuer's own words are quoted. No point of
+  attention with nothing evaluated reads "not evaluated", never "no points of attention"; a summary
+  kista could not read whole says "summary incomplete: open the report";
+- the vulnerabilities line, by the rules above;
+- "No report held", only after a successful empty read, with when the feeds last succeeded;
+- nothing at all for a caller who may not read the name's documents.
+
+A head its producer did not chain is listed after the higher issue. kista shows the issue, its
+date, `valid_until` and the feeds' last success, and promises no more: a relay can withhold a
+document, and a lower issue can show as current when the highest was withdrawn before this kista
+first received the body's documents.
+
+### A report's page {#a-reports-page}
+
+A `report` document holds its issuer's page. **View page**, in the Reports block, shows it:
+
+- The console takes `html` from the document it downloads and puts it, unparsed, after a fixed
+  prefix in the `srcdoc` of an `iframe` with an **empty `sandbox`**: no script runs, no form
+  submits, a `meta` refresh does nothing, and the page has an origin of its own.
+- The prefix names the console's theme on the root element, carries a `meta` policy
+  (`default-src 'none'; style-src <kista's report stylesheet>; img-src data:; form-action 'none';
+  base-uri 'none'`) and links kista's one report stylesheet. Nothing else loads: no image but a
+  `data:` one, no font, no style of the page's own (the console's `style-src 'self'` blocks inline
+  styles in the frame too). The page looks as kista's stylesheet makes it, light or dark with the
+  console.
+- The console's `frame-src 'none'` stops a link in the page from navigating the frame: its target
+  is never requested, and the frame then shows the browser's blocked page until the report is
+  opened again. Links to the top or to a new window are stopped by the sandbox.
+- The border around the frame names the issuer from the record ("`<issuer host>`'s page"). What the
+  page says is the issuer's word, not kista's.
+- **Download the page** is the print path (a framed page cannot print itself): a file with the same
+  prefix, kista's stylesheet inlined and `style-src 'unsafe-inline'`, then the `html`. Opened, it
+  loads nothing, runs no script and submits no form. It is a document of its own, outside any
+  sandbox, so the browser follows a link in it, and a `meta` refresh if the issuer's page has one:
+  open it as any file from that issuer.
+
+Every other kind is downloaded only. kista never serves a document as `text/html`.
 
 The server scope adds:
 
@@ -241,7 +296,8 @@ Lists are read page by page (50, 100 or 200 rows) from the API's cursors. Name s
 search done by the API; the catalogue and a channel's Sources, which the API answers whole, are
 filtered in the page. Nothing refreshes in the background, except a running re-sign's progress
 every 10 seconds while its view is open, and a completed bundle upload's state every 2 seconds
-until its import ends. Event data, provenance and documents are rendered as text.
+until its import ends. Event data, provenance and documents are rendered as text; the one document
+shown as its issuer wrote it is a report's page, in its isolated frame.
 
 ## Micro-frontend
 
@@ -284,5 +340,9 @@ h.unmount()
 
 **Delivery.** The simplest setup is for the shell to proxy kista under its own origin, which needs no
 CORS. Otherwise list the shell's origin in `ui.allowed_origins`, and allow kista's origin in the
-shell's `script-src`, `font-src` and `connect-src`. `npm run host` in `web/console` serves a test
+shell's `script-src`, `font-src`, `connect-src` and `style-src` (for [a report's
+page](#a-reports-page), whose one stylesheet is kista's). In the embedded mount the host's policy
+applies to the report's frame, not kista's: set **`frame-src 'none'`** in it (or one that admits no
+navigation of that frame), so that a link in an issuer's page cannot navigate it, and keep inline
+styles blocked. `npm run host` in `web/console` serves a test
 shell on another origin.

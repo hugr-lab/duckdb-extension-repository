@@ -1,6 +1,6 @@
 # Spec 0045: Received reports: the `report` kind, the feed over catalogue builds, and documents handed downstream
 
-- **Status**: accepted (2026-11-16; the owner's answers of 2026-11-16; three reviews and a joint re-review applied)
+- **Status**: implemented
 - **Date**: 2026-11-16
 - **Author**: vgsml, Claude
 
@@ -364,6 +364,37 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 - **A third offer, an issue rule, a keys route**: removed in review; spec 0011's parts do the work.
 - **A styled page from the issuer**: the console's policy blocks inline styles in any frame it
   builds, and loosening it for one frame loosens it for the console.
+
+## Implementation notes
+
+What the implementation found, where the text above says less or otherwise. None changes the design.
+
+- **The frame's prefix also names the console's theme**, on the root element
+  (`<html data-kista-theme="light|dark">`, one of two fixed words), before the `meta` policy and the
+  link. A sandboxed frame does not see the console's theme (it is a toggle, not the system's
+  preference), so "the page follows the console's light and dark theme" needs it. The stylesheet
+  and the policy are as written.
+- **The download does not stop a `meta` refresh.** A policy in a `meta` element cannot carry
+  `sandbox`, and no directive of it stops a refresh or a link: the downloaded file loads nothing,
+  runs nothing and submits nothing, but a `meta` refresh in the issuer's html takes the browser to
+  its target when the file is opened. The frame is not affected. The docs say so, and
+  `web/console/e2e/report-frame.spec.ts` holds both the property and this limit.
+- **A link that navigates the frame** is refused by `frame-src 'none'`: its target is never
+  requested, and the browser then shows its own blocked page in the frame until the report is opened
+  again.
+- **The value that marks a component not checked** is `not_checked`
+  (`kista:vulnerabilities:check`): the text names only `checked`.
+- **A relay's refusal for good is `no content`; a bundle's stays `bundle: no content`**, as merged.
+- **`attachments.feed_answer_max` bounds every answer of the feed route**, the tenant's own too.
+- **The offer's catalogue builds** are the builds the catalogue keeps (landed, or released), not
+  withdrawn.
+- **A via feed whose relay answers no `keys`** (it does not hand the issuer on) is `failing` too,
+  with a text of its own; no fingerprint is shown in either.
+- **Tests.** The end-to-end chain runs in `internal/api` (three servers over TLS: issuer, relaying
+  tenant, own kista) and in `internal/attachment` (rotation, altered bytes, a chain of two relays);
+  the own kista → bundle → site leg is covered by the shared read (`attachment.HeldStatements`) and
+  the existing export tests, not by a test of its own. The browser tests run without kista (three
+  local servers); the console's Keycloak suite has no report case.
 
 ## Follow-ups
 

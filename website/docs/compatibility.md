@@ -15,7 +15,8 @@ For the database schema between releases, see [Upgrading](administration/upgradi
 ## The five rules
 
 1. **A wire format has a major.** `api` on the dash routes (`-/names`, `-/revocations`), `format`
-   in a bundle's plan and manifest, `v` in a licence and in a statement, a document's media type.
+   in a bundle's plan and manifest, `v` in a licence and in a statement, a document's media type, a
+   report's `envelope`.
    Major 1 stays readable. It is retired only by the format's major 2, which is a new route or a
    new marker value, never a changed meaning under the old one.
 2. **Within a major, unknown members are ignored.** A producer adds a member only when a reader
@@ -59,7 +60,9 @@ list, to administrators.
 | A bundle's source of a package type it does not know | left out with a problem, at an import and (a plan's) at an export; nothing of it is read, its entries are read through without counting toward the cap on entries read through (the bundle's whole size is bounded by `bundles.max_size`, for an upload and for what `bundle import` reads), and the rest is taken |
 | A bundle's cell with an outcome it does not know | that cell's problem; what the cell holds stays. Of the cell only its file's name is read, to read that entry through |
 | A bundle's licence of a higher `v`, at `kista bundle sign` | skipped by itself, named in a line; the bundle is signed |
-| A request to `POST …/feed` with a member it does not know | answered as before; with `issuer` (a relay's selector) it answers no statements |
+| A `report` of an `envelope` version above 1 | stored and shown as `v1` is: the kind's read members are its floor, frozen for every version, and nothing else of the document is read ([The report format](attachments.md#the-report-format)) |
+| A request to `POST …/feed` with a member it does not know | answered as before; with `issuer` (a relay's selector) it answers that issuer's statements as the tenant hands them on, or none |
+| A relay's statement without content, with a `note` | waits when the note is a waiting reason (the relay is older than the issuer; asked for again at every run), else refused `no content` for good, as a bundle's is |
 
 `.well-known`, the attestation keys file, the feed's and the licence relay's answers, extension
 files, a bundle's tar, a licence's payload members and forwarded usage were tolerant before and

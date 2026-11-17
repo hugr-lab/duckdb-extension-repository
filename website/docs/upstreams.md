@@ -688,6 +688,47 @@ mirrors **everything the source channel serves to it**. A customer's own kista m
 Enterest channel this way gets every extension its organisation chooses with no change of its own.
 `*` on a mirror of anything else is refused (`400`, naming why).
 
+### Reports for an own kista {#reports-for-an-own-kista}
+
+An organisation's own kista usually cannot reach the analyser that reports on the builds it
+mirrors: it reaches only its organisation's tenant on another kista. That tenant hands the
+analyser's documents on, and the own kista takes them from it
+([Handing received documents on](attachments.md#handing-received-documents-on), spec 0045):
+
+1. **On the tenant it mirrors**: the tenant's feed of the analyser has `export` set ("Hand on" in
+   the console), and the own kista's credential holds `feed` on the mirrored channel **beside**
+   `install`. `install` never implies `feed`.
+
+   ```bash
+   kista admin -config kista.yaml feed set acme reports -export=true
+   kista admin -config kista.yaml grant add acme -principal 'client:corp-idp|own-kista' -verb feed -channel stable
+   ```
+
+2. **On the own kista**: a feed whose URL is the analyser's (the issuer's identity, never
+   contacted) and whose `via` is the tenant it mirrors, with the mirror's credential and the
+   analyser's key fingerprint taken from the analyser itself:
+
+   ```bash
+   kista admin -config kista.yaml feed add main reports \
+     -url https://analyser.example.com/api/v1/tenants/acme \
+     -via https://kista.example.com/api/v1/tenants/acme \
+     -credential org-kista -key sha256:<the analyser's fingerprint>
+   ```
+
+   The credential's `prefixes` cover the `via` URL, and `egress.hosts`, when enforced, lists its
+   host; the analyser's host need not be reachable. Name no `-kinds`: a filter refuses a later kind
+   for good.
+
+3. **Sizes**: a report holds its issuer's page, so both kistas usually raise
+   `attachments.max_size` above its 4 MiB default (at most 16 MiB). A run buffers each document
+   whole: memory is about `max_size` × (`max_reads` + the feeds running at once).
+
+The default offer names every build the own kista received from outside, released or not, so a
+version that waits under a manual rule has its report on its row in **Needs a decision** before
+anyone places it. The tenant it mirrors answers only for bodies released in the channels the `feed`
+grant covers, which is what a mirror holds. With `export` set on its own feed, the own kista hands
+the documents on in turn, online and to a [bundle](#bundle-mode) for an air-gapped site.
+
 **Discovery.** Each run, after the [revocation pass](#revocations-from-a-kista), reads `-/names`,
 every page, with the upstream's credential, and keeps a name when:
 
@@ -939,7 +980,10 @@ gateway: its sources, allowlists, platforms, DuckDB versions and the bodies it h
 
 **Statements** (spec 0014 phase 1b). For each of the plan's feeds, the export carries what the
 tenant's export feeds of the same URL hold ([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites)).
-It contacts no feed.
+It contacts no feed. The same setting hands a feed's documents on online, to the kistas that take
+the tenant's feed ([Handing received documents on](attachments.md#handing-received-documents-on)):
+`export` is not only for air-gapped sites. A plan's feeds take their bodies from the feed's offer:
+by default the catalogue builds that came from outside, released or not.
 
 On the gateway, subscribe to the source with `export` set
 (`kista admin feed add <tenant> <name> -url … -credential … -key … -export`, or
