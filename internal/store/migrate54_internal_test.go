@@ -44,6 +44,16 @@ func TestMigration54KeepsAttachments(t *testing.T) {
 		Signature: "c2ln", Seq: 4}
 	report := doc
 	report.Kind, report.IssuerID = "report", "d2"
+	// the rows as schema 53 has them (no narrowed, no waiting state)
+	insert := func(a *Attachment) error {
+		a.ID = NewID()
+		_, err := s.db.ExecContext(ctx, `INSERT INTO attachments (id, tenant_id, body_hash, kind, media_type, title, size, content_hash, summary,
+origin, attached_by, visibility, feedable, version, created_at, issuer, issuer_id, key_fp, source_origin, issued_at, statement, signature, seq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, '2026-11-01T00:00:00.000000Z', ?, ?, ?, ?, '2026-11-01T00:00:00.000000Z', ?, ?, ?)`,
+			a.ID, a.TenantID, a.BodyHash, a.Kind, a.MediaType, a.Title, a.Size, a.ContentHash, a.Summary, a.Origin, a.AttachedBy, a.Visibility,
+			a.Issuer, a.IssuerID, a.KeyFP, a.SourceOrigin, a.Statement, a.Signature, a.Seq)
+		return err
+	}
 	if err := s.InTx(ctx, "", func(tx *Tx) error {
 		if err := tx.CreateTenant(ctx, &tn); err != nil {
 			return err
@@ -52,28 +62,29 @@ func TestMigration54KeepsAttachments(t *testing.T) {
 		if err := tx.InsertFeed(ctx, &f); err != nil {
 			return err
 		}
-		if err := tx.SetFeedCursor(ctx, f.ID, body, 4); err != nil {
-			return err
-		}
-		return tx.InsertAttachment(ctx, &doc)
+		_, err := tx.exec(ctx, "INSERT INTO feed_cursors (feed_id, body_hash, seq) VALUES (?, ?, 4)", f.ID, body)
+		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.InTx(ctx, "", func(tx *Tx) error { return tx.InsertAttachment(ctx, &report) }); err == nil {
-		t.Fatal("schema 53 stored an attachment of a sixth kind")
-	}
-	before, err := s.GetAttachment(ctx, tn.ID, doc.ID)
-	if err != nil {
+	if err := insert(&doc); err != nil {
 		t.Fatal(err)
 	}
+	if err := insert(&report); err == nil {
+		t.Fatal("schema 53 stored an attachment of a sixth kind")
+	}
+	report.ID = ""
 
 	upTo(len(ms))
 	if cur, minReader, err := s.schemaState(ctx, s.db); err != nil || cur != len(ms) || minReader != 53 {
 		t.Fatalf("after 0054: schema %d, min_reader %d, %v", cur, minReader, err)
 	}
 	after, err := s.GetAttachment(ctx, tn.ID, doc.ID)
-	if err != nil || after != before {
-		t.Fatalf("the row after the rebuild:\n%+v\n%+v\n%v", after, before, err)
+	if err != nil || after.Kind != doc.Kind || after.Title != "R" || after.Size != 7 || after.Summary != doc.Summary || after.Seq != 4 ||
+		after.Statement != doc.Statement || after.Signature != doc.Signature || after.Issuer != doc.Issuer || after.IssuerID != "d1" ||
+		after.KeyFP != doc.KeyFP || after.SourceOrigin != "tenant" || after.Visibility != VisibleReaders || after.Narrowed ||
+		after.Version != 1 || after.CreatedAt.IsZero() || after.Origin != AttachedByFeed {
+		t.Fatalf("the row after the rebuild: %+v %v", after, err)
 	}
 	if cur, err := s.FeedCursors(ctx, f.ID); err != nil || cur[body] != 4 {
 		t.Fatalf("the cursor: %v %v", cur, err)

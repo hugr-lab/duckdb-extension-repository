@@ -63,14 +63,18 @@ func TestForwardCompat(t *testing.T) {
 		if w := waits()[a]; w.From != 12 || w.Count != 4 || w.Why != "media type" || w.Level != 2 || cursor(a) != 20 {
 			t.Fatalf("the waiting state: %+v, cursor %d", w, cursor(a))
 		}
-		var shown map[string]map[string]int
-		inTx(t, s, func(tx *store.Tx) error {
-			var err error
-			shown, err = tx.FeedsWaiting(ctx, tn.ID)
-			return err
-		})
-		if len(shown) != 1 || shown[f.ID]["media type"] != 4 {
-			t.Fatalf("waiting by feed and reason: %v", shown)
+		shown := func() store.FeedWaiting {
+			t.Helper()
+			var out map[string]store.FeedWaiting
+			inTx(t, s, func(tx *store.Tx) error {
+				var err error
+				out, err = tx.FeedsWaiting(ctx, tn.ID)
+				return err
+			})
+			return out[f.ID]
+		}
+		if w := shown(); w.Own["media type"] != 4 || len(w.Own) != 1 || len(w.Source) != 0 {
+			t.Fatalf("waiting by feed and reason: %+v", w)
 		}
 
 		// what the feed kept for export of the body: below and within the rewound range, and another body's
@@ -120,10 +124,35 @@ func TestForwardCompat(t *testing.T) {
 			t.Fatalf("the cursor after the retake: %d", cursor(a))
 		}
 
-		// level 0 (a statement carried without content): taken again by any binary
+		// level 0 (a statement carried without content): asked for again by any binary. The cursor
+		// goes back; the state stays for display, apart from this kista's own, until the range is
+		// judged again
 		wait(b, 9, "unknown kind", 0)
+		if w := shown(); w.Source["unknown kind"] != 1 || len(w.Own) != 0 {
+			t.Fatalf("a level 0 wait shown: %+v", w)
+		}
+		if n := retake(1); n != 1 || cursor(b) != 8 || waits()[b].From != 9 || waits()[b].Count != 1 {
+			t.Fatalf("a level 0 wait: %d bodies, cursor %d, %+v", n, cursor(b), waits()[b])
+		}
+		if n := retake(1); n != 0 || cursor(b) != 8 { // rewound already: nothing more to take back
+			t.Fatalf("a level 0 wait retaken twice: %d bodies, cursor %d", n, cursor(b))
+		}
+		// the cursor moving on below the waiting seq keeps the state; reaching it clears it, and what
+		// still waits is recorded anew
+		inTx(t, s, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, f.ID, b, 8) })
+		if w := waits()[b]; w.From != 9 {
+			t.Fatalf("the state below the waiting seq: %+v", w)
+		}
+		wait(b, 9, "newer", 0)
+		if w := waits()[b]; w.From != 9 || w.Count != 1 || w.Why != "newer" || w.Level != 0 || cursor(b) != 9 {
+			t.Fatalf("the state judged again: %+v, cursor %d", w, cursor(b))
+		}
 		if n := retake(1); n != 1 || cursor(b) != 8 {
-			t.Fatalf("a level 0 wait: %d bodies, cursor %d", n, cursor(b))
+			t.Fatalf("the next retake: %d bodies, cursor %d", n, cursor(b))
+		}
+		inTx(t, s, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, f.ID, b, 12) }) // the source no longer offers it
+		if w := waits(); len(w) != 0 || cursor(b) != 12 {
+			t.Fatalf("a rewound state the cursor passed: %+v", w)
 		}
 
 		// a reset deletes the waiting state with the cursor
@@ -149,15 +178,34 @@ func TestForwardCompat(t *testing.T) {
 			t.Fatalf("a row of a sixth kind: %+v %v", got, err)
 		}
 
-		// narrowing: to administrators, once, never back
-		inTx(t, s, func(tx *store.Tx) error { return tx.NarrowFeedAttachment(ctx, &got) })
+		// narrowing: to administrators, marked, once; a readable newer statement clears the mark
+		narrow := func(a *store.Attachment) (changed bool) {
+			t.Helper()
+			inTx(t, s, func(tx *store.Tx) (err error) { changed, err = tx.NarrowFeedAttachment(ctx, a); return })
+			return changed
+		}
+		if got.Narrowed || !narrow(&got) {
+			t.Fatalf("not narrowed: %+v", got)
+		}
 		again, err := s.GetAttachment(ctx, tn.ID, doc.ID)
-		if err != nil || again.Visibility != store.VisibleAdministrators || again.Version != doc.Version+1 {
+		if err != nil || again.Visibility != store.VisibleAdministrators || !again.Narrowed || again.Version != doc.Version+1 {
 			t.Fatalf("narrowed: %+v %v", again, err)
 		}
-		inTx(t, s, func(tx *store.Tx) error { return tx.NarrowFeedAttachment(ctx, &again) })
+		if narrow(&again) {
+			t.Fatal("narrowed twice")
+		}
 		if last, _ := s.GetAttachment(ctx, tn.ID, doc.ID); last.Version != again.Version {
 			t.Fatalf("narrowing a narrowed document changed it: %d, was %d", last.Version, again.Version)
+		}
+		// a document an administrator had narrowed already is marked all the same
+		inTx(t, s, func(tx *store.Tx) error {
+			return tx.SetAttachmentFlags(ctx, &again, store.VisibleAdministrators, false, 0)
+		})
+		upd := again
+		upd.Seq, upd.Statement, upd.Signature, upd.Visibility = 9, `{"seq":9}`, "c2ln", store.VisibleReaders
+		inTx(t, s, func(tx *store.Tx) error { return tx.ReissueFeedAttachment(ctx, &upd) })
+		if last, _ := s.GetAttachment(ctx, tn.ID, doc.ID); last.Narrowed || last.Seq != 9 || last.Visibility != store.VisibleAdministrators {
+			t.Fatalf("after a readable newer statement: %+v", last)
 		}
 	})
 }

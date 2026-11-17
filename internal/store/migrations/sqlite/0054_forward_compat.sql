@@ -5,7 +5,9 @@
 -- passed over them, so a binary of a higher level takes them again. An attachment's kinds are
 -- validated in the code only (internal/attachment): a row of any kind is read as stored, so a later
 -- release that adds a kind needs no migration. An older replica ignores the new columns and inserts a
--- cursor with their defaults: min_reader is unchanged. SQLite rebuilds attachments to drop its kind's
+-- cursor with their defaults: min_reader is unchanged. An attachment gains narrowed: a statement in a
+-- newer format said it is not for readers, which holds until a readable newer statement arrives.
+-- SQLite rebuilds attachments to drop its kind's
 -- CHECK, with foreign keys off and checked before the commit, keeping its index.
 ALTER TABLE feed_cursors ADD COLUMN waiting_from INTEGER NULL
 -- +statement
@@ -43,6 +45,7 @@ CREATE TABLE attachments_new (
 	statement     TEXT,
 	signature     TEXT,
 	seq           INTEGER,
+	narrowed      INTEGER NOT NULL DEFAULT 0,
 	CONSTRAINT ck_attachments_origin CHECK (origin IN ('tenant', 'publisher', 'feed')),
 	CONSTRAINT ck_attachments_visibility CHECK (visibility IN ('administrators', 'readers')),
 	CONSTRAINT uq_attachments_issuer UNIQUE (tenant_id, issuer, issuer_id)
