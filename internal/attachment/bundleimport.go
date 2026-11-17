@@ -311,7 +311,7 @@ func (fi *FeedImport) check(st Statement, s BundleStatement) {
 	case int64(len(b)) != st.Size || blob.ContentHash(b) != st.ContentHash:
 		r.refuse(st, "content")
 	default:
-		if _, err := SummarizeReceived(st.Kind, st.MediaType, b); errors.Is(err, ErrDocumentVersion) {
+		if _, err := SummarizeReceived(st.Kind, st.MediaType, st.BodyHash, b); errors.Is(err, ErrDocumentVersion) {
 			wait()
 			return
 		} else if err != nil {

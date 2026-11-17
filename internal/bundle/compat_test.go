@@ -99,7 +99,7 @@ func TestForwardCompat(t *testing.T) {
 	}
 	// a plan feed's kinds are checked by grammar: an older exporter reads a newer site's plan
 	plan.Feeds = []bundle.PlanFeed{{URL: "https://src.example/api/v1/tenants/x", Keys: []string{"sha256:" + strings.Repeat("9", 64)},
-		Kinds: []string{"report", "sbom"}, Sources: []int{}, Bodies: []bundle.PlanBody{}}}
+		Kinds: []string{"audit", "sbom"}, Sources: []int{}, Bodies: []bundle.PlanBody{}}}
 	if err := plan.Validate(); err != nil {
 		t.Errorf("a plan naming a kind this binary does not know: %v", err)
 	}

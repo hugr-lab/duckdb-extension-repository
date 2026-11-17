@@ -20,6 +20,7 @@ const (
 	KindReview          = "review"
 	KindProvenance      = "provenance"
 	KindNotes           = "notes"
+	KindReport          = "report" // spec 0045
 
 	AttachedByTenant    = "tenant"
 	AttachedByPublisher = "publisher"

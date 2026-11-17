@@ -43,7 +43,7 @@ func TestFeedMediaSpelling(t *testing.T) {
 // cannot be read then: the counts are left out, the change is not reported as failed.
 func TestFeedChangeAnswersWithoutCounts(t *testing.T) {
 	s := newSubscriber(t)
-	s.src.offer(s.body, "r", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "report", "application/x-report" }, nil)
+	s.src.offer(s.body, "r", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "audit", "application/x-audit" }, nil)
 	s.add("src", nil)
 	s.run("src")
 	readers := false
@@ -65,7 +65,7 @@ func TestFeedChangeAnswersWithoutCounts(t *testing.T) {
 func TestFeedWaitThenHold(t *testing.T) {
 	s := newSubscriber(t)
 	src := s.src
-	report := func(st *attachment.Statement) { st.Kind, st.MediaType = "report", "application/x-report" }
+	report := func(st *attachment.Statement) { st.Kind, st.MediaType = "audit", "application/x-audit" }
 	src.offer(s.body, "r1", []byte(`{}`), report, nil)           // 1: waits
 	two := src.offer(s.body, "bad", []byte(reviewDoc), nil, nil) // 2: does not verify: holds the body
 	src.spoil(two)
@@ -131,7 +131,7 @@ func TestFeedMalformedWithoutDocumentID(t *testing.T) {
 
 func TestFeedRetakeOvertaken(t *testing.T) {
 	s := newSubscriber(t)
-	s.src.offer(s.body, "r", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "report", "application/x-report" }, nil)
+	s.src.offer(s.body, "r", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "audit", "application/x-audit" }, nil)
 	f := s.add("src", nil)
 	if res := s.run("src"); res.Counts["waiting"] != 1 {
 		t.Fatalf("the first run: %+v", res)
@@ -160,7 +160,7 @@ func TestFeedRetakeOvertaken(t *testing.T) {
 
 func TestGatewayRetakeOfWithdrawn(t *testing.T) {
 	s := newSubscriber(t)
-	report := func(st *attachment.Statement) { st.Kind, st.MediaType = "report", "application/x-report" }
+	report := func(st *attachment.Statement) { st.Kind, st.MediaType = "audit", "application/x-audit" }
 	one := s.src.offer(s.body, "r1", []byte(`{}`), report, nil)
 	s.src.offer(s.body, "ok", []byte(reviewDoc), nil, nil)
 	s.src.offer(s.body, "r3", []byte(`{}`), report, nil)
@@ -243,7 +243,7 @@ func (s *subscriber) bundleImport(name string, after, upTo int64, dryRun bool, n
 func TestBundleWaits(t *testing.T) {
 	s := newSubscriber(t)
 	src := s.src
-	report := func(st *attachment.Statement) { st.Kind, st.MediaType = "report", "application/x-report" }
+	report := func(st *attachment.Statement) { st.Kind, st.MediaType = "audit", "application/x-audit" }
 	src.offer(s.body, "ok", []byte(reviewDoc), nil, nil)                                                                                       // 1
 	src.offer(s.body, "r", []byte(`{}`), report, nil)                                                                                          // 2: waits here
 	src.offer(s.body, "newer", []byte(reviewDoc), nil, v2)                                                                                     // 3: waits here
@@ -344,15 +344,15 @@ func TestDocumentVersions(t *testing.T) {
 		"a CycloneDX 2 VDR":          {store.KindVulnerabilities, attachment.CycloneDX, `{"bomFormat":"CycloneDX","specVersion":"2.0","vulnerabilities":[{}]}`},
 		"a review's unknown verdict": {store.KindReview, attachment.Review, string(later)},
 	} {
-		if _, err := attachment.SummarizeReceived(c.kind, c.mt, []byte(c.doc)); !errors.Is(err, attachment.ErrDocumentVersion) {
+		if _, err := attachment.SummarizeReceived(c.kind, c.mt, "", []byte(c.doc)); !errors.Is(err, attachment.ErrDocumentVersion) {
 			t.Errorf("%s, received: %v", name, err)
 		}
-		if _, err := attachment.Summarize(c.kind, c.mt, []byte(c.doc)); !errors.Is(err, attachment.ErrDocument) {
+		if _, err := attachment.Summarize(c.kind, c.mt, "", []byte(c.doc)); !errors.Is(err, attachment.ErrDocument) {
 			t.Errorf("%s, attached: %v", name, err)
 		}
 	}
 	// strict at attach: an unknown verdict there is a broken review, not a version
-	if _, err := attachment.Summarize(store.KindReview, attachment.Review, later); errors.Is(err, attachment.ErrDocumentVersion) {
+	if _, err := attachment.Summarize(store.KindReview, attachment.Review, "", later); errors.Is(err, attachment.ErrDocumentVersion) {
 		t.Errorf("an unknown verdict attached here: %v", err)
 	}
 	for name, c := range map[string]struct {
@@ -361,13 +361,13 @@ func TestDocumentVersions(t *testing.T) {
 		"a JSON-LD document of another context": {store.KindSBOM, attachment.SPDX, `{"@context":"https://schema.org","@graph":[]}`},
 		"a review without a verdict":            {store.KindReview, attachment.Review, `{"schema":"kista.review.v1","analysed_at":"2026-10-03T12:00:00Z","analyser":"x"}`},
 	} {
-		if _, err := attachment.SummarizeReceived(c.kind, c.mt, []byte(c.doc)); !errors.Is(err, attachment.ErrDocument) || errors.Is(err, attachment.ErrDocumentVersion) {
+		if _, err := attachment.SummarizeReceived(c.kind, c.mt, "", []byte(c.doc)); !errors.Is(err, attachment.ErrDocument) || errors.Is(err, attachment.ErrDocumentVersion) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	// a VDR that names no specVersion, or a 1.x one, is read as it always was
 	for _, doc := range []string{`{"bomFormat":"CycloneDX","vulnerabilities":[{}]}`, `{"bomFormat":"CycloneDX","specVersion":"1.6","vulnerabilities":[{}]}`} {
-		if sum, err := attachment.SummarizeReceived(store.KindVulnerabilities, attachment.CycloneDX, []byte(doc)); err != nil {
+		if sum, err := attachment.SummarizeReceived(store.KindVulnerabilities, attachment.CycloneDX, "", []byte(doc)); err != nil {
 			t.Errorf("%s: %q %v", doc, sum, err)
 		}
 	}

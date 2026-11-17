@@ -27,7 +27,8 @@ func TestSummarize(t *testing.T) {
 			map[string]any{"format": "spdx-2.3", "components": 2.0, "licences": 1.0}},
 		{"cyclonedx vex", store.KindVulnerabilities, CycloneDX, `{"bomFormat":"CycloneDX","metadata":{"timestamp":"2026-10-01T10:00:00Z"},
 "vulnerabilities":[{"ratings":[{"severity":"high"},{"severity":"critical"}]},{"ratings":[{"severity":"low"}]},{"analysis":{"state":"not_affected"}}]}`,
-			map[string]any{"critical": 1.0, "low": 1.0, "findings": 2.0, "not_affected": 1.0, "scanned_at": "2026-10-01T10:00:00Z"}},
+			map[string]any{"critical": 1.0, "low": 1.0, "findings": 2.0, "not_affected": 1.0, "scanned_at": "2026-10-01T10:00:00Z",
+				"components": 0.0, "checked": 0.0, "not_checked": 0.0}},
 		{"openvex", store.KindVulnerabilities, OpenVEX, `{"@context":"https://openvex.dev/ns/v0.2.0","timestamp":"2026-10-01T10:00:00Z",
 "statements":[{"status":"not_affected"},{"status":"affected"}]}`,
 			map[string]any{"unknown": 1.0, "findings": 1.0, "not_affected": 1.0, "scanned_at": "2026-10-01T10:00:00Z"}},
@@ -48,7 +49,7 @@ func TestSummarize(t *testing.T) {
 		{"notes", store.KindNotes, Markdown, "# Approved for prod\nby the platform team", map[string]any{"first_line": "Approved for prod"}},
 		{"notes scrubbed", store.KindNotes, Markdown, "# a\u202eb\u009b<c> & d", map[string]any{"first_line": "ab<c> & d"}},
 	} {
-		s, err := Summarize(c.kind, c.mt, []byte(c.doc))
+		s, err := Summarize(c.kind, c.mt, "", []byte(c.doc))
 		if err != nil {
 			t.Errorf("%s: %v", c.name, err)
 			continue
@@ -78,7 +79,7 @@ func TestSummarize(t *testing.T) {
 		"bad payload":       {store.KindProvenance, DSSE, `{"payloadType":"application/vnd.in-toto+json","payload":"%%%"}`},
 		"markdown bytes":    {store.KindNotes, Markdown, "\xff\xfe"},
 	} {
-		if _, err := Summarize(c.kind, c.mt, []byte(c.doc)); !errors.Is(err, ErrDocument) {
+		if _, err := Summarize(c.kind, c.mt, "", []byte(c.doc)); !errors.Is(err, ErrDocument) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}

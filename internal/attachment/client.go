@@ -1141,7 +1141,7 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 	if int64(len(content)) != st.Size || blob.ContentHash(content) != st.ContentHash {
 		return "content", nil
 	}
-	summary, err := SummarizeReceived(st.Kind, st.MediaType, content)
+	summary, err := SummarizeReceived(st.Kind, st.MediaType, st.BodyHash, content)
 	if errors.Is(err, ErrDocumentVersion) {
 		return WaitDocument, nil
 	}

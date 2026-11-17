@@ -119,7 +119,7 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant string, pkg 
 	if int64(len(in.Content)) > s.maxSize() || len(in.Content) == 0 {
 		return store.Attachment{}, fmt.Errorf("%w: a document is 1 byte to %d bytes", store.ErrInvalid, s.maxSize())
 	}
-	summary, err := Summarize(in.Kind, mt, in.Content)
+	summary, err := Summarize(in.Kind, mt, in.BodyHash, in.Content)
 	if err != nil {
 		return store.Attachment{}, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}

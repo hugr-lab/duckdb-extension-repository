@@ -258,8 +258,8 @@ func reasons(waiting map[string]int) (string, int) {
 
 // ReaderLevel is what this binary reads of a feed (spec 0046): raised whenever the kinds, the media
 // types, a readable document version or the statement format's major grow, so that a feed takes
-// again what an older binary passed over.
-const ReaderLevel = 1
+// again what an older binary passed over. 2: the kind report (spec 0045).
+const ReaderLevel = 2
 
 var (
 	memberRE = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)

@@ -301,7 +301,7 @@ func TestFeedWaits(t *testing.T) {
 	doc := []byte(reviewDoc)
 	src.offer(s.body, "first", doc, nil, nil)
 	src.offer(s.body, "report", []byte(`{"envelope":1}`), func(st *attachment.Statement) {
-		st.Kind, st.MediaType = "report", "application/vnd.kista.report.v1+json"
+		st.Kind, st.MediaType = "audit", "application/vnd.kista.audit.v1+json"
 	}, nil)
 	src.offer(s.body, "last", doc, nil, nil)
 	f := s.add("src", nil)
@@ -394,7 +394,7 @@ func TestFeedWaits(t *testing.T) {
 // for good, known to this binary or not.
 func TestFeedFilterBeforeWaiting(t *testing.T) {
 	s := newSubscriber(t)
-	s.src.offer(s.body, "report", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "report", "application/x-report" }, nil)
+	s.src.offer(s.body, "report", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "audit", "application/x-audit" }, nil)
 	s.src.offer(s.body, "review", []byte(reviewDoc), nil, nil)
 	f := s.add("src", func(sp *attachment.FeedSpec) { sp.Kinds = []string{store.KindReview} })
 	res := s.run("src")
@@ -405,7 +405,7 @@ func TestFeedFilterBeforeWaiting(t *testing.T) {
 		t.Fatalf("a filtered kind waits: %+v", w)
 	}
 	// the filter stays a closed vocabulary: a typo, or a kind of a later release, fails
-	kinds := []string{"report"}
+	kinds := []string{"audit"}
 	if _, err := s.feeds.Change(ctx, admin, "acme", "src", attachment.FeedChange{Kinds: &kinds}, 0); !errors.Is(err, store.ErrInvalid) {
 		t.Fatalf("a feed's kinds take a kind this binary does not know: %v", err)
 	}
@@ -503,10 +503,10 @@ func TestFeedRetake(t *testing.T) {
 	sbom := func(st *attachment.Statement) { st.Kind, st.MediaType = store.KindSBOM, attachment.CycloneDX }
 	big := []byte(strings.Replace(reviewDoc, "# Fine", "# Fine"+strings.Repeat(" and long", 100), 1))
 	s.svc.MaxSize = 512
-	src.offer(s.body, "ok", []byte(reviewDoc), nil, nil)                                                                                        // 1
-	src.offer(s.body, "sbom2", cdx2, sbom, nil)                                                                                                 // 2: a document version this binary does not read
-	src.offer(s.body, "big", big, nil, nil)                                                                                                     // 3: over the site's size
-	src.offer(s.body, "report", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "report", "application/x-report" }, nil) // 4
+	src.offer(s.body, "ok", []byte(reviewDoc), nil, nil)                                                                                      // 1
+	src.offer(s.body, "sbom2", cdx2, sbom, nil)                                                                                               // 2: a document version this binary does not read
+	src.offer(s.body, "big", big, nil, nil)                                                                                                   // 3: over the site's size
+	src.offer(s.body, "report", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "audit", "application/x-audit" }, nil) // 4
 	f := s.add("src", func(sp *attachment.FeedSpec) { sp.Export = true })
 	res := s.run("src")
 	if res.Counts["received"] != 1 || res.Counts["waiting"] != 2 || reasons(res)["size"] != 1 || res.Error != "" {
@@ -552,7 +552,7 @@ func TestFeedRetake(t *testing.T) {
 	// an upgraded binary: it reads CycloneDX 2.0 (a floor stands in for its reader) at a higher
 	// level. With no reset the document is stored, the size refusal of the rewound range is judged
 	// again and passes now, and the report waits again, at the new level
-	defer attachment.DeclareFloor(store.KindSBOM, func(string, []byte) (map[string]any, error) {
+	defer attachment.DeclareFloor(store.KindSBOM, func(string, string, []byte) (map[string]any, error) {
 		return map[string]any{"format": "cyclonedx 2.0"}, nil
 	})()
 	s.feeds.SetReaderLevel(attachment.ReaderLevel + 1)
@@ -627,7 +627,7 @@ func TestFeedRetake(t *testing.T) {
 // by what the floor reads, not left waiting. No kind of this release declares one.
 func TestKindFloor(t *testing.T) {
 	cdx2 := []byte(`{"bomFormat":"CycloneDX","specVersion":"2.0"}`)
-	if _, err := attachment.SummarizeReceived(store.KindSBOM, attachment.CycloneDX, cdx2); !errors.Is(err, attachment.ErrDocumentVersion) {
+	if _, err := attachment.SummarizeReceived(store.KindSBOM, attachment.CycloneDX, "", cdx2); !errors.Is(err, attachment.ErrDocumentVersion) {
 		t.Fatalf("a version not read: %v", err)
 	}
 	for doc, mt := range map[string]string{`{"spdxVersion":"SPDX-3.0"}`: attachment.SPDX, `{"version":"3.0.0","runs":[]}`: attachment.SARIF} {
@@ -635,7 +635,7 @@ func TestKindFloor(t *testing.T) {
 		if mt == attachment.SARIF {
 			kind = store.KindVulnerabilities
 		}
-		if _, err := attachment.SummarizeReceived(kind, mt, []byte(doc)); !errors.Is(err, attachment.ErrDocumentVersion) {
+		if _, err := attachment.SummarizeReceived(kind, mt, "", []byte(doc)); !errors.Is(err, attachment.ErrDocumentVersion) {
 			t.Errorf("%s: %v", doc, err)
 		}
 	}
@@ -646,26 +646,26 @@ func TestKindFloor(t *testing.T) {
 		if mt == attachment.SARIF {
 			kind = store.KindVulnerabilities
 		}
-		if _, err := attachment.SummarizeReceived(kind, mt, []byte(doc)); !errors.Is(err, attachment.ErrDocument) || errors.Is(err, attachment.ErrDocumentVersion) {
+		if _, err := attachment.SummarizeReceived(kind, mt, "", []byte(doc)); !errors.Is(err, attachment.ErrDocument) || errors.Is(err, attachment.ErrDocumentVersion) {
 			t.Errorf("%s: %v", doc, err)
 		}
 	}
-	undo := attachment.DeclareFloor(store.KindSBOM, func(mt string, b []byte) (map[string]any, error) {
+	undo := attachment.DeclareFloor(store.KindSBOM, func(mt, _ string, b []byte) (map[string]any, error) {
 		return map[string]any{"format": "read by its floor", "bytes": len(b)}, nil
 	})
-	sum, err := attachment.SummarizeReceived(store.KindSBOM, attachment.CycloneDX, cdx2)
+	sum, err := attachment.SummarizeReceived(store.KindSBOM, attachment.CycloneDX, "", cdx2)
 	if err != nil || !strings.Contains(sum, "read by its floor") {
 		t.Fatalf("a declared floor: %q %v", sum, err)
 	}
 	// the floor is for what is received: an attach here stays refused; a version it reads is read as before
-	if _, err := attachment.Summarize(store.KindSBOM, attachment.CycloneDX, cdx2); !errors.Is(err, attachment.ErrDocumentVersion) {
+	if _, err := attachment.Summarize(store.KindSBOM, attachment.CycloneDX, "", cdx2); !errors.Is(err, attachment.ErrDocumentVersion) {
 		t.Fatalf("a floor at the attach route: %v", err)
 	}
-	if sum, err := attachment.SummarizeReceived(store.KindSBOM, attachment.CycloneDX, []byte(sbom)); err != nil || !strings.Contains(sum, "cyclonedx 1.5") {
+	if sum, err := attachment.SummarizeReceived(store.KindSBOM, attachment.CycloneDX, "", []byte(sbom)); err != nil || !strings.Contains(sum, "cyclonedx 1.5") {
 		t.Fatalf("a readable version beside a floor: %q %v", sum, err)
 	}
 	undo()
-	if _, err := attachment.SummarizeReceived(store.KindSBOM, attachment.CycloneDX, cdx2); !errors.Is(err, attachment.ErrDocumentVersion) {
+	if _, err := attachment.SummarizeReceived(store.KindSBOM, attachment.CycloneDX, "", cdx2); !errors.Is(err, attachment.ErrDocumentVersion) {
 		t.Fatalf("after the floor is withdrawn: %v", err)
 	}
 }
