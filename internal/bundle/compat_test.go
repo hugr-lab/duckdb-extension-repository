@@ -186,13 +186,20 @@ func TestLeftOutEntriesAreNotCapped(t *testing.T) {
 	if n, err := read(cat(head(leftOut), entry("sources/9/index.json", '0', []byte(`{}`)), src, entry(stray, '0', big), files, eoa)); err != nil || n != 2 {
 		t.Fatalf("a left-out source's entries: %d files, %v", n, err)
 	}
-	// the cap still holds for what is no source's: a name outside sources/ and files/, a second copy
+	// the cap still holds for what is no source's: a name outside sources/ and files/
 	if _, err := read(cat(head(leftOut), src, entry("junk", '0', big), files, eoa)); !errors.Is(err, bundle.ErrMalformed) {
 		t.Fatalf("junk beside a left-out source: %v", err)
 	}
+	// nothing is remembered of a left-out source's entries (their names are not the manifest's), so
+	// a name twice is read through like any other: the bundle's whole size is its reader's to bound
 	half := entry(stray, '0', big[:len(big)/2+1])
-	if _, err := read(cat(head(leftOut), src, half, half, half, files, eoa)); !errors.Is(err, bundle.ErrMalformed) {
-		t.Fatalf("copies of a left-out source's entry: %v", err)
+	if n, err := read(cat(head(leftOut), src, half, half, half, files, eoa)); err != nil || n != 2 {
+		t.Fatalf("copies of a left-out source's entry: %d files, %v", n, err)
+	}
+	// the order rules hold through them: a .well-known file after a left-out source's file is refused
+	if _, err := read(cat(head(leftOut), entry(stray, '0', []byte("x")), src, files, eoa)); !errors.Is(err, bundle.ErrMalformed) ||
+		!strings.Contains(err.Error(), "after the files") {
+		t.Fatalf("sources after a left-out source's file: %v", err)
 	}
 	// the file of a cell in an outcome this binary does not know
 	if n, err := read(cat(head(unknown), src, entry(stray, '0', big), files, eoa)); err != nil || n != 2 {

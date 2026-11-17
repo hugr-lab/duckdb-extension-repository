@@ -200,12 +200,8 @@ func (b *Bundle) Next() (Item, error) {
 		} else if e, err = b.t.Next(); err != nil {
 			return Item{}, err
 		}
-		if b.leftOut(e) {
-			// an entry of a part this binary left out (spec 0046): read through without counting toward
-			// MaxSkipped, as the bundle's size and the import's watchdog bound it
-			b.uncounted += e.Size + e.Overhead
-		}
-		if b.t.Skipped()-b.uncounted+b.skippable(e) > MaxSkipped {
+		left := b.leftOut(e)
+		if !left && b.t.Skipped()-b.uncounted+b.skippable(e) > MaxSkipped {
 			return Item{}, fmt.Errorf("%w: over %d bytes of entries read through", ErrMalformed, MaxSkipped)
 		}
 		if strings.HasPrefix(e.Name, "sources/") && b.inFiles {
@@ -216,6 +212,17 @@ func (b *Bundle) Next() (Item, error) {
 		}
 		if strings.HasPrefix(e.Name, "files/") {
 			b.inFiles = true
+		}
+		if left {
+			// an entry of a part this binary left out (spec 0046): read through without counting toward
+			// MaxSkipped. What bounds it is the bundle's whole size, which its reader caps (an upload's
+			// bundles.max_size, and the same setting for the bytes an import reads). Nothing is
+			// remembered of it, so memory does not grow with entries the manifest does not name
+			b.uncounted += e.Size + e.Overhead
+			if err := b.t.Skip(e); err != nil {
+				return Item{}, err
+			}
+			continue
 		}
 		if !e.Regular || b.seen[e.Name] || e.Name == ManifestEntry || e.Name == SigEntry || e.Name == PubEntry {
 			if err := b.t.Skip(e); err != nil {
@@ -319,23 +326,19 @@ func (b *Bundle) FeedWhole(fi int) bool {
 	return true
 }
 
-// leftOut reports an entry of a part of the bundle this binary left out (spec 0046), first copies
-// only: the file of a cell in an outcome it does not know, and, when the manifest has a source of a
-// package type it does not know (of which nothing is read, its entries' names neither), any entry
-// under sources/ or files/ that the manifest's other sources do not name.
+// leftOut reports an entry of a part of the bundle this binary left out (spec 0046): the file of a
+// cell in an outcome it does not know (its name is the manifest's), and, when the manifest has a
+// source of a package type it does not know (of which nothing is read, its entries' names
+// neither), any entry under sources/ or files/ that the manifest's other sources do not name, or
+// name once and that came already.
 func (b *Bundle) leftOut(e RawEntry) bool {
-	if !e.Regular || b.seen[e.Name] || b.skippable(e) == 0 {
+	if !e.Regular || b.skippable(e) == 0 {
 		return false
 	}
 	if b.unknownFiles[e.Name] {
-		b.seen[e.Name] = true
 		return true
 	}
-	if len(b.Manifest.LeftOut) > 0 && (strings.HasPrefix(e.Name, "sources/") || strings.HasPrefix(e.Name, "files/")) {
-		b.seen[e.Name] = true
-		return true
-	}
-	return false
+	return len(b.Manifest.LeftOut) > 0 && (strings.HasPrefix(e.Name, "sources/") || strings.HasPrefix(e.Name, "files/"))
 }
 
 func (b *Bundle) skippable(e RawEntry) int64 {
