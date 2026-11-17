@@ -1,23 +1,28 @@
 {
   "format": "kista-bundle-plan/v1",
-  "created_at": "2026-11-17T00:21:55.741034Z",
+  "created_at": "2026-11-17T01:05:34.091812Z",
   "tenant": "site",
   "bundle_keys": [
-    "sha256:7f7500e7efc48f80e3ee5ace75885af5d8c401743f4824546e5bfb6a7a137f01"
+    "sha256:64afa16c0ecec473ebc545411120022f4ed32e78eef88bcf3e48c12eff848f11"
   ],
   "sources": [
     {
       "kind": "repository",
       "prefix": "https://kista.example/acme/prod",
       "keys": [
-        "sha256:f7ff628ae1c86a0f2589cd46a4c761778d5b8d58aba10e28c94023431e7f6b58"
+        "sha256:6d1215e3b6ebee7bae774ce213fb8e363c7b8ac2c22ca5574210c767874e4ee9"
       ],
       "cells": [
         {
           "duckdb_version": "v2.0.0",
           "platform": "linux_amd64",
           "name": "wire",
-          "versions": []
+          "versions": [
+            "1.0",
+            "1.1"
+          ],
+          "etag": "\"64d8d7229b669c8d2d6dca132d9da4a585bec04b3995d74686f1c697e04d1e78\"",
+          "body_hash": "65eb690e93f79ffe0068c2c0ed3a77c066b9319e7a9ef370c0e647ad51bf9010"
         }
       ]
     }
@@ -26,13 +31,18 @@
     {
       "url": "https://kista.example/api/v1/tenants/acme",
       "keys": [
-        "sha256:73e44d0860130822116de6914d60855aa508368f78c1e259b86aee49de216299"
+        "sha256:5b84bd2c13048a7d7cc1a5fad2f43e06e5f9f7b916c9af0b86f3c75bbfdccc9b"
       ],
       "kinds": [],
       "sources": [
         0
       ],
-      "bodies": []
+      "bodies": [
+        {
+          "body_hash": "65eb690e93f79ffe0068c2c0ed3a77c066b9319e7a9ef370c0e647ad51bf9010",
+          "seq": 1
+        }
+      ]
     }
   ],
   "licenses": true,

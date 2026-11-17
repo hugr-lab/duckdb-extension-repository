@@ -3,7 +3,9 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -44,6 +46,9 @@ import (
 // that plan (files, a licence, a revocation, statements). They are never edited or regenerated.
 //
 // Every run of this test
+//   - checks each file against the list of their SHA-256 written with them: a hand edit fails;
+//   - posts the fixture's feed request to a source's feed route, and gives the fixture's plan to an
+//     exporter (whose source's keys are not the plan's pins: only its reading of the plan shows);
 //   - makes the same things again with this binary's producers and fails if one no longer writes a
 //     member a fixture has (a producer may add members, never drop one);
 //   - reads the fixtures with this binary's readers: a mirror's run over the dash routes and the
@@ -58,6 +63,13 @@ const (
 	wirePath    = "/acme/prod"
 	wireAPI     = "/api/v1/tenants/acme"
 )
+
+const wireSums = "SHA256SUMS"
+
+func sha256hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
 
 var wireFiles = []string{"well-known.json", "names.json", "revocations.json", "attestation-keys.json", "feed-request.json",
 	"feed-answer.json", "feed-document.json", "plan.json", "bundle.kbundle"}
@@ -265,9 +277,17 @@ func wellKnownKeys(t *testing.T, data []byte) []string {
 	return out
 }
 
+// wireWorld is the source and the gateway wireProduce played, still live, and what crossed the wire.
+type wireWorld struct {
+	src   *mgmt
+	gw    *wireKista
+	token string // the gateway's feed credential at the source
+	files map[string][]byte
+}
+
 // wireProduce plays the source and its gateway with this binary and answers what crossed the wire:
 // the fixtures' files, as they would be written today.
-func wireProduce(t *testing.T) map[string][]byte {
+func wireProduce(t *testing.T) wireWorld {
 	t.Helper()
 	fail := func(what string, err error) {
 		t.Helper()
@@ -308,6 +328,72 @@ func wireProduce(t *testing.T) map[string][]byte {
 	if res := gw.sync("gw"); res.Counts[store.CellReleased] != 1 || res.Error != "" {
 		t.Fatalf("the gateway's first run: %+v", res)
 	}
+	bodyOf := func(version string) string {
+		t.Helper()
+		for _, x := range src.call(t, "GET", wireAPI+"/channels/prod/extensions/wire", "", "").json(t)["releases"].([]any) {
+			if r := x.(map[string]any); r["version"] == version {
+				return r["body_hash"].(string)
+			}
+		}
+		t.Fatalf("no wire %s at the source", version)
+		return ""
+	}
+	readers, yes, no := store.VisibleReaders, true, false
+	offer := func(body, kind, mt, title, content string, to *string) store.Attachment {
+		t.Helper()
+		a, err := src.att.Attach(ctx, admin, "acme", pkgtype.Of("wire"), attachment.AttachInput{BodyHash: body, Kind: kind, MediaType: mt,
+			Title: title, Content: []byte(content)})
+		fail(title, err)
+		_, err = src.att.SetFlags(ctx, admin, "acme", pkgtype.Of("wire"), a.ID, to, &yes, 0)
+		fail("offering "+title, err)
+		return a
+	}
+	// the source's notes about 1.0, which the gateway receives for export
+	offer(bodyOf("1.0"), store.KindNotes, attachment.Markdown, "Notes on wire 1.0", "# Notes\n", nil)
+	_, err = gw.feeds.Add(ctx, admin, "gw", attachment.FeedSpec{Name: "reviews", URL: wireFeedURL, Credential: "src",
+		Keys: []string{ak.Fingerprint}, Readers: true, Export: true})
+	fail("the gateway's feed", err)
+	if res := gw.feedRun("gw"); res.Counts["received"] != 1 || res.Error != "" {
+		t.Fatalf("the gateway's first feed run: %+v", res)
+	}
+
+	// the site: a tenant with a bundle-mode upstream (a version filter on its entry) and feed. Its
+	// first plan and bundle are not fixtures: they leave it holding wire 1.0 and the notes, so that
+	// its next plan names a held cell and a body with the last statement received
+	gw.tenant("site")
+	_, err = gw.ups.Add(ctx, admin, "site", upstream.Spec{Name: "air", Kind: store.UpstreamRepo, Prefix: wireSource, Channel: "prod",
+		Mode: store.ModeBundle, Visibility: store.Public, Revocations: true, Keys: keys, Platforms: []string{"linux_amd64"},
+		Entries: []store.UpstreamEntry{{Name: "wire", Versions: []string{"1.0", "1.1"}}}})
+	fail("the site's upstream", err)
+	_, err = gw.feeds.Add(ctx, admin, "site", attachment.FeedSpec{Name: "reviews", URL: wireFeedURL, Keys: []string{ak.Fingerprint},
+		Readers: true, Mode: store.FeedBundle})
+	fail("the site's feed", err)
+	keyPEM, fp, err := bundle.GenerateKey()
+	fail("the bundle key", err)
+	priv, err := bundle.ParsePrivateKey(keyPEM)
+	fail("the bundle key", err)
+	planOf := func() []byte {
+		t.Helper()
+		plan, err := gw.ups.Plan(ctx, admin, "site", upstream.PlanTargets{Licenses: true}, []string{fp})
+		fail("the plan", err)
+		data, err := json.MarshalIndent(plan, "", "  ") // as kista admin bundle plan writes it
+		fail("the plan", err)
+		return append(data, '\n')
+	}
+	export := func(plan []byte) (upstream.ExportResult, []byte) {
+		t.Helper()
+		var out bytes.Buffer
+		res, err := gw.ups.Export(ctx, admin, "gw", &out, upstream.ExportOptions{Plan: plan, Key: priv, Licenses: true,
+			PublicURL: "https://gw.example", Version: "kista v0.2.0"})
+		fail("the export", err)
+		return res, out.Bytes()
+	}
+	_, firstBundle := export(planOf())
+	imp, err := gw.ups.Import(ctx, admin, "site", bytes.NewReader(firstBundle), upstream.ImportOptions{BundleKeys: []string{fp}, Holder: "test"})
+	if err != nil || imp.Problem != "" || len(imp.Targets) != 2 {
+		t.Fatalf("the site's first import: %+v %v", imp, err)
+	}
+
 	// the source releases 1.1 and yanks 1.0: the gateway takes the new one and applies the revocation
 	add("1.1")
 	_, err = src.rel.Apply(ctx, admin, "acme", "prod", "", first.ID, release.Yank, 0)
@@ -315,34 +401,14 @@ func wireProduce(t *testing.T) map[string][]byte {
 	if res := gw.sync("gw"); res.Counts[store.CellReleased] != 1 || res.Counts["revoked"] != 1 || res.Error != "" {
 		t.Fatalf("the gateway's second run: %+v", res)
 	}
-	body := ""
-	for _, x := range src.call(t, "GET", wireAPI+"/channels/prod/extensions/wire", "", "").json(t)["releases"].([]any) {
-		if r := x.(map[string]any); r["version"] == "1.1" {
-			body = r["body_hash"].(string)
-		}
-	}
-	if body == "" {
-		t.Fatal("no wire 1.1 at the source")
-	}
-	// the source's documents: a review offered to readers, and notes offered and withdrawn
-	readers, yes, no := store.VisibleReaders, true, false
-	rv, err := src.att.Attach(ctx, admin, "acme", pkgtype.Of("wire"), attachment.AttachInput{BodyHash: body, Kind: store.KindReview,
-		MediaType: attachment.Review, Title: "Review of wire 1.1", Content: []byte(review)})
-	fail("the review", err)
-	_, err = src.att.SetFlags(ctx, admin, "acme", pkgtype.Of("wire"), rv.ID, &readers, &yes, 0)
-	fail("offering the review", err)
-	notes, err := src.att.Attach(ctx, admin, "acme", pkgtype.Of("wire"), attachment.AttachInput{BodyHash: body, Kind: store.KindNotes,
-		MediaType: attachment.Markdown, Title: "Notes", Content: []byte("# Notes\n")})
-	fail("the notes", err)
-	_, err = src.att.SetFlags(ctx, admin, "acme", pkgtype.Of("wire"), notes.ID, nil, &yes, 0)
-	fail("offering the notes", err)
+	// the source's documents about 1.1: a review offered to readers, and notes offered and withdrawn
+	offer(bodyOf("1.1"), store.KindReview, attachment.Review, "Review of wire 1.1", review, &readers)
+	notes := offer(bodyOf("1.1"), store.KindNotes, attachment.Markdown, "Notes", "# Notes\n", nil)
 	_, err = src.att.SetFlags(ctx, admin, "acme", pkgtype.Of("wire"), notes.ID, nil, &no, 0)
 	fail("withdrawing the notes", err)
-	_, err = gw.feeds.Add(ctx, admin, "gw", attachment.FeedSpec{Name: "reviews", URL: wireFeedURL, Credential: "src",
-		Keys: []string{ak.Fingerprint}, Readers: true, Export: true})
-	fail("the gateway's feed", err)
+	clear(net.sent) // the fixtures are this run's request and answer: a body with a cursor, a new one
 	if res := gw.feedRun("gw"); res.Counts["received"] != 1 || res.Counts["kept"] != 1 || res.Error != "" {
-		t.Fatalf("the gateway's feed run: %+v", res)
+		t.Fatalf("the gateway's second feed run: %+v", res)
 	}
 	// a licence, as its issuer signs it (kista issues none): the gateway holds it for the mirror's entry
 	now := time.Now().Unix()
@@ -357,28 +423,9 @@ func wireProduce(t *testing.T) map[string][]byte {
 		fail(p, err)
 	}
 
-	// the site: a tenant with a bundle-mode upstream and feed, its plan, and the gateway's export
-	gw.tenant("site")
-	_, err = gw.ups.Add(ctx, admin, "site", upstream.Spec{Name: "air", Kind: store.UpstreamRepo, Prefix: wireSource, Channel: "prod",
-		Mode: store.ModeBundle, Visibility: store.Public, Revocations: true, Keys: keys, Platforms: []string{"linux_amd64"},
-		Entries: []store.UpstreamEntry{{Name: "wire"}}})
-	fail("the site's upstream", err)
-	_, err = gw.feeds.Add(ctx, admin, "site", attachment.FeedSpec{Name: "reviews", URL: wireFeedURL, Keys: []string{ak.Fingerprint},
-		Readers: true, Mode: store.FeedBundle})
-	fail("the site's feed", err)
-	keyPEM, fp, err := bundle.GenerateKey()
-	fail("the bundle key", err)
-	priv, err := bundle.ParsePrivateKey(keyPEM)
-	fail("the bundle key", err)
-	plan, err := gw.ups.Plan(ctx, admin, "site", upstream.PlanTargets{Licenses: true}, []string{fp})
-	fail("the plan", err)
-	planData, err := json.MarshalIndent(plan, "", "  ") // as kista admin bundle plan writes it
-	fail("the plan", err)
-	planData = append(planData, '\n')
-	var out bytes.Buffer
-	res, err := gw.ups.Export(ctx, admin, "gw", &out, upstream.ExportOptions{Plan: planData, Key: priv, Licenses: true,
-		PublicURL: "https://gw.example", Version: "kista v0.2.0"})
-	fail("the export", err)
+	// the site's next plan, and the gateway's export for it: the fixtures
+	planData := planOf()
+	res, bundleData := export(planData)
 	if res.Failed() || len(res.Sources) != 1 || res.Sources[0].Counts[bundle.Fetched] != 1 || len(res.Sources[0].Licenses) != 1 ||
 		res.Sources[0].Counts["revocations"] != 1 || len(res.Feeds) != 1 || res.Feeds[0].Counts["statements"] != 2 ||
 		res.Feeds[0].Counts["documents"] != 1 {
@@ -390,7 +437,7 @@ func wireProduce(t *testing.T) map[string][]byte {
 			doc = k
 		}
 	}
-	return map[string][]byte{
+	return wireWorld{src: src, gw: gw, token: token, files: map[string][]byte{
 		"well-known.json":       wk,
 		"names.json":            net.got["GET "+wirePath+"/-/names"],
 		"revocations.json":      net.got["GET "+wirePath+"/-/revocations"],
@@ -399,8 +446,8 @@ func wireProduce(t *testing.T) map[string][]byte {
 		"feed-answer.json":      net.got["POST "+wireAPI+"/feed"],
 		"feed-document.json":    net.got[doc],
 		"plan.json":             planData,
-		"bundle.kbundle":        out.Bytes(),
-	}
+		"bundle.kbundle":        bundleData,
+	}}
 }
 
 func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
@@ -523,7 +570,8 @@ func TestWireFixtures(t *testing.T) {
 		[]string{".a", ".a.b", ".a.b[].c", ".statement", ".statement{}.seq", ".statement{}.summary", ".statement{}.summary.x"}) {
 		t.Fatalf("member paths: %v", got)
 	}
-	fresh := wireProduce(t)
+	world := wireProduce(t)
+	fresh := world.files
 	for _, name := range wireFiles {
 		if len(fresh[name]) == 0 {
 			t.Fatalf("the producers wrote no %s", name)
@@ -542,6 +590,19 @@ func TestWireFixtures(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		if _, err := os.Stat(filepath.Join(wireDir, wireSums)); err != nil {
+			var sums bytes.Buffer
+			for _, name := range wireFiles {
+				b, err := os.ReadFile(filepath.Join(wireDir, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				sums.WriteString(sha256hex(b) + "  " + name + "\n")
+			}
+			if err := os.WriteFile(filepath.Join(wireDir, wireSums), sums.Bytes(), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	fix := map[string][]byte{}
 	for _, name := range wireFiles {
@@ -550,6 +611,40 @@ func TestWireFixtures(t *testing.T) {
 			t.Fatalf("a wire fixture is missing (they are committed, never regenerated): %v", err)
 		}
 		fix[name] = b
+	}
+	// never edited: each file is the one written then
+	sums, err := os.ReadFile(filepath.Join(wireDir, wireSums))
+	if err != nil {
+		t.Fatalf("the fixtures' checksums are missing: %v", err)
+	}
+	for _, name := range wireFiles {
+		if !strings.Contains(string(sums), sha256hex(fix[name])+"  "+name+"\n") {
+			t.Errorf("%s is not the file that was written with the fixtures (%s): a wire fixture is never edited", name, wireSums)
+		}
+	}
+	if n := strings.Count(string(sums), "\n"); n != len(wireFiles) {
+		t.Errorf("%s lists %d files, the fixtures are %d", wireSums, n, len(wireFiles))
+	}
+
+	// this release's source answers the fixture's feed request, byte for byte as the gateway sent it
+	if r := world.src.call(t, "POST", wireAPI+"/feed", world.token, string(fix["feed-request.json"])); r.status != 200 ||
+		len(r.json(t)["statements"].([]any)) == 0 {
+		t.Errorf("the feed route on feed-request.json: %d %s", r.status, r.body)
+	}
+	// and this release's exporter reads the fixture's plan: its request is taken (the source, its
+	// cell and versions, the feed and its body). The plan pins the source's keys that were made with
+	// the fixtures and thrown away, so against today's source the export answers that its
+	// .well-known file lists none of them, and carries nothing of the source and no statement
+	// (when the fixtures are first written the keys are the same, and it carries everything)
+	var answer bytes.Buffer
+	xres, err := world.gw.ups.Export(ctx, admin, "gw", &answer, upstream.ExportOptions{Plan: fix["plan.json"], Licenses: true,
+		PublicURL: "https://gw.example", Version: "kista v0.2.0"})
+	if err != nil || xres.PlanSHA256 != sha256hex(fix["plan.json"]) || len(xres.Sources) != 1 || len(xres.Feeds) != 1 ||
+		xres.Sources[0].Prefix != wireSource || xres.Feeds[0].URL != wireFeedURL || xres.Feeds[0].Error != "" {
+		t.Errorf("an export for plan.json: %+v %v", xres, err)
+	} else if written := os.Getenv("KISTA_WRITE_WIRE") == "1" && xres.Sources[0].Error == ""; !written &&
+		(!strings.Contains(xres.Sources[0].Error, "lists none of the plan's keys") || xres.Feeds[0].Counts["statements"] != 0) {
+		t.Errorf("an export for plan.json, against other keys: %+v", xres)
 	}
 
 	// the producers: what this binary writes today has every member the fixtures have
@@ -569,6 +664,21 @@ func TestWireFixtures(t *testing.T) {
 	if err := bundle.Decode(fix["plan.json"], &plan); err != nil || plan.Validate() != nil || len(plan.Sources) != 1 || len(plan.Feeds) != 1 ||
 		!plan.Licenses || !plan.AcceptsRevocations {
 		t.Fatalf("plan.json: %v %v %+v", err, plan.Validate(), plan)
+	}
+	// a cell the site held when it planned (its etag and body, its entry's versions), and a body its
+	// feed had statements of
+	if c := plan.Sources[0].Cells; len(c) != 1 || c[0].ETag == "" || c[0].BodyHash == "" || len(c[0].Versions) != 2 {
+		t.Fatalf("plan.json's cell: %+v", c)
+	}
+	if b := plan.Feeds[0].Bodies; len(b) != 1 || b[0].Seq < 1 || b[0].BodyHash != plan.Sources[0].Cells[0].BodyHash {
+		t.Fatalf("plan.json's feed bodies: %+v", b)
+	}
+	var freq struct {
+		Bodies []attachment.FeedBody `json:"bodies"`
+	}
+	if err := json.Unmarshal(fix["feed-request.json"], &freq); err != nil || len(freq.Bodies) != 2 ||
+		!slices.ContainsFunc(freq.Bodies, func(b attachment.FeedBody) bool { return b.AfterSeq > 0 }) {
+		t.Fatalf("feed-request.json: %+v %v", freq, err)
 	}
 	parts := readBundle(t, fix["bundle.kbundle"], plan.BundleKeys)
 	if parts.m.Format != bundle.ManifestFormatV2 || len(parts.m.Sources) != 1 || len(parts.m.Sources[0].Licenses) != 1 ||
