@@ -239,7 +239,9 @@ GET <upstream prefix>/-/licenses        Authorization: Bearer <the credential's 
 - The answer is applied in one transaction that reads the upstream again: one paused, removed or
   given another prefix or credential meanwhile takes nothing from it.
 - `200` is authoritative for this upstream: a stored licence whose `source` is this upstream and
-  that the answer leaves out is removed (revocation). Licences from other sources are untouched.
+  that the answer leaves out is removed (revocation). Licences from other sources are untouched. A
+  name whose token is in a format above the one this kista reads is not left out (spec 0046): the
+  token is refused (`v`) and the licence stored for the name stays until its own expiry and grace.
 - `404` means the upstream serves no licences, and `401`, `403`, `5xx` or a network failure is a
   failure: nothing is removed, and licences from it stay until `grace_until`.
 - Licences past `grace_until` are removed, whatever their source, by an expiry pass every replica
@@ -326,8 +328,9 @@ so an extension or another client may aggregate first:
   silently (`204`). `status` is the SDK's licence status (`missing` when there is none). Event and
   counter names are `[a-z][a-z0-9_.]{0,63}`; at most 32 events and 16 counters per event; counts and
   counter values are integers from 0 to 2^53-1; `version`, `platform`, `duckdb_version` and
-  `status` are required, and `license` is a licence id. A report that breaks these rules answers
-  `400` with the rule, as `<rule>: <message>` (`json`, `version`, `status`, `license`, `events`,
+  `status` are required, and `license` is a licence id; a `status` this kista does not know (a
+  later SDK's) is counted under `other` (spec 0046). A report that breaks these rules answers
+  `400` with the rule, as `<rule>: <message>` (`json`, `version`, `status` when missing, `license`, `events`,
   `name`, `value`; `415` and `content` without `application/json`, `413` and `size` over 64 KiB);
   this happens only after authorisation. Unknown members are ignored, so a later SDK may send more.
 - The answer is `204`. A report is the client's claim, not evidence: anyone who may install a public

@@ -56,7 +56,8 @@ path: the cursor is a path segment (an opaque base64url token of the last row's 
   page), each row `{"name", "version", "platform", "body_hash", "state", "reason"}`, 1,000 rows a
   page, ordered by (name, version, platform, body hash). A row is a release the channel released, of
   **any source** (not only the name's selected one: `SelectedOnly` would drop a previous source's
-  rows), whose state is, strongest first:
+  rows), whose state is, strongest first (a downstream takes any other state, a later release's, as
+  a yank: spec 0046):
   - `withdrawn`: its build was withdrawn (spec 0033 phase B), `reason` the distributor's text
     (decision 4);
   - `blocked`: its body is blocked by an administrator (spec 0008), `reason` empty (an
@@ -98,7 +99,8 @@ yanked row has it, as the management listing marks them (`internal/api/channels.
 remote and keeps it false). There is no separate probe (no kista version shown anonymously): a
 `repository` upstream's remote is
 **a kista** when `GET <prefix>/-/revocations`, read with the upstream's credential if it has one,
-answers kista's shape (`"api"` and `"rows"`). It is read when the upstream is added, when `*` is put
+answers kista's shape (`"api"` and `"rows"`; `"api": 1` is frozen for wire major 1 and its value is
+checked: a higher one fails the run, spec 0046). It is read when the upstream is added, when `*` is put
 on a mirror that does not know its remote as a kista, and by each run's pass (below).
 
 - A `200` of that shape sets `remote_kista`.
@@ -381,7 +383,8 @@ with its upstream.
    `min_reader` 49, the PR 2 end to end case.
 
    As built (PR 2):
-   - `-/names` answers `{"api": 1, "names": [...], "next"}`; a name is served while it has an active
+   - `-/names` answers `{"api": 1, "names": [...], "next"}` (`"api": 1` frozen and checked, as on
+     `-/revocations`: spec 0046); a name is served while it has an active
      or deprecated release of the channel's selected source whose body is not blocked, public in the
      anonymous view when one of those is public. Its rows are computed once per snapshot, as
      `-/revocations`' are.

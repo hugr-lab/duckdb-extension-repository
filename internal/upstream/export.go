@@ -219,7 +219,7 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 		return res, err
 	}
 	var plan bundle.Plan
-	if err := bundle.DecodeStrict(o.Plan, &plan); err != nil {
+	if err := bundle.Decode(o.Plan, &plan); err != nil {
 		return res, err
 	}
 	if err := plan.Validate(); err != nil {
@@ -236,7 +236,9 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 	private := map[string]bool{}
 	for _, p := range o.Private {
 		p = strings.TrimSuffix(p, "/")
-		if !slices.ContainsFunc(plan.Sources, func(ps bundle.PlanSource) bool { return ps.Kind == store.UpstreamRepo && ps.Prefix == p }) {
+		if !slices.ContainsFunc(plan.Sources, func(ps bundle.PlanSource) bool {
+			return ps.Kind == store.UpstreamRepo && ps.Prefix == p && !bundle.UnknownType(ps.PackageType)
+		}) {
 			return res, fmt.Errorf("%w: %s", ErrExportPrivate, p)
 		}
 		private[p] = true
@@ -271,6 +273,12 @@ func (s *Service) Export(ctx context.Context, a authz.Actor, tenant string, w io
 		src := &xsource{plan: ps, private: private[ps.Prefix], names: map[string]bool{}, files: map[int]*xfile{},
 			out: ExportSource{Kind: ps.Kind, Prefix: ps.Prefix, Counts: map[string]int{}}}
 		srcs = append(srcs, src)
+		if bundle.UnknownType(ps.PackageType) {
+			// spec 0046: a source of a type this kista does not know is left out by itself
+			src.out.Kind, src.out.Prefix = bundle.Text(ps.Kind, 64), bundle.Text(ps.Prefix, 256)
+			src.out.Error = "package type " + bundle.Text(ps.PackageType, 64) + " is not known here: upgrade the exporting kista"
+			continue
+		}
 		if err := x.source(ctx, src, ups, channels, own); err != nil {
 			if ctx.Err() != nil {
 				return res, ctx.Err()
@@ -990,7 +998,7 @@ func (s *Service) exportSync(ctx context.Context, a authz.Actor, t store.Tenant,
 		var only map[[3]string]bool
 		found := false
 		for _, ps := range plan.Sources {
-			if ps.Kind != u.Kind || u.Kind == store.UpstreamRepo && ps.Prefix != u.Prefix {
+			if ps.Kind != u.Kind || u.Kind == store.UpstreamRepo && ps.Prefix != u.Prefix || bundle.UnknownType(ps.PackageType) {
 				continue
 			}
 			found = true

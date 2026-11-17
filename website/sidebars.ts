@@ -38,6 +38,7 @@ const sidebars: SidebarsConfig = {
     },
     'observability',
     'security',
+    'compatibility',
     'development',
   ],
 };

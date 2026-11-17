@@ -426,7 +426,12 @@ func (s *Service) RemoveBlockedDocument(ctx context.Context, a authz.Actor, tena
 }
 
 // Audience is what a feed's document's signed statement says of who may see it ("" if unreadable).
+// A document a statement in a newer format narrowed (spec 0046) is for administrators, whatever the
+// statement stored with it says.
 func Audience(rec store.Attachment) string {
+	if rec.Narrowed {
+		return store.VisibleAdministrators
+	}
 	var st struct {
 		Audience string `json:"audience"`
 	}

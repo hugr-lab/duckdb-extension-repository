@@ -438,7 +438,7 @@ See [Publishing](../publishing.md).
 | --- | --- |
 | `upstream add <tenant> <name> -kind <k> -channel <c> -platforms <p,...> [flags]` | adds an upstream; `-kind` is `duckdb-core`, `duckdb-community` or `repository`; `-revocations` switches on applying its source's revocations (a repository mirror of a kista, or a bundle-mode upstream; [Revocations from a kista](../upstreams.md#revocations-from-a-kista)) |
 | `upstream list <tenant>` | `NAME`, `KIND`, `MODE` (`mirror (lazy)` for a lazy mirror), `STATE`, `VISIBILITY`, `EXTENSIONS`, `LAST RUN` |
-| `upstream show <tenant> <name>` | its settings, entries, a `*` mirror's number of discovered names (`discovered:`), requested run, last run and, in bundle mode, the last bundle |
+| `upstream show <tenant> <name>` | its settings, entries, a `*` mirror's number of discovered names (`discovered:`), requested run, last run and, in bundle mode, the last bundle; a line when this kista is older than its source ([Compatibility](../compatibility.md)) |
 | `upstream remove`, `pause`, `resume`, `public`, `private` `<tenant> <name>` | |
 | `upstream sync <tenant> <name> [-dry-run]` | requests a run; a running `kista serve` takes it (a lazy mirror's: its whole matrix; a dry run: what a scheduled run would fetch) |
 | `upstream fetch <tenant> <name> eager\|lazy` | a mirror's fetch mode ([Lazy mirrors](../upstreams.md#lazy-mirrors)) |
@@ -486,7 +486,7 @@ See [Publishing](../publishing.md).
 | `feed add <tenant> <name> -url https://<host>/api/v1/tenants/<t> -credential <c> -key <fp,...> [-kinds <k,...>] [-readers] [-channels <c,...>] [-export]` | subscribes to another repository's feed; `-export` keeps what a bundle needs ([Feeds for air-gapped sites](../attachments.md#feeds-for-air-gapped-sites)) | |
 | `feed add <tenant> <name> -mode bundle -url … -key <fp,...> [-kinds …] [-readers] [-channels …]` | a bundle-mode feed: its statements arrive in bundles; no credential, never run | |
 | `feed list <tenant>` | `NAME`, `URL`, `MODE`, `STATE`, `STATUS`, `LAST SUCCESS`, `KINDS`, `READERS`, `EXPORT` | |
-| `feed show`, `sync`, `pause`, `resume` `<tenant> <name>` | `show` gives the mode, export, when the keys file was kept and the last bundle; `sync` requests a run that a running `kista serve` takes, refused for a bundle-mode feed | |
+| `feed show`, `sync`, `pause`, `resume` `<tenant> <name>` | `show` gives the mode, export, when the keys file was kept and the last bundle, and a line when statements wait because this kista is older than its source ([Compatibility](../compatibility.md)); `sync` requests a run that a running `kista serve` takes, refused for a bundle-mode feed | |
 | `feed set <tenant> <name> [-credential <c>] [-key <fp,...>] [-kinds <k,...> or -] [-readers=true or false] [-export=true or false]` | changes a subscription; `-kinds -` accepts every kind; `-export=true` resets the cursors and reads the history again, `-export=false` deletes what it kept | |
 | `feed remove <tenant> <name> [-documents]` | its documents stay unless `-documents` | |
 

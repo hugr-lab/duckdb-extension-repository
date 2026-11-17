@@ -39,6 +39,7 @@ type FeedImport struct {
 	verified map[string]int64 // body: the highest seq verified in the bundle
 	last     map[string]int64 // body: the highest seq stored or refused for good
 	held     map[string]bool  // body: a statement held it; nothing after it is applied
+	waits    []store.FeedWait // statements passed over until an upgrade (spec 0046), recorded with the cursors
 	gap      map[string]bool  // body: its range does not start where the feed is
 
 	pending []BundleStatement // the last batch: applied once its documents were read
@@ -129,7 +130,7 @@ func (fi *FeedImport) content(_ context.Context, st Statement) ([]byte, string, 
 	case err != nil:
 		return nil, "", transient{err}
 	case !ok:
-		return nil, "bundle: no content", nil
+		return nil, noContent, nil
 	}
 	return b, "", nil
 }
@@ -184,7 +185,12 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 		}
 	}
 	st, err := Verify(s.Statement, s.Signature, r.pinned)
-	if err != nil {
+	malformed := errors.Is(err, ErrMalformed) // authentic, and it will not get better: refused for good
+	switch {
+	case malformed && st.Issuer == "":
+		r.refuse(Statement{}, "statement") // nothing files it: no body is held for it
+		return nil
+	case err != nil && !malformed:
 		hold("signature")
 		return nil
 	}
@@ -211,6 +217,11 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 		return nil // a replay
 	}
 	fi.verified[st.BodyHash] = max(fi.verified[st.BodyHash], st.Seq)
+	if malformed {
+		r.refuse(st, "statement")
+		fi.last[st.BodyHash] = max(fi.last[st.BodyHash], st.Seq)
+		return nil
+	}
 	if fi.dryRun {
 		fi.check(st, s)
 		return nil
@@ -228,9 +239,16 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 	case err != nil: // a store error fails this target only
 		fi.Fail(err)
 		return nil
+	case Waits(reason):
+		// this binary cannot read it: it waits for this kista's upgrade (spec 0046)
+		fi.wait(st, reason, r.f.ReaderLevel())
+	case reason == noContent && Waits(s.Note):
+		// this binary reads it, but the exporting kista could not and carried no content: it is asked
+		// for again at every plan (level 0) until the exporter is upgraded and carries the content
+		fi.wait(st, s.Note, 0)
 	case reason != "":
 		r.refuse(st, reason)
-		if reason == "bundle: no content" && s.Note != "" && len(r.res.Refused) > 0 {
+		if reason == noContent && s.Note != "" && len(r.res.Refused) > 0 {
 			if x := &r.res.Refused[len(r.res.Refused)-1]; x.IssuerID == st.IssuerID {
 				x.Note = s.Note // the exporting side's word, kept beside the fixed reason
 			}
@@ -240,16 +258,43 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 	return nil
 }
 
+// noContent refuses, for good, a statement a bundle carries without content, unless its note says
+// the exporting kista left it waiting (spec 0046).
+const noContent = "bundle: no content"
+
+// wait counts a statement passed over until an upgrade; Finish records it with the body's cursor.
+func (fi *FeedImport) wait(st Statement, why string, level int) {
+	fi.r.res.Counts["waiting"]++
+	fi.waits = append(fi.waits, store.FeedWait{BodyHash: st.BodyHash, From: st.Seq, Count: 1, Why: why, Level: level})
+}
+
 // check is a dry run's judgement of a statement: what a run would do, nothing stored.
 func (fi *FeedImport) check(st Statement, s BundleStatement) {
 	r := fi.r
+	wait := func() { r.res.Counts["would_wait"]++ } // spec 0046: passed over until an upgrade
 	switch {
 	case st.Withdrawn:
 		r.res.Counts["would_withdraw"]++
 		return
+	case st.Major() > 1:
+		wait()
+		return
 	case len(r.fd.Kinds) > 0 && !slices.Contains(r.fd.Kinds, st.Kind):
 		r.refuse(st, "kind")
 		return
+	case !slices.Contains(Kinds, st.Kind):
+		wait()
+		return
+	}
+	switch v := MediaTypeVerdict(st.Kind, st.MediaType); {
+	case v == WaitMedia:
+		wait()
+		return
+	case v != "":
+		r.refuse(st, v)
+		return
+	}
+	switch {
 	case ValidTitle(st.Title) != nil:
 		r.refuse(st, "title")
 		return
@@ -257,18 +302,19 @@ func (fi *FeedImport) check(st Statement, s BundleStatement) {
 		r.refuse(st, "size")
 		return
 	}
-	if mt, err := CanonicalMediaType(st.Kind, st.MediaType); err != nil || mt != st.MediaType {
-		r.refuse(st, "media type")
-		return
-	}
 	b, why, err := fi.content(context.Background(), st)
 	switch {
+	case (err != nil || why != "") && Waits(s.Note):
+		wait()
 	case err != nil || why != "":
-		r.refuse(st, "bundle: no content")
+		r.refuse(st, noContent)
 	case int64(len(b)) != st.Size || blob.ContentHash(b) != st.ContentHash:
 		r.refuse(st, "content")
 	default:
-		if _, err := Summarize(st.Kind, st.MediaType, b); err != nil {
+		if _, err := SummarizeReceived(st.Kind, st.MediaType, b); errors.Is(err, ErrDocumentVersion) {
+			wait()
+			return
+		} else if err != nil {
 			r.refuse(st, "document")
 			return
 		}
@@ -313,9 +359,27 @@ func (fi *FeedImport) Finish(ctx context.Context, actor string, whole bool) (Run
 			if f.Mode != store.FeedBundle || f.State != store.FeedActive || f.BundleID != fi.bundle {
 				return errors.New("attachment: the feed was reset, paused or changed during the import")
 			}
+			// a plan written meanwhile took a cursor back (spec 0046: what waited is asked for again):
+			// moving it forward from where the import started would pass over what the plan asks for
+			now, err := tx.FeedCursors(fctx, r.fd.ID)
+			if err != nil {
+				return err
+			}
+			for body := range fi.ranges {
+				if now[body] < fi.cursors[body] {
+					return errors.New("attachment: a plan written during the import took the feed's cursors back: import a bundle of that plan")
+				}
+			}
 			for body, to := range moves {
 				if err := tx.SetFeedCursor(fctx, r.fd.ID, body, to); err != nil {
 					return err
+				}
+			}
+			for _, w := range fi.waits { // only what a cursor moved past: the rest is read again
+				if to, ok := moves[w.BodyHash]; ok && w.From <= to {
+					if err := tx.AddFeedWait(fctx, r.fd.ID, w); err != nil {
+						return err
+					}
 				}
 			}
 			return nil

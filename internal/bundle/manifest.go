@@ -9,11 +9,13 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/pkgtype"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/release"
@@ -60,6 +62,11 @@ func MaxGzip(n int64) int64 { return n + n/64 + 64<<10 }
 // ErrInvalid is a plan or manifest that breaks the format.
 var ErrInvalid = errors.New("bundle: invalid")
 
+// ErrNewer is a plan or a manifest in a format above the ones this binary reads (spec 0046): it is
+// refused whole, the manifest binding every file, and the error says which side to upgrade. It
+// wraps into ErrInvalid.
+var ErrNewer = errors.New("a newer format")
+
 // Plan is what a site asks for (spec 0014, The plan): its bundle-mode upstreams' sources and cells.
 type Plan struct {
 	Format     string       `json:"format"`
@@ -75,6 +82,15 @@ type Plan struct {
 	// AcceptsRevocations says the site takes a source's revocations (spec 0039): a site at this
 	// version writes it, and only then may a bundle carry them.
 	AcceptsRevocations bool `json:"accepts_revocations,omitempty"`
+}
+
+// LeftOut is a source a reader leaves out of a manifest (spec 0046): one of a package type this
+// binary does not know. Nothing of it is read; the rest of the bundle is taken.
+type LeftOut struct {
+	Kind        string `json:"kind"`
+	Prefix      string `json:"prefix,omitempty"`
+	PackageType string `json:"package_type"`
+	Cells       int    `json:"cells"`
 }
 
 // PlanSource is one source: a kind, and for a repository its normalised prefix and pinned keys.
@@ -108,6 +124,9 @@ type Manifest struct {
 	Plan      PlanRef   `json:"plan"`
 	Sources   []Source  `json:"sources"`
 	Feeds     []Feed    `json:"feeds,omitempty"` // phase 1b
+	// LeftOut are the sources Validate took out of Sources (spec 0046): of a package type this
+	// binary does not know. Never written.
+	LeftOut []LeftOut `json:"-"`
 }
 
 // Exporter names the exporting kista, for the record only.
@@ -130,7 +149,7 @@ type PlanRef struct {
 type Source struct {
 	Kind string `json:"kind"`
 	// PackageType is the source's package type (spec 0034): omitted (and required omitted) for
-	// duckdb_extension; a type the importer does not know is refused.
+	// duckdb_extension; a source of a type the importer does not know is left out (spec 0046).
 	PackageType string   `json:"package_type,omitempty"`
 	Prefix      string   `json:"prefix,omitempty"`
 	WellKnown   *FileRef `json:"well_known,omitempty"`
@@ -142,6 +161,57 @@ type Source struct {
 	// its -/revocations route shows them, by (name, version, platform, body hash): only for a plan
 	// that accepts them, in a v2 manifest.
 	Revocations []Revocation `json:"revocations,omitempty"`
+}
+
+// unread decodes, of a source of a package type this binary does not know (spec 0046), only what
+// names it: its kind, prefix and type, and how many cells it lists. Whatever else it holds, in
+// whatever shape a later release gave it, is not read. ok is false for a source this binary reads.
+func unread(b []byte) (kind, prefix, typ string, cells int, ok bool, err error) {
+	var head struct {
+		Kind        string          `json:"kind"`
+		PackageType string          `json:"package_type"`
+		Prefix      string          `json:"prefix"`
+		Cells       json.RawMessage `json:"cells"`
+	}
+	if err := json.Unmarshal(b, &head); err != nil {
+		return "", "", "", 0, false, err
+	}
+	if !UnknownType(head.PackageType) {
+		return "", "", "", 0, false, nil
+	}
+	var list []json.RawMessage
+	_ = json.Unmarshal(head.Cells, &list) // cells of another shape count as none
+	return head.Kind, head.Prefix, head.PackageType, len(list), true, nil
+}
+
+// UnmarshalJSON reads a manifest's source; one of a package type this binary does not know keeps
+// its name only (spec 0046).
+func (s *Source) UnmarshalJSON(b []byte) error {
+	kind, prefix, typ, cells, ok, err := unread(b)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		type known Source
+		return json.Unmarshal(b, (*known)(s))
+	}
+	*s = Source{Kind: kind, Prefix: prefix, PackageType: typ, Cells: make([]Cell, cells)}
+	return nil
+}
+
+// UnmarshalJSON reads a plan's source; one of a package type this binary does not know keeps its
+// name only (spec 0046).
+func (s *PlanSource) UnmarshalJSON(b []byte) error {
+	kind, prefix, typ, cells, ok, err := unread(b)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		type known PlanSource
+		return json.Unmarshal(b, (*known)(s))
+	}
+	*s = PlanSource{Kind: kind, Prefix: prefix, PackageType: typ, Cells: make([]PlanCell, cells)}
+	return nil
 }
 
 // Revocation is a revoked release a bundle carries (spec 0039): no source label of the exporter's.
@@ -188,7 +258,6 @@ type Cell struct {
 
 var (
 	hexRE    = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	keyRE    = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 	fpRE     = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 	uuid7RE  = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	filePath = regexp.MustCompile(`^files/[0-9a-f]{64}\.gz$`)
@@ -196,16 +265,28 @@ var (
 	tokenRE  = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
 )
 
-// DecodeStrict decodes JSON into v refusing unknown fields, duplicate keys and trailing data.
-func DecodeStrict(data []byte, v any) error {
+// Decode decodes a plan, a manifest or a batch (spec 0046): members this binary does not know are
+// ignored, under the member-name rule (every name [a-z0-9_]{1,64}, none twice in its object, so no
+// two names can mean one field); trailing data is refused. A plan or a manifest in a format above
+// the ones this binary reads is ErrNewer, said before anything of it is read.
+func Decode(data []byte, v any) error {
 	if len(data) > MaxManifest {
 		return fmt.Errorf("%w: over %d bytes", ErrInvalid, MaxManifest)
 	}
-	if err := noDuplicateKeys(data); err != nil {
-		return err
+	if err := attachment.MemberNames(data); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	switch v.(type) {
+	case *Plan:
+		if err := newerFormat(data, PlanFormat, "the plan's writer"); err != nil {
+			return err
+		}
+	case *Manifest:
+		if err := newerFormat(data, ManifestFormatV2, "the bundle's writer"); err != nil {
+			return err
+		}
 	}
 	d := json.NewDecoder(bytes.NewReader(data))
-	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
@@ -215,57 +296,28 @@ func DecodeStrict(data []byte, v any) error {
 	return nil
 }
 
-// noDuplicateKeys walks the document's tokens and refuses an object with a key twice: Go's decoder
-// keeps the last silently, and a signed document must mean one thing.
-func noDuplicateKeys(data []byte) error {
-	d := json.NewDecoder(bytes.NewReader(data))
-	d.UseNumber()
-	type frame struct {
-		obj  bool
-		keys map[string]bool
-		key  bool // the next token in this object is a key
+var formatRE = regexp.MustCompile(`^([a-z-]+)/v([1-9][0-9]{0,8})$`)
+
+// newerFormat reports a document whose format is of highest's family and above it. The side to
+// upgrade is the one reading (an importer, an exporter, kista bundle sign or inspect), whichever it
+// is: the message names it as "this kista".
+func newerFormat(data []byte, highest, writer string) error {
+	var head struct {
+		Format string `json:"format"`
 	}
-	var stack []*frame
-	for {
-		t, err := d.Token()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrInvalid, err)
-		}
-		var top *frame
-		if len(stack) > 0 {
-			top = stack[len(stack)-1]
-		}
-		if _, delim := t.(json.Delim); !delim && top != nil && top.obj && top.key {
-			k, _ := t.(string)
-			// Go matches fields without regard to case (Unicode folding too): only plain lower-case
-			// keys, as every field is, so that no two keys can name one field
-			if !keyRE.MatchString(k) {
-				return fmt.Errorf("%w: the key %q is not lower-case ASCII", ErrInvalid, k)
-			}
-			if top.keys[k] {
-				return fmt.Errorf("%w: the key %q twice in one object", ErrInvalid, k)
-			}
-			top.keys[k] = true
-			top.key = false
-			continue
-		}
-		switch t {
-		case json.Delim('{'):
-			stack = append(stack, &frame{obj: true, keys: map[string]bool{}, key: true})
-			continue
-		case json.Delim('['):
-			stack = append(stack, &frame{})
-			continue
-		case json.Delim('}'), json.Delim(']'):
-			stack = stack[:len(stack)-1]
-		}
-		if len(stack) > 0 && stack[len(stack)-1].obj {
-			stack[len(stack)-1].key = true // a value ended: a key comes next
-		}
+	if json.Unmarshal(data, &head) != nil {
+		return nil // the decoding says why
 	}
+	got, top := formatRE.FindStringSubmatch(head.Format), formatRE.FindStringSubmatch(highest)
+	if got == nil || got[1] != top[1] {
+		return nil // not this family: the validation refuses it
+	}
+	n, _ := strconv.Atoi(got[2])
+	if m, _ := strconv.Atoi(top[2]); n <= m {
+		return nil
+	}
+	return fmt.Errorf("%w: %w: format %s, and this kista reads up to %s: this kista is older than %s; upgrade this kista",
+		ErrInvalid, ErrNewer, head.Format, highest, writer)
 }
 
 // Text strips control and format characters and bounds s to n bytes: export reasons and the
@@ -305,18 +357,32 @@ func validKind(k string) bool {
 func sourceKey(kind, prefix string) string { return kind + "\x00" + prefix }
 
 // checkSourceType checks a source's package type (spec 0034): omitted for duckdb_extension (one
-// encoding, so an older importer reads the same bundle), else a type this binary knows. Every source
-// kind is DuckDB's today, so another known type has no source here either.
+// encoding, so an older importer reads the same bundle). Every source kind is DuckDB's today, so
+// another type this binary knows has no source here either. A type it does not know is not an
+// error (spec 0046): UnknownType reports it, and the source is left out by itself.
 func checkSourceType(t string) error {
 	switch {
-	case t == "":
+	case t == "" || UnknownType(t):
 		return nil
 	case t == pkgtype.DuckDBExtension:
 		return fmt.Errorf("%w: package_type %s is omitted", ErrInvalid, t)
-	case !pkgtype.Known(t):
-		return fmt.Errorf("%w: package type %q is not known here", ErrInvalid, t)
 	}
 	return fmt.Errorf("%w: a source of package type %s: every source kind here serves DuckDB extensions", ErrInvalid, t)
+}
+
+// UnknownType reports a source's package type this binary does not know (spec 0046): the source is
+// left out of an export or an import with a problem, and nothing of it is read.
+func UnknownType(t string) bool { return t != "" && !pkgtype.Known(t) }
+
+// checkUnread bounds what is shown of a source that is left out: its kind, prefix and type, as text.
+func checkUnread(kind, prefix, typ string) error {
+	for _, x := range []string{kind, prefix, typ} {
+		if len(x) > MaxDetail || Text(x, MaxDetail) != x {
+			return fmt.Errorf("%w: a source of package type %q: its kind, prefix and type are at most %d bytes of printable text",
+				ErrInvalid, Text(typ, 64), MaxDetail)
+		}
+	}
+	return nil
 }
 
 func checkSource(kind, prefix string, keys []string) error {
@@ -376,14 +442,21 @@ func (p *Plan) Validate() error {
 	}
 	seen, cells := map[string]bool{}, 0
 	for i, s := range p.Sources {
-		if err := checkSource(s.Kind, s.Prefix, s.Keys); err != nil {
-			return err
-		}
-		if err := checkSourceType(s.PackageType); err != nil {
-			return err
-		}
-		if s.Kind == store.UpstreamRepo && len(s.Keys) == 0 {
-			return fmt.Errorf("%w: repository source %s pins no key", ErrInvalid, s.Prefix)
+		unread := UnknownType(s.PackageType) // spec 0046: the exporter leaves it out; nothing of it is read
+		if unread {
+			if err := checkUnread(s.Kind, s.Prefix, s.PackageType); err != nil {
+				return err
+			}
+		} else {
+			if err := checkSource(s.Kind, s.Prefix, s.Keys); err != nil {
+				return err
+			}
+			if err := checkSourceType(s.PackageType); err != nil {
+				return err
+			}
+			if s.Kind == store.UpstreamRepo && len(s.Keys) == 0 {
+				return fmt.Errorf("%w: repository source %s pins no key", ErrInvalid, s.Prefix)
+			}
 		}
 		k := sourceKey(s.Kind, s.Prefix)
 		if seen[k] {
@@ -393,6 +466,12 @@ func (p *Plan) Validate() error {
 			return fmt.Errorf("%w: sources out of canonical order", ErrInvalid)
 		}
 		seen[k] = true
+		if unread {
+			if cells += len(s.Cells); cells > MaxCells {
+				return fmt.Errorf("%w: over %d cells", ErrInvalid, MaxCells)
+			}
+			continue
+		}
 		cellSeen := map[[3]string]bool{}
 		for _, c := range s.Cells {
 			if cells++; cells > MaxCells {
@@ -450,21 +529,37 @@ func (m *Manifest) Validate(now time.Time) error {
 	seen, cells := map[string]bool{}, 0
 	files := map[string]Cell{}
 	wk := map[string]bool{}
+	// spec 0046: a source of a package type this binary does not know is left out by itself: nothing
+	// of it is read, and its entries are read through as any the manifest does not name
 	for i, s := range m.Sources {
+		k := sourceKey(s.Kind, s.Prefix)
+		if seen[k] {
+			return fmt.Errorf("%w: source %s %s twice", ErrInvalid, Text(s.Kind, 64), Text(s.Prefix, 256))
+		}
+		if i > 0 && k < sourceKey(m.Sources[i-1].Kind, m.Sources[i-1].Prefix) {
+			return fmt.Errorf("%w: sources out of canonical order", ErrInvalid)
+		}
+		seen[k] = true
+		if UnknownType(s.PackageType) {
+			if err := checkUnread(s.Kind, s.Prefix, s.PackageType); err != nil {
+				return err
+			}
+			if cells += len(s.Cells); cells > MaxCells {
+				return fmt.Errorf("%w: over %d cells", ErrInvalid, MaxCells)
+			}
+			m.LeftOut = append(m.LeftOut, LeftOut{Kind: s.Kind, Prefix: s.Prefix, PackageType: s.PackageType, Cells: len(s.Cells)})
+		}
+	}
+	if len(m.LeftOut) > 0 {
+		m.Sources = slices.DeleteFunc(slices.Clone(m.Sources), func(s Source) bool { return UnknownType(s.PackageType) })
+	}
+	for _, s := range m.Sources {
 		if err := checkSource(s.Kind, s.Prefix, nil); err != nil {
 			return err
 		}
 		if err := checkSourceType(s.PackageType); err != nil {
 			return err
 		}
-		k := sourceKey(s.Kind, s.Prefix)
-		if seen[k] {
-			return fmt.Errorf("%w: source %s %s twice", ErrInvalid, s.Kind, s.Prefix)
-		}
-		if i > 0 && k < sourceKey(m.Sources[i-1].Kind, m.Sources[i-1].Prefix) {
-			return fmt.Errorf("%w: sources out of canonical order", ErrInvalid)
-		}
-		seen[k] = true
 		switch {
 		case s.Kind == store.UpstreamRepo && s.WellKnown == nil:
 			return fmt.Errorf("%w: repository source %s carries no .well-known file", ErrInvalid, s.Prefix)
@@ -492,6 +587,9 @@ func (m *Manifest) Validate(now time.Time) error {
 			cellSeen[ck] = true
 			if err := c.validate(); err != nil {
 				return fmt.Errorf("%w: cell %v: %w", ErrInvalid, ck, err)
+			}
+			if !KnownOutcome(c.Outcome) {
+				continue
 			}
 			// fetched_at guards a cell against older builds at the site: never after the bundle itself
 			if c.FetchedAt.After(m.CreatedAt) {
@@ -523,8 +621,8 @@ func (m *Manifest) Validate(now time.Time) error {
 
 // validateRevocations checks a source's revocations (spec 0039): only in a v2 manifest, at most
 // MaxRevocations, in canonical order, each of a name the source's cells name, a version, platform,
-// body hash and state of their grammars; a reason of at most MaxDetail bytes, which the import
-// cleans rather than refuses.
+// body hash of their grammars; a state and a reason of at most MaxDetail bytes, which the import
+// reads (a state it does not know is a yank, spec 0046) and cleans rather than refuses.
 func (s Source) validateRevocations(format string, cells map[[3]string]bool) error {
 	if len(s.Revocations) == 0 {
 		return nil
@@ -545,8 +643,9 @@ func (s Source) validateRevocations(format string, cells map[[3]string]bool) err
 			return fmt.Errorf("%w: revocation of %s: no cell of the source names it", ErrInvalid, r.Name)
 		case release.ValidExtVersion(r.Version) != nil, release.ValidPlatform(r.Platform) != nil, !hexRE.MatchString(r.BodyHash):
 			return fmt.Errorf("%w: revocation of %s: version, platform or body_hash", ErrInvalid, r.Name)
-		case store.RevocationRank(r.State) == 0:
-			return fmt.Errorf("%w: revocation of %s: state %q (withdrawn, blocked or yanked)", ErrInvalid, r.Name, r.State)
+		case r.State == "" || len(r.State) > MaxDetail:
+			// withdrawn, blocked or yanked; any other word is a later release's, taken as a yank (spec 0046)
+			return fmt.Errorf("%w: revocation of %s: its state is 1 to %d bytes", ErrInvalid, r.Name, MaxDetail)
 		case len(r.Reason) > MaxDetail:
 			return fmt.Errorf("%w: revocation of %s: a reason over %d bytes", ErrInvalid, r.Name, MaxDetail)
 		case i > 0 && !keyLess(s.Revocations[i-1].key(), r.key()):
@@ -596,7 +695,8 @@ func (s Source) validateLicenses(asked bool) error {
 	}
 	held := map[string]bool{}
 	for _, c := range s.Cells {
-		if c.Outcome == Fetched || c.Outcome == Unchanged {
+		// a cell in an outcome this binary does not know may be one that carries the name's files
+		if c.Outcome == Fetched || c.Outcome == Unchanged || !KnownOutcome(c.Outcome) {
 			held[c.Name] = true
 		}
 	}
@@ -618,6 +718,15 @@ func (s Source) validateLicenses(asked bool) error {
 }
 
 func (c Cell) validate() error {
+	if !KnownOutcome(c.Outcome) {
+		// an outcome this binary does not know is this cell's problem at the import, not the
+		// manifest's (spec 0046): nothing more of the cell is read, whatever its other members
+		// became there
+		if c.Outcome == "" || len(c.Outcome) > 64 || Text(c.Outcome, 64) != c.Outcome {
+			return errors.New("its outcome is 1 to 64 bytes of printable text")
+		}
+		return nil
+	}
 	if len(c.ETag) > MaxETag || Text(c.ETag, MaxETag) != c.ETag || len(c.Detail) > MaxDetail || Text(c.Detail, MaxDetail) != c.Detail {
 		return errors.New("etag or detail")
 	}
@@ -644,10 +753,13 @@ func (c Cell) validate() error {
 		if hasFile || c.BodyHash != "" || c.Authenticated {
 			return errors.New("a missing or rejected cell carries no file")
 		}
-	default:
-		return fmt.Errorf("outcome %q", c.Outcome)
 	}
 	return nil
+}
+
+// KnownOutcome reports whether a cell's outcome is one this binary reads.
+func KnownOutcome(o string) bool {
+	return o == Fetched || o == Unchanged || o == Missing || o == Rejected
 }
 
 // fileKey orders files: by source, then name, platform and the lowest DuckDB version among the

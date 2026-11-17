@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -44,8 +45,9 @@ func feedFixture(t *testing.T, dir, bundleFP string, planSeq int64, pinned strin
 	pemStr, _ := extfile.MarshalPublicKeyPEM(&ak.PublicKey)
 	keysFile, _ := json.Marshal(map[string]any{"keys": []any{map[string]any{"fingerprint": fp, "public_key": pemStr}}})
 	const url = "https://gw.example.org/api/v1/tenants/reviews"
-	body := strings.Repeat("b", 64)
-	doc := []byte(`{"schema":"kista.review.v1","verdict":"approved"}`)
+	body := cmp.Or(skew.body, strings.Repeat("b", 64))
+	doc := []byte(cmp.Or(skew.doc, `{"schema":"kista.review.v1","verdict":"approved"}`))
+	var raw func(map[string]any) // a statement's members beyond what this binary writes (the skew test)
 	sign := func(seq int64, mod func(*attachment.Statement)) bundle.BatchEntry {
 		s := attachment.Statement{Issuer: url, Key: fp, IssuerID: "d" + string(rune('0'+seq)), Seq: seq, BodyHash: body, Kind: "review",
 			MediaType: attachment.Review, ContentHash: blob.ContentHash(doc), Size: int64(len(doc)), Title: "Review",
@@ -57,6 +59,11 @@ func feedFixture(t *testing.T, dir, bundleFP string, planSeq int64, pinned strin
 		if err != nil {
 			t.Fatal(err)
 		}
+		if raw != nil {
+			if b, err = attachment.Canonicalize(skew.rewrite(t, b, raw)); err != nil {
+				t.Fatal(err)
+			}
+		}
 		sig, err := attachment.Sign(context.Background(), rsaSigner{ak}, b)
 		if err != nil {
 			t.Fatal(err)
@@ -65,9 +72,17 @@ func feedFixture(t *testing.T, dir, bundleFP string, planSeq int64, pinned strin
 	}
 	noContent := sign(3, func(s *attachment.Statement) { s.IssuerID = "d9" })
 	noContent.Note = "kind on the exporting kista"
-	batch, _ := bundle.MarshalBatch([]bundle.BatchEntry{sign(1, nil), sign(2, func(s *attachment.Statement) {
+	stmts := []bundle.BatchEntry{sign(1, nil), sign(2, func(s *attachment.Statement) {
 		s.IssuerID, s.Withdrawn, s.Kind, s.MediaType, s.ContentHash, s.Size, s.Title = "d0", true, "", "", "", 0, ""
-	}), noContent})
+	}), noContent}
+	for i, x := range skew.statements { // a newer source's, numbered on from 4
+		raw = x.raw
+		e := sign(int64(4+i), x.mod)
+		e.Note, raw = x.note, nil
+		stmts = append(stmts, e)
+	}
+	last := int64(len(stmts))
+	batch, _ := bundle.MarshalBatch(stmts)
 	ref := func(p string, b []byte) bundle.FileRef {
 		return bundle.FileRef{Path: p, SHA256: sha(b), Size: int64(len(b))}
 	}
@@ -77,18 +92,20 @@ func feedFixture(t *testing.T, dir, bundleFP string, planSeq int64, pinned strin
 	now := time.Now().UTC().Truncate(time.Second)
 	m := bundle.Manifest{Format: bundle.ManifestFormat, ID: "0192f0c4-1b2a-7c3d-8e4f-0123456789ab", CreatedAt: now,
 		Exporter: bundle.Exporter{Version: "kista test"}, Plan: bundle.PlanRef{Tenant: "acme", CreatedAt: now}, Sources: []bundle.Source{},
-		Feeds: []bundle.Feed{{URL: url, Entries: entries, Bodies: []bundle.FeedBody{{BodyHash: body, AfterSeq: 0, Seq: 3}}}}}
+		Feeds: []bundle.Feed{{URL: url, Entries: entries, Bodies: []bundle.FeedBody{{BodyHash: body, AfterSeq: 0, Seq: last}}}}}
 	p := bundle.Plan{Format: bundle.PlanFormat, CreatedAt: now, Tenant: "acme", BundleKeys: []string{bundleFP}, Sources: []bundle.PlanSource{},
 		Feeds: []bundle.PlanFeed{{URL: url, Keys: []string{pinned}, Kinds: []string{}, Sources: []int{},
 			Bodies: []bundle.PlanBody{{BodyHash: body, Seq: planSeq}}}}}
 	planData, _ := json.Marshal(p)
+	planData = skew.rewrite(t, planData, skew.plan)
 	plan = filepath.Join(dir, "plan.json")
 	os.WriteFile(plan, planData, 0o644)
 	m.Plan.SHA256 = sha(planData)
 	md, _ := json.Marshal(m)
+	md = skew.rewrite(t, md, skew.manifest)
 	var out bytes.Buffer
 	w := bundle.NewWriter(&out)
-	if err := bundle.WriteHead(w, md, nil); err != nil {
+	if err := bundle.WriteHead(w, md, skew.key); err != nil {
 		t.Fatal(err)
 	}
 	for i, e := range entries {

@@ -1915,6 +1915,9 @@ func (a *adminCmd) upstream(ctx context.Context, sub string, args []string) erro
 		if u.LastRun != "" {
 			fmt.Fprintf(a.out, "last run: %s\n", u.LastRun)
 		}
+		if line := upstream.OlderThanSource(u.LastRun); line != "" { // spec 0046
+			fmt.Fprintln(a.out, line)
+		}
 	}
 	switch {
 	case sub == "add" && len(pos) == 2:
@@ -2539,6 +2542,11 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		fmt.Fprintf(a.out, "%s %s\nmode %s, export %v\nstate %s, status %s %s\nlast success %s\ncredential %s\nkeys %s\nkinds %s, readers %v, offer %s\nlast run %s\n",
 			fd.Name, fd.URL, fd.Mode, fd.Export, fd.State, fd.Status, fd.LastError, last, fd.Credential, strings.Join(fd.Keys, ","),
 			strings.Join(fd.Kinds, ","), fd.Readers, fd.Offer, fd.LastRun)
+		for _, line := range []string{attachment.OlderThanSource(fd.Waiting), attachment.ExporterOlderThanSource(fd.WaitingSource)} { // spec 0046
+			if line != "" {
+				fmt.Fprintln(a.out, line)
+			}
+		}
 		if !fd.KeysFileAt.IsZero() {
 			fmt.Fprintf(a.out, "keys file kept %s\n", ts(fd.KeysFileAt))
 		}
@@ -2648,7 +2656,9 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 			Licenses: *withLicenses})
 	case sub == "import" && len(pos) == 2:
 		return a.bundleImport(ctx, pos[0], pos[1], upstream.ImportOptions{Upstreams: commaList(*names), Feeds: commaList(*feedNames),
-			DryRun: *dryRun, AnyTenant: *anyTenant, BundleKeys: a.cfg.BundleKeysFor(pos[0])})
+			DryRun: *dryRun, AnyTenant: *anyTenant, BundleKeys: a.cfg.BundleKeysFor(pos[0]),
+			// the same managed bound as an upload's: no bundle is read past bundles.max_size
+			MaxBytes: int64(a.cfg.Bundles.Settings().MaxSize)})
 	case sub == "list" && len(pos) == 1:
 		is, err := a.svc.Upstreams.Imports(ctx, a.actor, pos[0], *limit)
 		if err != nil {
@@ -2911,6 +2921,9 @@ func (a *adminCmd) bundleImport(ctx context.Context, tenant, src string, o upstr
 	}
 	if res.Unplanned > 0 {
 		fmt.Fprintf(a.out, "%d cells of the bundle are in no target's matrix\n", res.Unplanned)
+	}
+	for _, l := range res.LeftOut { // spec 0046
+		fmt.Fprintf(a.out, "source %s %s was left out: package type %s is not known here (upgrade this kista)\n", l.Kind, l.Prefix, l.PackageType)
 	}
 	if res.Skipped > 0 {
 		fmt.Fprintf(a.out, "%d bytes of entries were read through\n", res.Skipped)

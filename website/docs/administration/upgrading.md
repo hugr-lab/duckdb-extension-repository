@@ -12,7 +12,8 @@ replicas run through an upgrade. The design is in
 
 A new version is a new image `ghcr.io/hugr-lab/kista:vX.Y.Z` (deploy it by digest) or a new
 release binary, both verified as [Deployment](../deployment/index.md) says; or build it with
-`make build` (see [Development](../development.md)).
+`make build` (see [Development](../development.md)). What a kista does with a peer newer than
+itself, and what a later release may change, is in [Compatibility](../compatibility.md).
 
 ## Migrations
 
@@ -23,7 +24,7 @@ release binary, both verified as [Deployment](../deployment/index.md) says; or b
   replicas starting together never apply one twice.
 - Applied migrations are recorded in the table `schema_migrations` (`version`, `name`,
   `min_reader`, `applied_at`).
-- A binary's **schema level** is the number of migrations it carries. The next release carries 29; v0.1.0 to v0.1.3 carry 28.
+- A binary's **schema level** is the number of migrations it carries. The next release carries 54; v0.1.0 to v0.1.3 carry 28.
 
 ### Who migrates: `store.migrate`
 
@@ -178,7 +179,32 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 53)
+## Upgrading to the next release (schema 54)
+
+### Forward compatibility (spec 0046)
+
+- **Migration `0054_forward_compat`** adds four columns to `feed_cursors` (`waiting_from`,
+  `waiting`, `waiting_why`, `reader_level`: what a feed passed over because this kista was too old
+  to read it), drops the check on an attachment's kind (SQLite rebuilds the `attachments` table,
+  keeping its rows and index): kinds are validated in the code only, so a later release that adds
+  one needs no migration; and adds `attachments.narrowed`, set when a statement in a newer format
+  says a held document is not for readers. It is additive: `min_reader` stays 53, and old and new replicas run side
+  by side.
+- **What changes.** From this release a kista reads what a newer peer sends by the rules of
+  [Compatibility](../compatibility.md): members it does not know are ignored in statements, plans,
+  manifests and batches; a statement it cannot read waits and is taken again after an upgrade (the
+  count `waiting` in a feed's run, the feed's `waiting` in the API, a line in the console and
+  `feed show`); a revocation in a state it does not know is a yank (`revocations_unknown`); a
+  licence in a newer format keeps the stored one (`newer` in the relay's run); `-/names` and
+  `-/revocations` answering an `api` above 1 fail the run; an SDK report's unknown `status` is
+  counted under `other` instead of `400`; a bundle's source of an unknown package type is left out
+  (`left_out` in the import's result) and a higher `format` is refused whole.
+- **Stricter.** A statement whose field names are not `[a-z0-9_]{1,64}`, each once in its object,
+  no longer verifies. kista never wrote such a statement.
+- **Rolling upgrade.** A replica of the previous release ignores the new columns. While both run,
+  the older one still holds a body on a statement with an unknown field and refuses an unknown kind
+  for good, as before, and does not know a narrowed document's mark (an administrator could widen
+  such a document through it): finish the rollout before relying on either.
 
 ### Version retention in channels (spec 0042)
 

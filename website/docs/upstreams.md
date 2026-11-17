@@ -562,7 +562,15 @@ reads):
 2. It keeps only the rows that match one of **this upstream's own builds**, by name, version,
    platform and body hash: nothing is revoked ahead of time, and another version, platform or
    source is never touched.
-3. It stores them with the remote's state and reason (cleaned: printable, at most 400 bytes). A
+3. It stores them with the remote's state and reason (cleaned: printable, at most 400 bytes). A row
+   in a state this kista does not know (a newer source's) is stored as a yank, the source's word
+   before its reason (`recalled: …`; `unknown` when it is not a short lower-case word, or is empty
+   or missing): it never
+   lowers a stronger state stored for a row the source still listed (one it had dropped is not
+   brought back), it counts as listed, and the run counts it
+   (`revocations_unknown`) and says on the upstream's page and in `upstream show` that this kista is
+   older than its source. Such a read keeps no ETag, so an upgraded kista reads the row's real state
+   and applies it by the usual precedence. A
    stored row the remote no longer lists (after a complete read) or whose build is gone is deleted
    when nothing was applied or lifted of it; otherwise it is kept, `unlisted`: what it applied stays
    and can still be lifted, and it applies nothing more.
@@ -573,6 +581,15 @@ reads):
 
 A read is bounded (at most 11 pages, no page on from an empty one, no cursor twice; each is a
 problem), and runs under the run's lease and pause check.
+
+`"api": 1` is frozen on `-/revocations` and `-/names` for their first wire major, and a next major is
+a new route. The value is still checked: a source answering a higher one **fails the run** with its
+reason, and nothing is read, stored or forgotten ([Compatibility](compatibility.md)). Such a source
+is not taken as a kista of this wire major either: switching the upstream's revocations on, or
+adding `*` to it, is refused (`400`) with the same reason. The upstream's record says so
+(`older_than_source`: `api`, or `revocations_unknown` with the count), and keeps saying it through
+runs that do not reach the source's revocations (a dry run, a failure): the yanks stored then still
+stand.
 
 A remote that answers no revocations (an older kista, another server, a suspended or deleted
 tenant; a `401` or `403` to an upstream switched off that knows no kista there) is not a kista: the switch cannot be turned on (`400`), and for an upstream switched on
@@ -969,13 +986,17 @@ command prints each licence's name, holder and expiry: what leaves is the export
 none although both asked, it says so (none in force for the bundle's names, of the plan's holder). A plan
 that asks for licences, and a bundle that carries them, need a kista of the release that brought
 licences in bundles, or a later one, on both sides:
-an older one refuses them, as plans and manifests are decoded strictly. A bundle without licences
-is the same document as before.
+a trial release (`v0.1.x`) refuses them, decoding plans and manifests strictly. From `v0.2.0` a plan,
+a manifest and a batch may carry members a reader does not know, which it ignores; a higher `format`
+is refused whole, saying which side to upgrade ([Compatibility](compatibility.md)). A bundle without
+licences is the same document as before.
 
 A plan's and a manifest's sources have a [package type](concepts.md#packages-and-package-types)
 (`package_type`, spec 0034), left out for `duckdb_extension`, the type of every source today: an
 extension bundle or plan is the document it was, and an older kista reads it. A source that names
-`duckdb_extension`, or a type the importer does not know, is refused.
+`duckdb_extension` is refused. A source of a type the importer, or the exporter reading a plan, does
+not know is left out by itself, with a problem: nothing of it is read and the rest is taken
+([Compatibility](compatibility.md)).
 
 ### Importing a bundle
 
@@ -1008,7 +1029,9 @@ A bundle is read once, front to back, and never extracted. The import:
    file checks, the slot. A release becomes current as it is inserted, as in a run.
 4. **Records the cells without a file**: `missing`, `rejected` (with the exporter's reason after
    `bundle:`), `unchanged` (kept only when the site holds that body; otherwise `missing`), and a
-   file that never came, `failed`. Cells the bundle does not mention keep their records.
+   file that never came, `failed`. A cell in an outcome this kista does not know (a newer
+   exporter's) is `failed` too, saying so: what the cell holds stays. Cells the bundle does not
+   mention keep their records.
 
 **No downgrade.** A cell that held a body takes another only if the bundle's copy was fetched at
 its source later than the cell's (`fetched_at`); otherwise it is counted `stale` and keeps what it
@@ -1020,7 +1043,9 @@ outcomes, and a gzip entry or file that does not match the signed manifest (dama
 **Stalls and limits.** An input that sends nothing for 5 minutes, or less than `upstreams.min_rate`
 once 30 seconds of waiting have passed, ends the import; what completed stays (each release is
 atomic). One file is spooled at a time: the spool (`blob.spool_dir`) needs about `blob.max_body`
-free, beside what `kista serve` uses. The import ends at the tar's end-of-archive blocks.
+free, beside what `kista serve` uses. The import ends at the tar's end-of-archive blocks. It reads
+at most `bundles.max_size` of its input, from a file, standard input or `imports/` as from an
+upload: a bundle past that stops, as a truncated one does.
 
 **`imports/`.** `blob:<domain>/imports/<name>` reads an object under the domain's `imports/`
 prefix, `<name>` matching `[a-z0-9][a-z0-9._-]{0,127}`. kista only reads there: it never writes,
@@ -1067,7 +1092,11 @@ bundle-mode feeds whose URL is a feed of the bundle, or the `-feed` ones (with o
   command exits `1`. Write a new plan.
 - A dry run checks each statement's signature, issuer, kind, title, size, media type and content,
   the bodies the bundle brings counted as held, and stores nothing (`would_store`,
-  `would_withdraw`, refusals). Quotas and `supersedes` are judged by a real import only.
+  `would_withdraw`, `would_wait` for a statement the import would leave waiting, refusals). Quotas
+  and `supersedes` are judged by a real import only.
+- **A plan written during the import** may take a feed's cursor back to a statement that waits
+  ([Compatibility](compatibility.md#waiting-and-taking-again)); the import then fails that feed's
+  target and moves nothing. Import a bundle of the new plan.
 - **A statement out of seq order** within its body holds the body too.
 - `bundle reset <tenant> -feed <name>` clears a feed's last-bundle mark and resets its cursors.
   Write a new plan after it: the bundle answering it takes the feed's history again (statements

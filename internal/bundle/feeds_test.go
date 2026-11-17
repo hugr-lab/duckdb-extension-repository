@@ -217,7 +217,7 @@ func TestFeedValidate(t *testing.T) {
 	}
 	b, _ := json.Marshal(p)
 	var back bundle.Plan
-	if err := bundle.DecodeStrict(b, &back); err != nil || back.Validate() != nil || len(back.Feeds) != 1 {
+	if err := bundle.Decode(b, &back); err != nil || back.Validate() != nil || len(back.Feeds) != 1 {
 		t.Fatalf("round trip: %v", err)
 	}
 	pmod := func(fn func(*bundle.PlanFeed)) bundle.Plan {
@@ -229,11 +229,12 @@ func TestFeedValidate(t *testing.T) {
 		return q
 	}
 	for name, q := range map[string]bundle.Plan{
-		"no key":          pmod(func(f *bundle.PlanFeed) { f.Keys = nil }),
-		"an unknown kind": pmod(func(f *bundle.PlanFeed) { f.Kinds = []string{"gossip"} }),
-		"kinds unsorted":  pmod(func(f *bundle.PlanFeed) { f.Kinds = []string{"sbom", "review"} }),
-		"a source past":   pmod(func(f *bundle.PlanFeed) { f.Sources = []int{1} }),
-		"a negative seq":  pmod(func(f *bundle.PlanFeed) { f.Bodies[0].Seq = -1 }),
+		"no key":           pmod(func(f *bundle.PlanFeed) { f.Keys = nil }),
+		"a kind's grammar": pmod(func(f *bundle.PlanFeed) { f.Kinds = []string{"Gossip"} }),
+		"a kind too long":  pmod(func(f *bundle.PlanFeed) { f.Kinds = []string{"a-kind-over-16-chars"} }),
+		"kinds unsorted":   pmod(func(f *bundle.PlanFeed) { f.Kinds = []string{"sbom", "review"} }),
+		"a source past":    pmod(func(f *bundle.PlanFeed) { f.Sources = []int{1} }),
+		"a negative seq":   pmod(func(f *bundle.PlanFeed) { f.Bodies[0].Seq = -1 }),
 	} {
 		if err := q.Validate(); !errors.Is(err, bundle.ErrInvalid) {
 			t.Errorf("plan %s: %v", name, err)

@@ -31,7 +31,7 @@ func TestManifestRevocations(t *testing.T) {
 		"in a v1 manifest":  func(m *bundle.Manifest) { m.Format = bundle.ManifestFormat },
 		"a name not a cell": func(m *bundle.Manifest) { m.Sources[1].Revocations[0].Name = "httpfs" },
 		"a bad body hash":   func(m *bundle.Manifest) { m.Sources[1].Revocations[0].BodyHash = "x" },
-		"a bad state":       func(m *bundle.Manifest) { m.Sources[1].Revocations[0].State = "gone" },
+		"no state":          func(m *bundle.Manifest) { m.Sources[1].Revocations[0].State = "" },
 		"a bad version":     func(m *bundle.Manifest) { m.Sources[1].Revocations[0].Version = "../1" },
 		"out of order": func(m *bundle.Manifest) {
 			r := m.Sources[1].Revocations

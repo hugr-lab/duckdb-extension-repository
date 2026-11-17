@@ -72,6 +72,10 @@ type Bundle struct {
 	lastFile int
 	seen     map[string]bool
 	inFiles  bool
+	// spec 0046: the files of cells in an outcome this binary does not know, and the bytes of the
+	// entries read through for the parts it left out
+	unknownFiles map[string]bool
+	uncounted    int64
 	// feeds (phase 1b): each entry's feed and place, and each feed's progress
 	feedAt  map[string][2]int
 	feeds   []feedState
@@ -141,7 +145,7 @@ func Open(r io.Reader, now time.Time, pinned func(fingerprint string) bool) (*Bu
 		}
 	}
 	var m Manifest
-	if err := DecodeStrict(b.ManifestBytes, &m); err != nil {
+	if err := Decode(b.ManifestBytes, &m); err != nil {
 		return nil, err
 	}
 	if err := m.Validate(now); err != nil {
@@ -156,12 +160,18 @@ func Open(r io.Reader, now time.Time, pinned func(fingerprint string) bool) (*Bu
 	for i, p := range m.FileOrder() {
 		b.order[p] = i
 	}
+	b.unknownFiles = map[string]bool{}
 	for _, s := range m.Sources {
 		for _, c := range s.Cells {
 			if c.Outcome == Fetched {
 				b.files[c.File] = c.Size
+			} else if !KnownOutcome(c.Outcome) && c.File != "" {
+				b.unknownFiles[c.File] = true
 			}
 		}
+	}
+	for f := range b.files {
+		delete(b.unknownFiles, f) // a file a cell this binary reads names is that cell's
 	}
 	b.feeds = make([]feedState, len(m.Feeds))
 	for fi, f := range m.Feeds {
@@ -190,7 +200,8 @@ func (b *Bundle) Next() (Item, error) {
 		} else if e, err = b.t.Next(); err != nil {
 			return Item{}, err
 		}
-		if b.t.Skipped()+b.skippable(e) > MaxSkipped {
+		left := b.leftOut(e)
+		if !left && b.t.Skipped()-b.uncounted+b.skippable(e) > MaxSkipped {
 			return Item{}, fmt.Errorf("%w: over %d bytes of entries read through", ErrMalformed, MaxSkipped)
 		}
 		if strings.HasPrefix(e.Name, "sources/") && b.inFiles {
@@ -201,6 +212,17 @@ func (b *Bundle) Next() (Item, error) {
 		}
 		if strings.HasPrefix(e.Name, "files/") {
 			b.inFiles = true
+		}
+		if left {
+			// an entry of a part this binary left out (spec 0046): read through without counting toward
+			// MaxSkipped. What bounds it is the bundle's whole size, which its reader caps (an upload's
+			// bundles.max_size, and the same setting for the bytes an import reads). Nothing is
+			// remembered of it, so memory does not grow with entries the manifest does not name
+			b.uncounted += e.Size + e.Overhead
+			if err := b.t.Skip(e); err != nil {
+				return Item{}, err
+			}
+			continue
 		}
 		if !e.Regular || b.seen[e.Name] || e.Name == ManifestEntry || e.Name == SigEntry || e.Name == PubEntry {
 			if err := b.t.Skip(e); err != nil {
@@ -304,6 +326,21 @@ func (b *Bundle) FeedWhole(fi int) bool {
 	return true
 }
 
+// leftOut reports an entry of a part of the bundle this binary left out (spec 0046): the file of a
+// cell in an outcome it does not know (its name is the manifest's), and, when the manifest has a
+// source of a package type it does not know (of which nothing is read, its entries' names
+// neither), any entry under sources/ or files/ that the manifest's other sources do not name, or
+// name once and that came already.
+func (b *Bundle) leftOut(e RawEntry) bool {
+	if !e.Regular || b.skippable(e) == 0 {
+		return false
+	}
+	if b.unknownFiles[e.Name] {
+		return true
+	}
+	return len(b.Manifest.LeftOut) > 0 && (strings.HasPrefix(e.Name, "sources/") || strings.HasPrefix(e.Name, "files/"))
+}
+
 func (b *Bundle) skippable(e RawEntry) int64 {
 	_, feed := b.feedAt[e.Name]
 	if e.Regular && !b.seen[e.Name] && (b.sources[e.Name] != nil || b.files[e.Name] != 0 || feed) {
@@ -341,7 +378,7 @@ func (b *Bundle) SHA256() string { return b.t.SHA256() }
 // Ended reports whether the end of archive was read.
 func (b *Bundle) Ended() bool { return b.t.Ended() }
 
-// Skipped is the size of the entries read through.
+// Skipped is the size of the entries read through, those of the parts left out too.
 func (b *Bundle) Skipped() int64 { return b.t.Skipped() }
 
 // WriteHead writes a bundle's head: the manifest and, with a key, its signature and public key.

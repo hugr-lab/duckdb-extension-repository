@@ -159,7 +159,7 @@ var writes = map[string]map[string][]audit.Kind{
 	},
 	"attachment.Feeds": {
 		"Add": {"feed.add"}, "Change": {"feed.change"}, "Remove": {"feed.remove"}, "RunFeed": {"feed.run"},
-		"List": nil, "Get": nil, "Sync": nil, "ImportFeed": nil, // the import's run is recorded by Import
+		"List": nil, "Get": nil, "Sync": nil, "ReaderLevel": nil, "ImportFeed": nil, // the import's run is recorded by Import
 	},
 }
 

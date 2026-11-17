@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -225,6 +226,10 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 		token string
 	}
 	var ok []item
+	// spec 0046: a token in a format above the one this kista reads is refused, and its name is
+	// kept: the licence stored for that name stays until its own expiry and grace, since a token
+	// this kista cannot read is not a name left out
+	newer := map[string]bool{}
 	for _, token := range tokens {
 		tok, err := s.parse(token)
 		if err != nil {
@@ -236,6 +241,9 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 			name, id := "", ""
 			if p, perr := license.Parse(token); perr == nil {
 				name, id = p.Extension, p.ID
+			} else if ext, is := license.Newer(token); is {
+				name, newer[ext] = ext, true
+				res.Counts["newer"]++
 			}
 			res.refuse(name, id, rule, err.Error())
 			continue
@@ -268,7 +276,7 @@ func (s *Service) apply(ctx context.Context, t store.Tenant, u store.Upstream, t
 		}
 		typ := home.PackageType
 		counts, refused = map[string]int{}, nil
-		keep := map[string]bool{}
+		keep := maps.Clone(newer)
 		for _, it := range ok {
 			name := it.tok.Extension
 			supplied, err := tx.SuppliedBy(ctx, cur, typ, name)

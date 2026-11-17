@@ -242,6 +242,10 @@ type Feed struct {
 
 	Keys     []string // pinned attestation key fingerprints
 	Channels []string // channel ids, for OfferChannels
+	// Waiting counts, by each body's last reason, what the feed passed over because this binary
+	// could not read it (spec 0046); WaitingSource what arrived without content because the
+	// exporting kista could not. Filled where a feed is shown, not by every read
+	Waiting, WaitingSource map[string]int
 }
 
 // FeedLock orders a tenant's feed changes.
@@ -520,9 +524,36 @@ func (s *Store) FeedCursors(ctx context.Context, feedID string) (map[string]int6
 	return out, err
 }
 
-// SetFeedCursor moves a feed's cursor for a body forward to seq.
+// FeedCursors reads a feed's last seq received per body, in a transaction.
+func (t *Tx) FeedCursors(ctx context.Context, feedID string) (map[string]int64, error) {
+	rows, err := t.query(ctx, "SELECT body_hash, seq FROM feed_cursors WHERE feed_id = ?", feedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var h string
+		var seq int64
+		if err := rows.Scan(&h, &seq); err != nil {
+			return nil, err
+		}
+		out[h] = seq
+	}
+	return out, rows.Err()
+}
+
+// SetFeedCursor moves a feed's cursor for a body forward to seq. A waiting state left for display
+// by a rewind (RetakeFeedCursors: its lowest seq is above the cursor) is cleared once the cursor
+// reaches that seq again: the range was judged again, and what still waits is recorded anew.
 func (t *Tx) SetFeedCursor(ctx context.Context, feedID, bodyHash string, seq int64) error {
-	res, err := t.exec(ctx, "UPDATE feed_cursors SET seq = ? WHERE feed_id = ? AND body_hash = ? AND seq < ?", seq, feedID, bodyHash, seq)
+	const again = "waiting_from > seq AND waiting_from <= ?"
+	res, err := t.exec(ctx, `UPDATE feed_cursors SET
+waiting = CASE WHEN `+again+` THEN 0 ELSE waiting END,
+waiting_why = CASE WHEN `+again+` THEN NULL ELSE waiting_why END,
+reader_level = CASE WHEN `+again+` THEN 0 ELSE reader_level END,
+waiting_from = CASE WHEN `+again+` THEN NULL ELSE waiting_from END,
+seq = ? WHERE feed_id = ? AND body_hash = ? AND seq < ?`, seq, seq, seq, seq, seq, feedID, bodyHash, seq)
 	if err != nil {
 		return err
 	}
@@ -535,6 +566,165 @@ func (t *Tx) SetFeedCursor(ctx context.Context, feedID, bodyHash string, seq int
 	}
 	_, err = t.exec(ctx, "INSERT INTO feed_cursors (feed_id, body_hash, seq) VALUES (?, ?, ?)", feedID, bodyHash, seq)
 	return t.s.mapErr(err, "feed cursor")
+}
+
+// FeedWait is what a feed passed over for a body because its binary could not read it (spec 0046):
+// the lowest such seq, how many, the last reason, and the reader level of the binary that passed
+// over them (0: asked for again at every retake, whatever the binary).
+type FeedWait struct {
+	BodyHash string
+	From     int64
+	Count    int
+	Why      string
+	Level    int
+	at       int64 // the cursor, where a retake reads it
+}
+
+// AddFeedWait records what a feed passed over for a body, on its cursor's row (the cursor is past
+// it already): the lowest seq is kept, the count raised, the reason the last one. A row has one
+// level: one that has waiting state already keeps the lower.
+func (t *Tx) AddFeedWait(ctx context.Context, feedID string, w FeedWait) error {
+	_, err := t.exec(ctx, `UPDATE feed_cursors SET
+reader_level = CASE WHEN waiting_from IS NOT NULL AND reader_level < ? THEN reader_level ELSE ? END,
+waiting_from = CASE WHEN waiting_from IS NOT NULL AND waiting_from < ? THEN waiting_from ELSE ? END,
+waiting = waiting + ?, waiting_why = ? WHERE feed_id = ? AND body_hash = ?`,
+		w.Level, w.Level, w.From, w.From, w.Count, w.Why, feedID, w.BodyHash)
+	return err
+}
+
+// FeedWaits reads a feed's waiting state per body.
+func (s *Store) FeedWaits(ctx context.Context, feedID string) (map[string]FeedWait, error) {
+	var out map[string]FeedWait
+	err := s.InTx(ctx, "", func(tx *Tx) (err error) { out, err = tx.FeedWaits(ctx, feedID); return })
+	return out, err
+}
+
+// FeedWaits reads a feed's waiting state per body, in a transaction.
+func (t *Tx) FeedWaits(ctx context.Context, feedID string) (map[string]FeedWait, error) {
+	rows, err := t.query(ctx, `SELECT body_hash, waiting_from, waiting, waiting_why, reader_level FROM feed_cursors
+WHERE feed_id = ? AND waiting_from IS NOT NULL`, feedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]FeedWait{}
+	for rows.Next() {
+		var w FeedWait
+		var why sql.NullString
+		if err := rows.Scan(&w.BodyHash, &w.From, &w.Count, &why, &w.Level); err != nil {
+			return nil, err
+		}
+		w.Why = why.String
+		out[w.BodyHash] = w
+	}
+	return out, rows.Err()
+}
+
+// FeedWaiting counts what a feed passed over, by each body's last reason (for display: the count
+// may overstate, spec 0046): Own, what this kista is too old to read; Source, what arrived without
+// content because the exporting kista could not read it (level 0: a body's row has one level, the
+// lower).
+type FeedWaiting struct {
+	Own, Source map[string]int
+}
+
+// FeedsWaiting counts what a tenant's feeds passed over, per feed.
+func (t *Tx) FeedsWaiting(ctx context.Context, tenantID string) (map[string]FeedWaiting, error) {
+	rows, err := t.query(ctx, `SELECT c.feed_id, c.waiting_why, c.reader_level, c.waiting FROM feed_cursors c JOIN feeds f ON f.id = c.feed_id
+WHERE f.tenant_id = ? AND c.waiting_from IS NOT NULL`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]FeedWaiting{}
+	for rows.Next() {
+		var id string
+		var why sql.NullString
+		var level, n int
+		if err := rows.Scan(&id, &why, &level, &n); err != nil {
+			return nil, err
+		}
+		w := out[id]
+		into := &w.Own
+		if level == 0 {
+			into = &w.Source
+		}
+		if *into == nil {
+			*into = map[string]int{}
+		}
+		(*into)[why.String] += n
+		out[id] = w
+	}
+	return out, rows.Err()
+}
+
+// RetakeFeedCursors takes again what a feed passed over at a reader level below level (spec 0046):
+// each such cursor goes back to just below the lowest seq it passed over, and the refusals the feed
+// kept for export of that body from that seq on are deleted (the replay keeps again what is still
+// refused or waits). The waiting state of a level this binary outgrew is cleared. That of level 0
+// (statements that arrived without content) stays for display until the range is judged again
+// (SetFeedCursor clears it then): the exporting kista is still the older one. It answers the bodies
+// rewound. This is the one operation that moves a cursor back; the caller holds the tenant's feed
+// lock.
+func (t *Tx) RetakeFeedCursors(ctx context.Context, feedID string, level int) (int, error) {
+	rows, err := t.query(ctx, `SELECT body_hash, waiting_from, reader_level, seq FROM feed_cursors
+WHERE feed_id = ? AND waiting_from IS NOT NULL AND reader_level < ?`, feedID, level)
+	if err != nil {
+		return 0, err
+	}
+	var waits []FeedWait
+	for rows.Next() {
+		var w FeedWait
+		if err := rows.Scan(&w.BodyHash, &w.From, &w.Level, &w.at); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		waits = append(waits, w)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, w := range waits {
+		q := `UPDATE feed_cursors SET seq = ?, waiting_from = NULL, waiting = 0, waiting_why = NULL, reader_level = 0
+WHERE feed_id = ? AND body_hash = ?`
+		if w.Level == 0 {
+			if w.at < w.From {
+				continue // rewound already, not judged again yet
+			}
+			q = "UPDATE feed_cursors SET seq = ? WHERE feed_id = ? AND body_hash = ?"
+		}
+		n++
+		if _, err := t.exec(ctx, q, w.From-1, feedID, w.BodyHash); err != nil {
+			return 0, err
+		}
+		if _, err := t.exec(ctx, "DELETE FROM feed_refusals WHERE feed_id = ? AND body_hash = ? AND seq >= ?", feedID, w.BodyHash, w.From); err != nil {
+			return 0, err
+		}
+	}
+	return n, nil
+}
+
+// NarrowFeedAttachment narrows a received document to administrators and marks it narrowed (spec
+// 0046: a statement in a newer format about it whose audience is not readers). The mark holds until
+// a statement this kista reads, newer than the document's, is stored (ReissueFeedAttachment): until
+// then its audience is administrators, whatever its stored statement says, and no administrator
+// widens it. It answers whether the document changed.
+func (t *Tx) NarrowFeedAttachment(ctx context.Context, a *Attachment) (bool, error) {
+	res, err := t.exec(ctx, "UPDATE attachments SET visibility = ?, narrowed = ?, version = version + 1 WHERE id = ? AND removed_at IS NULL AND narrowed = ?",
+		VisibleAdministrators, true, a.ID, false)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		a.Visibility, a.Narrowed = VisibleAdministrators, true
+		a.Version++
+	}
+	return n > 0, nil
 }
 
 // DeleteGoneFeedCursors deletes the cursors of bodies a domain's tenants no longer hold and have not
@@ -585,15 +775,18 @@ func (t *Tx) FeedAttachment(ctx context.Context, tenantID, issuer, issuerID stri
 }
 
 // ReissueFeedAttachment records a newer statement about a document already received: its seq,
-// statement, signature, key and validity; a withdrawn one is offered again. Its visibility only
+// statement, signature, key and validity; a withdrawn one is offered again, and a mark left by a
+// statement in a newer format (NarrowFeedAttachment) is cleared: this statement says who may see
+// it. Its visibility only
 // narrows (to administrators, when a.Visibility says so): what an administrator here set meanwhile
 // is never widened from a stale read.
 func (t *Tx) ReissueFeedAttachment(ctx context.Context, a *Attachment) error {
 	return t.cas(ctx, `UPDATE attachments SET seq = ?, statement = ?, signature = ?, key_fp = ?, issued_at = ?, valid_until = ?,
-visibility = CASE WHEN ? = ? THEN ? ELSE visibility END, withdrawn_at = NULL, version = version + 1
+visibility = CASE WHEN ? = ? THEN ? ELSE visibility END, narrowed = ?, withdrawn_at = NULL, version = version + 1
 WHERE id = ? AND removed_at IS NULL AND (seq IS NULL OR seq < ?)`,
 		[]any{a.Seq, nullable(a.Statement), nullable(a.Signature), nullable(a.KeyFP), t.s.d.timeArg(a.IssuedAt), t.s.d.nullTimeArg(a.ValidUntil),
-			a.Visibility, VisibleAdministrators, VisibleAdministrators, a.ID, a.Seq}, func() { a.WithdrawnAt = time.Time{}; a.Version++ })
+			a.Visibility, VisibleAdministrators, VisibleAdministrators, false, a.ID, a.Seq},
+		func() { a.WithdrawnAt, a.Narrowed = time.Time{}, false; a.Version++ })
 }
 
 // ReattributeFeedDocuments hands a feed's documents to another feed of the same source (removing a

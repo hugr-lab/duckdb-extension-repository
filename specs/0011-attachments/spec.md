@@ -193,8 +193,10 @@ them under the extension:
   `publisher:<name>`), `audience` (`administrators`, or `readers` when the source lets subscribers
   show it to their readers), `withdrawn` (true for a withdrawal, which carries no content). Every
   field the subscriber stores or shows is signed. Numbers are integers, so the canonical form is
-  plain; the subscriber also refuses bytes that are not the statement's canonical form, and unknown
-  fields. The subscriber does not store the received `summary`: it computes its own from the
+  plain; the subscriber also refuses bytes that are not the statement's canonical form. Unknown
+  fields are ignored (spec 0046), under the member-name rule: every member name at every depth is
+  `[a-z0-9_]{1,64}` and none is twice in its object, or the statement does not verify. The
+  subscriber does not store the received `summary`: it computes its own from the
   content, which the signed hash binds, as an intake does.
 - **The audience** is the source document's visibility: a document the source shows its own
   readers may be shown to the subscribers' readers.
@@ -261,8 +263,10 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
   - Quotas: a feed's documents count against a tenant quota of their own (100,000), apart from the
     tenant's own documents, and the heads limit counts per issuer, so one source never uses up the
     tenant's or another source's room.
-  - The cursor advances past a statement that was stored or permanently refused (a limit, content
-    that does not match, a kind not accepted), each refusal recorded; a transient failure (a fetch,
+  - The cursor advances past a statement that was stored, permanently refused (a limit, content
+    that does not match, a kind not accepted), each refusal recorded, or left waiting (spec 0046: a
+    newer format, a kind, media type or document version this kista does not read; counted, and
+    taken again by itself once the kista is upgraded); a transient failure (a fetch,
     egress, a document the source no longer serves) leaves it, and that body's later statements
     wait, so the next run tries again in order. A statement that does not verify, or names another
     issuer, holds its body's cursor the same way (every body's in that request when its body cannot

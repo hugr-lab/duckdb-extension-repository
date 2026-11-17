@@ -158,8 +158,10 @@ func (s *Service) feedChannels(ctx context.Context, a authz.Actor, tenant string
 
 // Feed answers a subscriber's bodies with the statements issued about them after its cursors: only
 // for bodies released in the channels its feed grant covers (any other body answers like one
-// without documents), only documents still offered, and withdrawals.
-func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies []FeedBody) (FeedAnswer, error) {
+// without documents), only documents still offered, and withdrawals. A request that names an issuer
+// asks for that issuer's statements relayed here (spec 0045's selector, part of the route from the
+// start, spec 0046): this kista relays none, so it answers no statements, never its own.
+func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies []FeedBody, issuer string) (FeedAnswer, error) {
 	out := FeedAnswer{Statements: []WireStatement{}, Bodies: []HighWater{}}
 	channels, err := s.feedChannels(ctx, a, tenant)
 	if err != nil {
@@ -167,6 +169,9 @@ func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies
 	}
 	if len(bodies) > MaxFeedBodies {
 		return out, fmt.Errorf("%w: at most %d bodies a request", store.ErrInvalid, MaxFeedBodies)
+	}
+	if issuer != "" {
+		return out, nil
 	}
 	seen := map[string]bool{}
 	var hashes []string

@@ -56,7 +56,7 @@ var ErrDocument = errors.New("attachment: the document")
 func CanonicalMediaType(kind, declared string) (string, error) {
 	mt, params, err := mime.ParseMediaType(declared)
 	if err != nil {
-		return "", fmt.Errorf("%w: media type %q", store.ErrInvalid, declared)
+		return "", fmt.Errorf("%w: %w: %q", store.ErrInvalid, errMediaSyntax, declared)
 	}
 	if mt == "application/json" && params["profile"] == "osv-scanner" {
 		mt = OSVScanner
@@ -72,19 +72,72 @@ func CanonicalMediaType(kind, declared string) (string, error) {
 	return "", fmt.Errorf("%w: a %s is %s, not %q", store.ErrInvalid, kind, strings.Join(mediaTypes[kind], " or "), declared)
 }
 
+var errMediaSyntax = errors.New("not a media type")
+
+// RefusedMediaSpelling refuses, for good, a statement whose media type is one its kind takes in
+// another spelling (a parameter, another case), or is no media type at all: a statement names the
+// canonical form. Its own word, apart from the waiting reason WaitMedia, so that neither a kept
+// row nor a bundle's note can be read as the other.
+const RefusedMediaSpelling = "media type spelling"
+
+// MediaTypeVerdict judges a statement's media type for its kind (a kind this binary knows): ""
+// when the kind takes it as written, WaitMedia when the kind does not take it here (a later
+// release may), RefusedMediaSpelling otherwise.
+func MediaTypeVerdict(kind, declared string) string {
+	mt, err := CanonicalMediaType(kind, declared)
+	switch {
+	case errors.Is(err, errMediaSyntax), err == nil && mt != declared:
+		return RefusedMediaSpelling
+	case err != nil:
+		return WaitMedia
+	}
+	return ""
+}
+
 // ValidTitle checks a title: at most 200 bytes of printable text.
 func ValidTitle(t string) error {
-	if t == "" || len(t) > maxTitle || !utf8.ValidString(t) || strings.ContainsFunc(t, func(r rune) bool {
-		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
-	}) {
+	if len(t) > maxTitle || !printable(t) {
 		return fmt.Errorf("%w: a title is 1 to %d bytes of printable text", store.ErrInvalid, maxTitle)
 	}
 	return nil
 }
 
-// Summarize checks a document against its kind and media type and computes its summary (spec 0011:
-// once, at intake). A document it cannot summarise is refused.
+// printable is a title's predicate: text that is not empty, valid UTF-8, with no control or format
+// character.
+func printable(t string) bool {
+	return t != "" && utf8.ValidString(t) && !strings.ContainsFunc(t, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	})
+}
+
+// ErrDocumentVersion is a document of its kind and media type in a version this binary does not
+// read (spec 0046): it wraps ErrDocument. Received from a feed, such a document waits for an upgrade
+// (or is stored by its kind's floor); attached here, it is refused.
+var ErrDocumentVersion = fmt.Errorf("%w: a version this kista does not read", ErrDocument)
+
+// Floor is what a kind reads of a document whatever its version (spec 0046): its summary. A kind
+// that declares one stores and shows a received document of a version this binary does not read
+// instead of leaving it waiting; the rest of the document is never interpreted.
+type Floor func(mediaType string, content []byte) (map[string]any, error)
+
+// floors are the kinds' declared floors. No kind of this release declares one: every one waits on
+// a version it does not read (spec 0045's report declares its own).
+var floors = map[string]Floor{}
+
+// Summarize checks a document attached here against its kind and media type and computes its
+// summary (spec 0011: once, at intake). A document it cannot summarise is refused.
 func Summarize(kind, mediaType string, content []byte) (string, error) {
+	return summarize(kind, mediaType, content, false)
+}
+
+// SummarizeReceived is Summarize for a document received from a feed or a bundle (spec 0046): a
+// review's unknown members are ignored, and a document in a version this binary does not read is
+// ErrDocumentVersion unless its kind declares a floor, which then summarises it.
+func SummarizeReceived(kind, mediaType string, content []byte) (string, error) {
+	return summarize(kind, mediaType, content, true)
+}
+
+func summarize(kind, mediaType string, content []byte, received bool) (string, error) {
 	var sum map[string]any
 	var err error
 	if kind == store.KindNotes {
@@ -109,12 +162,15 @@ func Summarize(kind, mediaType string, content []byte) (string, error) {
 		case OSVScanner:
 			sum, err = osvScanner(content)
 		case Review:
-			sum, err = review(content)
+			sum, err = review(content, received)
 		case Sigstore, DSSE:
 			sum, err = provenance(mediaType, content)
 		default:
 			err = fmt.Errorf("%w: media type %s", ErrDocument, mediaType)
 		}
+	}
+	if floor := floors[kind]; received && floor != nil && errors.Is(err, ErrDocumentVersion) {
+		sum, err = floor(mediaType, content)
 	}
 	if err != nil {
 		return "", err
@@ -197,11 +253,11 @@ func cyclonedxSBOM(b []byte) (map[string]any, error) {
 		SpecVersion string         `json:"specVersion"`
 		Components  []cdxComponent `json:"components"`
 	}
-	if err := json.Unmarshal(b, &d); err != nil || d.BOMFormat != "CycloneDX" {
+	if err := json.Unmarshal(b, &d); err != nil || d.BOMFormat != "CycloneDX" || d.SpecVersion == "" {
 		return nil, fmt.Errorf("%w: not a CycloneDX BOM", ErrDocument)
 	}
 	if !strings.HasPrefix(d.SpecVersion, "1.") {
-		return nil, fmt.Errorf("%w: CycloneDX %q", ErrDocument, d.SpecVersion)
+		return nil, fmt.Errorf("%w: CycloneDX %q", ErrDocumentVersion, clipWord(d.SpecVersion))
 	}
 	licences := map[string]bool{}
 	components, crypto := 0, 0
@@ -233,13 +289,24 @@ func cyclonedxSBOM(b []byte) (map[string]any, error) {
 
 func spdx(b []byte) (map[string]any, error) {
 	var d struct {
-		SPDXVersion string `json:"spdxVersion"`
+		SPDXVersion string          `json:"spdxVersion"`
+		Context     json.RawMessage `json:"@context"`
 		Packages    []struct {
 			LicenseConcluded string `json:"licenseConcluded"`
 		} `json:"packages"`
 	}
-	if err := json.Unmarshal(b, &d); err != nil || !strings.HasPrefix(d.SPDXVersion, "SPDX-2.") {
-		return nil, fmt.Errorf("%w: not an SPDX 2 document", ErrDocument)
+	if err := json.Unmarshal(b, &d); err != nil {
+		return nil, fmt.Errorf("%w: not an SPDX document", ErrDocument)
+	}
+	// SPDX 3 is JSON-LD: no spdxVersion at its top, its @context one of spdx.org's
+	if d.SPDXVersion == "" && bytes.Contains(d.Context, []byte("spdx.org")) {
+		return nil, fmt.Errorf("%w: SPDX 3 (JSON-LD)", ErrDocumentVersion)
+	}
+	if !strings.HasPrefix(d.SPDXVersion, "SPDX-") {
+		return nil, fmt.Errorf("%w: not an SPDX document", ErrDocument)
+	}
+	if !strings.HasPrefix(d.SPDXVersion, "SPDX-2.") {
+		return nil, fmt.Errorf("%w: %q", ErrDocumentVersion, clipWord(d.SPDXVersion))
 	}
 	licences := map[string]bool{}
 	for _, p := range d.Packages {
@@ -292,8 +359,9 @@ func vulnSummary(counts map[string]int, notAffected int, scannedAt string) map[s
 
 func cyclonedxVulns(b []byte) (map[string]any, error) {
 	var d struct {
-		BOMFormat string `json:"bomFormat"`
-		Metadata  struct {
+		BOMFormat   string `json:"bomFormat"`
+		SpecVersion string `json:"specVersion"`
+		Metadata    struct {
 			Timestamp string `json:"timestamp"`
 		} `json:"metadata"`
 		Vulnerabilities []struct {
@@ -307,6 +375,10 @@ func cyclonedxVulns(b []byte) (map[string]any, error) {
 	}
 	if err := json.Unmarshal(b, &d); err != nil || d.BOMFormat != "CycloneDX" {
 		return nil, fmt.Errorf("%w: not a CycloneDX VDR or VEX", ErrDocument)
+	}
+	// a VDR without a specVersion was always read; one that names another major is not
+	if d.SpecVersion != "" && !strings.HasPrefix(d.SpecVersion, "1.") {
+		return nil, fmt.Errorf("%w: CycloneDX %q", ErrDocumentVersion, clipWord(d.SpecVersion))
 	}
 	counts, notAffected := map[string]int{}, 0
 	for i, v := range d.Vulnerabilities {
@@ -375,8 +447,11 @@ func sarif(b []byte) (map[string]any, error) {
 			} `json:"results"`
 		} `json:"runs"`
 	}
-	if err := json.Unmarshal(b, &d); err != nil || d.Version != "2.1.0" {
-		return nil, fmt.Errorf("%w: not SARIF 2.1.0", ErrDocument)
+	if err := json.Unmarshal(b, &d); err != nil || d.Version == "" {
+		return nil, fmt.Errorf("%w: not SARIF", ErrDocument)
+	}
+	if d.Version != "2.1.0" {
+		return nil, fmt.Errorf("%w: SARIF %q", ErrDocumentVersion, clipWord(d.Version))
 	}
 	counts, n, scanned := map[string]int{}, 0, ""
 	for _, r := range d.Runs {
@@ -471,16 +546,25 @@ type ReviewFinding struct {
 	Detail   string `json:"detail"`
 }
 
-func review(b []byte) (map[string]any, error) {
+// review reads a kista.review.v1 document. Attached here, a member or a verdict it does not know
+// is refused (a typo must fail); received from a feed or a bundle, the member is ignored and the
+// verdict makes the review wait (spec 0046): a later analyser may say more.
+func review(b []byte, received bool) (map[string]any, error) {
 	var r ReviewV1
 	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
+	if !received {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(&r); err != nil || r.Schema != "kista.review.v1" {
 		return nil, fmt.Errorf("%w: not a kista.review.v1 document", ErrDocument)
 	}
 	switch r.Verdict {
 	case "approved", "conditional", "rejected":
 	default:
+		if received && r.Verdict != "" {
+			// a verdict of a later release is not guessed at: the review waits (spec 0046)
+			return nil, fmt.Errorf("%w: a review's verdict %q", ErrDocumentVersion, clipWord(r.Verdict))
+		}
 		return nil, fmt.Errorf("%w: a review's verdict is approved, conditional or rejected", ErrDocument)
 	}
 	at, err := time.Parse(time.RFC3339, r.AnalysedAt)
@@ -615,4 +699,12 @@ func firstOf(ss ...string) string {
 		}
 	}
 	return ""
+}
+
+// clipWord clips a document's own word for an error message: a version is shown, never trusted.
+func clipWord(s string) string {
+	if len(s) > 40 {
+		s = strings.ToValidUTF8(s[:40], "")
+	}
+	return s
 }

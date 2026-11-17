@@ -159,6 +159,7 @@ describe('<kista-console>', () => {
     el.addEventListener('kista-navigate', (e) => nav((e as CustomEvent).detail))
     document.body.appendChild(el)
     expect(el.dataset.contract).toBe(String(contract))
+    expect(contract).toBe(1) // spec 0046: the mount contract is never changed; options and exports are added
     expect(el.shadowRoot).toBeNull() // no token function yet: nothing mounted
     el.getToken = async () => 'tok'
     await waitFor(() => expect(nav).toHaveBeenCalledWith({ path: '/p/catalogue', replace: true }))

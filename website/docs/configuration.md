@@ -797,7 +797,7 @@ Bundles uploaded over the API (spec 0014 phase 2). File-only. See
 
 | Setting | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `bundles.max_size` | size | `20GiB` | An upload's largest size; 1 MiB to 1024 GiB. |
+| `bundles.max_size` | size | `20GiB` | An upload's largest size, and the most `kista admin bundle import` reads of a bundle; 1 MiB to 1024 GiB. |
 | `bundles.chunk_size` | size | `16MiB` | The largest chunk; 1 to 64 MiB. A client may ask for smaller chunks. |
 | `bundles.upload_ttl` | duration | `24h` | An upload sending no chunk this long expires, and a failed one kept for retry; `1h..168h`. |
 | `bundles.upload_max_age` | duration | `168h` | An upload not completed this long after its creation expires; at least `upload_ttl`, at most `720h`. |

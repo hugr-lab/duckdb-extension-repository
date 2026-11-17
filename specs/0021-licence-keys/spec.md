@@ -225,8 +225,9 @@ refused by the server (`licenses.refuse_keys`, below) never count.
 - **The manifest.** Each source gets `licenses: [{"name", "token"}]`, with the token as stored (at
   most 16 KiB). The manifest's signature covers them.
 - **Compatibility.** A bundle without licences is the same `kista-bundle/v1` as today. A plan that
-  asks for licences, and a bundle that carries them, need a kista of this version on both sides. An
-  older one refuses them: plans and manifests are decoded strictly.
+  asks for licences, and a bundle that carries them, need a kista of this version on both sides. A
+  trial release (`v0.1.x`) refuses them, decoding plans and manifests strictly; from `v0.2.0` a
+  member a reader does not know is ignored (spec 0046).
 - **The import.** It applies each licence after the files, once per licence. Of the bundle-mode
   upstreams the source fills, the licence goes to the first one that supplies the name.
   - The licence is verified against that upstream's keys, and must be of the expected holder if the

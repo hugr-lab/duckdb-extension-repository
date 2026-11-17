@@ -118,16 +118,19 @@ func attestationKeyState(activate bool) handler {
 // --- the feed a tenant serves ---
 
 // feed answers a subscriber's bodies with statements (not a management route: a feed credential
-// may be long-lived).
+// may be long-lived). It reads bodies and issuer and ignores other members (spec 0046): issuer
+// selects another issuer's statements relayed here (spec 0045), and before that relay exists a
+// request that names one is answered no statements.
 func (h *Handler) feed(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
 		Bodies []attachment.FeedBody `json:"bodies"`
+		Issuer string                `json:"issuer"`
 	}
-	if !body(w, r, &in, maxBody) {
+	if !wireBody(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
-	ans, err := h.o.Attachments.Feed(r.Context(), a, p["t"], in.Bodies)
+	ans, err := h.o.Attachments.Feed(r.Context(), a, p["t"], in.Bodies, in.Issuer)
 	if err != nil {
 		h.attachmentErr(w, err)
 		return
@@ -150,30 +153,36 @@ func (h *Handler) feedDocument(w http.ResponseWriter, r *http.Request, c caller,
 // --- the feeds a tenant subscribes to ---
 
 type feedJSON struct {
-	Name          string          `json:"name"`
-	URL           string          `json:"url"`
-	Credential    string          `json:"credential"`
-	Keys          []string        `json:"keys"`
-	Kinds         []string        `json:"kinds"`
-	Readers       bool            `json:"readers"`
-	Offer         string          `json:"offer"`
-	Channels      []string        `json:"channels,omitempty"`
-	Mode          string          `json:"mode"`
-	Export        bool            `json:"export"`
-	KeysFileAt    string          `json:"keys_file_at,omitempty"`
-	BundleID      string          `json:"bundle_id,omitempty"`
-	BundleCreated string          `json:"bundle_created_at,omitempty"`
-	State         string          `json:"state"`
-	Status        string          `json:"status"`
-	LastError     string          `json:"last_error,omitempty"`
-	LastSuccessAt string          `json:"last_success_at,omitempty"`
-	LastRunAt     string          `json:"last_run_at,omitempty"`
-	LastRun       json.RawMessage `json:"last_run,omitempty"`
-	NextRunAt     string          `json:"next_run_at,omitempty"`
-	RunRequested  bool            `json:"run_requested"`
-	CreatedAt     string          `json:"created_at"`
-	CreatedBy     string          `json:"created_by"`
-	ETag          string          `json:"etag"`
+	Name       string   `json:"name"`
+	URL        string   `json:"url"`
+	Credential string   `json:"credential"`
+	Keys       []string `json:"keys"`
+	Kinds      []string `json:"kinds"`
+	Readers    bool     `json:"readers"`
+	Offer      string   `json:"offer"`
+	Channels   []string `json:"channels,omitempty"`
+	Mode       string   `json:"mode"`
+	Export     bool     `json:"export"`
+	KeysFileAt string   `json:"keys_file_at,omitempty"`
+	// Waiting counts, by each body's last reason, the statements the feed passed over because this
+	// kista is older than its source (spec 0046); they are taken again once it is upgraded.
+	// WaitingWithoutContent counts those a bundle carried without content because the exporting
+	// kista is older than its source: this kista reads them, and asks again with every plan
+	Waiting               map[string]int  `json:"waiting,omitempty"`
+	WaitingWithoutContent map[string]int  `json:"waiting_without_content,omitempty"`
+	BundleID              string          `json:"bundle_id,omitempty"`
+	BundleCreated         string          `json:"bundle_created_at,omitempty"`
+	State                 string          `json:"state"`
+	Status                string          `json:"status"`
+	LastError             string          `json:"last_error,omitempty"`
+	LastSuccessAt         string          `json:"last_success_at,omitempty"`
+	LastRunAt             string          `json:"last_run_at,omitempty"`
+	LastRun               json.RawMessage `json:"last_run,omitempty"`
+	NextRunAt             string          `json:"next_run_at,omitempty"`
+	RunRequested          bool            `json:"run_requested"`
+	CreatedAt             string          `json:"created_at"`
+	CreatedBy             string          `json:"created_by"`
+	ETag                  string          `json:"etag"`
 }
 
 func (h *Handler) feedOf(r *http.Request, f store.Feed, c caller) feedJSON {
@@ -181,7 +190,8 @@ func (h *Handler) feedOf(r *http.Request, f store.Feed, c caller) feedJSON {
 		State: f.State, Status: f.Status, LastError: f.LastError, LastSuccessAt: timeOf(f.LastSuccessAt), LastRunAt: timeOf(f.LastRunAt),
 		NextRunAt: timeOf(f.NextRunAt), RunRequested: !f.RequestedAt.IsZero(), CreatedAt: timeOf(f.CreatedAt),
 		CreatedBy: createdBy(f.CreatedBy, c), ETag: versionTag(f.Version), Mode: f.Mode, Export: f.Export, KeysFileAt: timeOf(f.KeysFileAt),
-		BundleID: f.BundleID, BundleCreated: timeOf(f.BundleCreatedAt)}
+		BundleID: f.BundleID, BundleCreated: timeOf(f.BundleCreatedAt), Waiting: f.Waiting,
+		WaitingWithoutContent: f.WaitingSource}
 	if o.Keys == nil {
 		o.Keys = []string{}
 	}

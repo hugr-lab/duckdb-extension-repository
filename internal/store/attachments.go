@@ -52,11 +52,14 @@ type Attachment struct {
 	WithdrawnAt                                    time.Time
 	Statement, Signature                           string
 	Seq                                            int64 // a feed document's: the statement's seq at its source
+	// Narrowed: a statement in a newer format than this kista reads said the document is not for
+	// readers (spec 0046); its audience is administrators until a readable newer statement arrives
+	Narrowed bool
 }
 
 const attachmentCols = `id, tenant_id, body_hash, kind, media_type, title, size, content_hash, summary, origin, attached_by,
 visibility, feedable, version, removed_at, created_at, issuer, issuer_id, key_fp, source_origin, issued_at, valid_until,
-supersedes, withdrawn_at, statement, signature, seq`
+supersedes, withdrawn_at, statement, signature, seq, narrowed`
 
 func scanAttachment(scan func(...any) error) (Attachment, error) {
 	var a Attachment
@@ -64,7 +67,7 @@ func scanAttachment(scan func(...any) error) (Attachment, error) {
 	var seq sql.NullInt64
 	err := scan(&a.ID, &a.TenantID, &a.BodyHash, &a.Kind, &a.MediaType, &a.Title, &a.Size, &a.ContentHash, &a.Summary, &a.Origin,
 		&a.AttachedBy, &a.Visibility, &a.Feedable, &a.Version, scanTime{&a.RemovedAt}, scanTime{&a.CreatedAt}, &a.Issuer, &a.IssuerID,
-		&key, &src, scanTime{&a.IssuedAt}, scanTime{&a.ValidUntil}, &sup, scanTime{&a.WithdrawnAt}, &stmt, &sig, &seq)
+		&key, &src, scanTime{&a.IssuedAt}, scanTime{&a.ValidUntil}, &sup, scanTime{&a.WithdrawnAt}, &stmt, &sig, &seq, &a.Narrowed)
 	a.Seq = seq.Int64
 	a.KeyFP, a.SourceOrigin, a.Supersedes, a.Statement, a.Signature = key.String, src.String, sup.String, stmt.String, sig.String
 	return a, err
@@ -156,11 +159,11 @@ AND n.supersedes = a.issuer_id AND n.removed_at IS NULL)`, a.TenantID, a.BodyHas
 	if a.IssuedAt.IsZero() {
 		a.IssuedAt = a.CreatedAt
 	}
-	_, err := t.exec(ctx, "INSERT INTO attachments ("+attachmentCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := t.exec(ctx, "INSERT INTO attachments ("+attachmentCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		a.ID, a.TenantID, a.BodyHash, a.Kind, a.MediaType, a.Title, a.Size, a.ContentHash, a.Summary, a.Origin, a.AttachedBy,
 		a.Visibility, a.Feedable, a.Version, t.s.d.nullTimeArg(a.RemovedAt), t.s.d.timeArg(a.CreatedAt), a.Issuer, a.IssuerID,
 		nullable(a.KeyFP), nullable(a.SourceOrigin), t.s.d.timeArg(a.IssuedAt), t.s.d.nullTimeArg(a.ValidUntil), nullable(a.Supersedes),
-		t.s.d.nullTimeArg(a.WithdrawnAt), nullable(a.Statement), nullable(a.Signature), nullableInt(a.Seq))
+		t.s.d.nullTimeArg(a.WithdrawnAt), nullable(a.Statement), nullable(a.Signature), nullableInt(a.Seq), a.Narrowed)
 	return t.s.mapErr(err, "attachment")
 }
 

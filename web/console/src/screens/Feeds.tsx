@@ -31,6 +31,10 @@ export interface Feed {
   last_run_at?: string
   last_run?: { counts?: Record<string, number>; refused?: { issuer_id?: string; reason: string }[]; error?: string }
   run_requested: boolean
+  /** Statements passed over because this kista is older than its source, by each body's last
+   * reason (spec 0046); and those a bundle carried without content, because the exporting kista is. */
+  waiting?: Record<string, number>
+  waiting_without_content?: Record<string, number>
   etag: string
 }
 
@@ -78,6 +82,19 @@ export function feedStatus(f: Feed) {
   return statusWords[f.status] ?? f.status
 }
 
+/** Spec 0046: a feed whose source is newer than this kista, in a line; '' when nothing waits. */
+export function feedOlder(f: Pick<Feed, 'waiting'>) {
+  const why = Object.entries(f.waiting ?? {}).filter(([w, n]) => n > 0 && w !== '').map(([w]) => w).sort()
+  return why.length === 0 ? '' : `This kista is older than its source: documents wait for an upgrade (${why.join(', ')}).`
+}
+
+/** Spec 0046: a bundle-mode feed whose exporting kista is older than its source, in a line. */
+export function feedExporterOlder(f: Pick<Feed, 'waiting_without_content'>) {
+  const all = Object.entries(f.waiting_without_content ?? {}).filter(([w, n]) => n > 0 && w !== '')
+  const n = all.reduce((sum, [, k]) => sum + k, 0)
+  return n === 0 ? '' : `The exporting kista is older than its source: ${n} statements arrived without content (${all.map(([w]) => w).sort().join(', ')}).`
+}
+
 /** A run's counts, those above zero, in a line. */
 export function feedCounts(f: Feed) {
   return Object.entries(f.last_run?.counts ?? {}).filter(([k, n]) => n > 0 && k !== 'offered').map(([k, n]) => `${k} ${n}`).join(' · ')
@@ -122,6 +139,8 @@ export function Feeds() {
                 {f.last_success_at && f.last_success_at !== f.last_run_at && <div className="text-ink-muted">last success {when(f.last_success_at)}</div>}
                 <div className="text-ink-muted" title="held: statements waiting at the cap on what export feeds keep">{feedCounts(f)}</div>
                 {f.last_error && <div className="text-danger break-words">{f.last_error}</div>}
+                {feedOlder(f) && <div className="text-warning">{feedOlder(f)}</div>}
+                {feedExporterOlder(f) && <div className="text-warning">{feedExporterOlder(f)}</div>}
                 {f.run_requested && <div className="text-warning">a sync is requested</div>}
               </span>
             )],
