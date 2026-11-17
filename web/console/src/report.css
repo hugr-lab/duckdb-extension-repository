@@ -46,11 +46,29 @@ html {
   font: 15px/1.55 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
 
+/* The page carries no style of its own, but HTML's presentational attributes (bgcolor, text, a
+   font element's color, a background) are styles all the same, below any rule here: these rules
+   are stated so that none of them can hide or recolour text. */
 body {
   margin: 0;
   padding: 16px 20px 32px;
   max-width: 980px;
   overflow-wrap: anywhere;
+  color: var(--ink);
+  background-color: var(--surface);
+  background-image: none;
+}
+
+table, thead, tbody, tfoot, tr, td, th {
+  color: var(--ink);
+  background-color: transparent;
+  background-image: none;
+}
+
+font {
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -71,7 +89,7 @@ li { margin: 0.15em 0; }
 dt { font-weight: 600; }
 dd { margin: 0 0 0.5em 1.5em; }
 
-a { color: var(--brand); text-decoration: underline; }
+a, a:link, a:visited, a:active { color: var(--brand); text-decoration: underline; }
 
 small, figcaption, caption { color: var(--ink-muted); font-size: 0.87rem; }
 
@@ -120,8 +138,8 @@ th, td {
   vertical-align: top;
 }
 
-th { background: var(--surface-soft); font-weight: 600; }
-tbody tr:nth-child(even) td { background: var(--row); }
+th { background-color: var(--surface-soft); font-weight: 600; }
+tbody tr:nth-child(even) td { background-color: var(--row); }
 
 details {
   padding: 0.5em 0.8em;

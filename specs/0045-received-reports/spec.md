@@ -299,9 +299,14 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 - **What a source learns** from the default offer: the hashes of every build the tenant received
   from outside, undecided ones and other upstreams' included; never its own builds.
 - **The issuer's page.** Closed by the empty `sandbox`: scripts, forms, `meta` refresh, a unique
-  origin. Closed by the frame's `meta` policy: every external load, and every style but kista's
-  one stylesheet (the console's own `style-src 'self'` already blocks inline styles in the frame,
-  which is why the page carries none). Closed by `frame-src 'none'`: a link navigating the frame,
+  origin. Closed by the frame's `meta` policy: every external load the browser test covers (image,
+  style sheet, CSS `url()`, font, media, frame, object), and every style sheet, style element and
+  style attribute but kista's one stylesheet (the console's own `style-src 'self'` already blocks
+  inline styles in the frame, which is why the page carries none). HTML's presentational
+  attributes (`bgcolor`, `text`, a `font` element's `color`, `width`, `align`) are not styles to a
+  policy and still apply; kista's stylesheet states the colours and backgrounds of the body, tables
+  and `font` so that none of them hides or recolours text. Resource hints (`dns-prefetch`,
+  `preconnect`) are not verified closed. Closed by `frame-src 'none'`: a link navigating the frame,
   standalone. **Not closed by kista in the embedded mount**: there the host's policy governs, and
   link navigation inside the frame is the host's `frame-src` to block. The download is a file the
   reader opens outside kista, under its own `meta` policy. kista never parses the page. A browser
@@ -415,6 +420,19 @@ What the implementation found, where the text above says less or otherwise. None
     document. `hash` is 64 lowercase hex.
   - At the list bound a document is never read as fully checked: "N of at least M components
     checked".
+- **After the reviews** (the console):
+  - A publisher's report is named as a publisher's, on the row and on the page's border; a feed's
+    document whose `source_origin` is not `tenant` says who stands behind it at the source.
+  - The row's coverage counts against the version's builds as the catalogue holds them: "report
+    held for N of M builds; K read". Report lines show `valid_until` or `expired`.
+  - "Show the page again" builds the frame anew after a link left the browser's blocked page in
+    it. The Reports block orders a body's unchained report heads by `issue`. A feed added with
+    `export` set asks for the same confirmation as "Hand on…".
+  - The browser suite has a third mode, a page with no policy at all, so that scripts, forms,
+    refresh, external requests and inline styles are proved closed by the frame's sandbox and
+    `meta` policy alone. The suite builds the frame with the console's prefix code and stylesheet
+    in a plain page: the real component, and its mount in a shadow root (the theme read from the
+    shadow host), are pinned by unit tests only.
 - **A via feed whose relay answers no `keys`** (it does not hand the issuer on) is `failing` too,
   with a text of its own; no fingerprint is shown in either.
 - **Tests.** The end-to-end chain runs in `internal/api` (three servers over TLS: issuer, relaying

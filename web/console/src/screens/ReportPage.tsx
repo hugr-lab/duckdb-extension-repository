@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Button, ErrorBox, Loading, Mono, when } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
@@ -25,10 +25,12 @@ function themeHost(node: Node): HTMLElement {
 }
 
 /** The console's theme where a node is, followed as it changes: the frame cannot see it, so its
- * prefix carries it. */
-function useTheme(ref: React.RefObject<HTMLElement | null>): ReportTheme {
-  const [theme, setTheme] = useState<ReportTheme>(() => (document.documentElement.dataset.kistaTheme === 'dark' ? 'dark' : 'light'))
-  useEffect(() => {
+ * prefix carries it. null until the node is in the document: the theme is read where the node is
+ * (the shadow host's when embedded), before the first paint, so the frame is never built for the
+ * wrong one. */
+function useTheme(ref: React.RefObject<HTMLElement | null>): ReportTheme | null {
+  const [theme, setTheme] = useState<ReportTheme | null>(null)
+  useLayoutEffect(() => {
     if (!ref.current) return
     const host = themeHost(ref.current)
     const read = () => setTheme(host.dataset.kistaTheme === 'dark' ? 'dark' : 'light')
@@ -40,19 +42,24 @@ function useTheme(ref: React.RefObject<HTMLElement | null>): ReportTheme {
   return theme
 }
 
-/** The frame: an empty sandbox, the prefixed document, a border labelled with who the page is from. */
-export function ReportFrame({ a, html }: { a: Pick<Attachment, 'origin' | 'issuer'>; html: string }) {
+/** The frame: an empty sandbox, the prefixed document, a border labelled with who the page is from.
+ * A link in the page that navigates the frame is refused by the console's policy and leaves the
+ * browser's blocked page in it: "Show the page again" builds the frame anew. */
+export function ReportFrame({ a, html }: { a: Pick<Attachment, 'origin' | 'issuer' | 'attached_by' | 'source_origin'>; html: string }) {
   const label = reportPageLabel(a)
   const box = useRef<HTMLElement>(null)
-  const doc = reportSrcdoc(html, reportStylesheet(), useTheme(box))
+  const theme = useTheme(box)
+  const [shown, setShown] = useState(0)
+  const doc = useMemo(() => (theme ? reportSrcdoc(html, reportStylesheet(), theme) : null), [html, theme])
   return (
     <figure ref={box} className="m-0 overflow-hidden rounded-md border-2 border-line" role="group" aria-label={label}>
-      <figcaption className="border-b border-line bg-surface-soft px-3 py-1.5 text-[12px] font-semibold text-ink-muted">
-        {label}: the issuer's own words, shown as it wrote them
+      <figcaption className="flex flex-wrap items-center gap-2 border-b border-line bg-surface-soft px-3 py-1.5 text-[12px] font-semibold text-ink-muted">
+        <span>{label}: the issuer's own words, shown as it wrote them</span>
+        <span className="ml-auto"><Button tone="plain" onClick={() => setShown(shown + 1)}>Show the page again</Button></span>
       </figcaption>
       {doc === ''
         ? <p className="m-0 p-3 text-[13px] text-danger">The page cannot be shown here: download it instead.</p>
-        : <iframe title={label} sandbox="" srcDoc={doc} referrerPolicy="no-referrer" className="block h-[70vh] w-full border-0" />}
+        : doc !== null && <iframe key={shown} title={label} sandbox="" srcDoc={doc} referrerPolicy="no-referrer" className="block h-[70vh] w-full border-0" />}
     </figure>
   )
 }
@@ -94,14 +101,14 @@ export function feedsLastSuccess(feeds: Pick<Feed, 'kinds' | 'last_success_at'>[
 /** The lines on the row of a version that waits for a decision (spec 0045), from one read: the
  * chain heads held about that source's version. No line at all for a caller who cannot read
  * documents; "No report held" only after a successful empty read. */
-export function ReportLines({ name, source, version, feeds }: { name: string; source: string; version: string; feeds?: Feed[] }) {
+export function ReportLines({ name, source, version, feeds, builds }: { name: string; source: string; version: string; feeds?: Feed[]; builds?: number }) {
   const { client, api, perms } = useTenant()
   const may = perms.extensionAdmin(name) || perms.canAudit
   const path = `${api}/extensions/${seg(name)}/attachments?${new URLSearchParams({ source, version, head: 'true' })}`
   const held = useLoad(() => (may ? every<Attachment>(client, path, 'attachments') : Promise.resolve(undefined)), [path, may])
   const [open, setOpen] = useState(false)
   if (!may || held.error != null || held.data === undefined) return null
-  const lines = rowLines(held.data, when)
+  const lines = rowLines(held.data, when, builds)
   const last = feedsLastSuccess(feeds)
   return (
     <div className="mt-1 flex flex-col gap-0.5 text-[12px] text-ink-muted" role="group" aria-label={`${name} ${version} reports`}>

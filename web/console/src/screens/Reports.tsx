@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, Table, when } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
 import { ApiError, type Client, seg } from '../lib/http'
-import { reportText, staleScanOf, vulnerabilitiesText } from '../lib/report'
+import { orderReports, reportText, staleScanOf, vulnerabilitiesText } from '../lib/report'
 import { ReportPage } from './ReportPage'
 import type { Attachment, Release } from './types'
 
@@ -185,7 +185,8 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
       setFailure(e)
     }
   }
-  const rows = data ?? []
+  // a body's report heads as the waiting version's row has them: the highest issue first
+  const rows = orderReports(data ?? [])
   return (
     <Card title="Reports" actions={manage && body ? <Button tone="outline" onClick={() => setAttaching(true)}>Attach</Button> : undefined}>
       {failure != null && <ErrorBox error={failure} />}

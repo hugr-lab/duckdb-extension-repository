@@ -190,7 +190,8 @@ on the Upstreams page, lists subscriptions with their status, last run and last
 success; they are added (with `via`, for a feed taken through a relaying tenant), synced, paused,
 resumed and removed there. **Hand on…** sets a feed's `export` ("Hand on: to bundles and to kistas
 that take this tenant's feed"): the confirmation names the source and says that every holder of
-`feed` on a channel will receive its documents. Changing a feed's credential,
+`feed` on a channel will receive its documents; adding a feed with it set asks the same. A feed
+whose relayed answers end at a statement its pinned keys do not verify says so in a line. Changing a feed's credential,
 keys, kinds or readers is done with the API or the CLI. See [Attachments and the feed](attachments.md).
 A feed whose source sends what this kista is too old to read, and an upstream whose last run met a
 revocation state or a route version it does not know, say so in a line ("This kista is older than
@@ -203,17 +204,22 @@ is held about that source's version, from one read
 (`GET …/extensions/{ext}/attachments?source=&version=&head=true`):
 
 - who stands behind each report, from kista's record, never from the document: "Report from
-  `<issuer host>`, signature verified", or "The tenant's own report, attached by `<principal>`". A
-  feed's and the tenant's are separate lines;
+  `<issuer host>`, signature verified" (with "by `<publisher>` there" when a publisher stands
+  behind it at the source), "A publisher's own report, attached by `<publisher>`", or "The
+  tenant's own report, attached by `<principal>`". A feed's, a publisher's and the tenant's are
+  separate lines;
 - then its issue, date, depth, the points of attention by kind with their counts, the sections not
-  `analysed`, and whether the build was read. The issuer's own words are quoted. No point of
+  `analysed`, its coverage of the version's builds as the catalogue holds them ("report held for N
+  of M builds; K read"; for a version of one build, whether it was read), and its `valid_until` or
+  "expired". The issuer's own words are quoted. No point of
   attention with nothing evaluated reads "not evaluated", never "no points of attention"; a summary
   kista could not read whole says "summary incomplete: open the report";
 - the vulnerabilities line, by the rules above;
 - "No report held", only after a successful empty read, with when the feeds last succeeded;
 - nothing at all for a caller who may not read the name's documents.
 
-A head its producer did not chain is listed after the higher issue. kista shows the issue, its
+A head its producer did not chain is listed after the higher issue, on the row and in the Reports
+block. kista shows the issue, its
 date, `valid_until` and the feeds' last success, and promises no more: a relay can withhold a
 document, and a lower issue can show as current when the highest was withdrawn before this kista
 first received the body's documents.
@@ -232,9 +238,13 @@ A `report` document holds its issuer's page. **View page**, in the Reports block
   styles in the frame too). The page looks as kista's stylesheet makes it, light or dark with the
   console.
 - The console's `frame-src 'none'` stops a link in the page from navigating the frame: its target
-  is never requested, and the frame then shows the browser's blocked page until the report is
-  opened again. Links to the top or to a new window are stopped by the sandbox.
-- The border around the frame names the issuer from the record ("`<issuer host>`'s page"). What the
+  is never requested, and the frame then shows the browser's blocked page; **Show the page again**
+  builds the frame anew. Links to the top or to a new window are stopped by the sandbox.
+- HTML's presentational attributes (`bgcolor`, `text`, a `font` element's `color`) are not styles
+  to a policy; kista's stylesheet states the colours and backgrounds of the body, tables and `font`
+  so that none of them hides or recolours text.
+- The border around the frame names who the page is from, from the record ("`<issuer host>`'s
+  page"; a publisher's or the tenant's own report says so). What the
   page says is the issuer's word, not kista's.
 - **Download the page** is the print path (a framed page cannot print itself): a file with the same
   prefix, kista's stylesheet inlined and `style-src 'unsafe-inline'`, then the `html`. Opened, it

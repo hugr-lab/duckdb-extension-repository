@@ -7,7 +7,8 @@ import ts from 'typescript'
 
 // A report's page in a browser (spec 0045): the issuer's html is hostile input, and each property
 // that closes it is proved here, one test per property, standalone (under the console's own
-// policy) and embedded (the micro-frontend in a host's page, under a host policy with frame-src
+// policy), with no policy on the page at all (so that what the frame's own sandbox and meta policy
+// close is proved on them alone), and embedded (in a host's page, under a host policy with frame-src
 // 'none'). Nothing is asked of kista or of an identity provider: three small servers here stand for
 // kista's console, a host and the rest of the world, so the tests also run alone (npx playwright test e2e/report-frame.spec.ts). The frame is built with
 // the console's own prefix (src/lib/report.ts) and stylesheet (src/report.css), in an iframe with the
@@ -51,6 +52,8 @@ ${refresh ? `<meta http-equiv="refresh" content="0;url=${evil}/refresh">` : ''}
 <style>@font-face { font-family: x; src: url(${evil}/font.woff2) } #block { color: rgb(255, 0, 0); background: url(${evil}/background.png) } body { font-family: x }</style>
 <video src="${evil}/video.mp4"></video><audio src="${evil}/audio.mp3"></audio><iframe src="${evil}/frame"></iframe><object data="${evil}/object"></object>
 <p id="inline" style="color: rgb(255, 0, 0); background-image: url(${evil}/inline.png)">Inline.</p><p id="block">Block.</p>
+<body bgcolor="#000000" text="#000000" link="#000000" background="${pixel}">
+<table bgcolor="#000000"><tr bgcolor="#000000"><td id="cell" bgcolor="#000000">a cell with <font id="font" color="#ff0000" face="x" size="7">a font element</font></td></tr></table>
 <a id="link" href="${evil}/link">a link</a> <a id="top" href="${evil}/top" target="_top">to the top</a> <a id="blank" href="${evil}/blank" target="_blank">a new window</a>
 <base href="${evil}/base/">`
 
@@ -104,6 +107,7 @@ test.beforeAll(async () => {
       case '/ui/console.css': return { type: 'text/css', body: theme }
       case '/ui/start.js': return start()
       case '/ui/t/acme/decisions': return shell(consolePolicy, '/ui/console.css', '/ui/start.js')
+      case '/ui/bare': return { ...shell('', '/ui/console.css', '/ui/start.js'), headers: {} } // no policy of the page's own
       case '/ui/make': return { type: 'text/html', body: '<!doctype html><script type="module">import { reportFile } from "/ui/report-frame.js"\nwindow.made = reportFile(await window.reportHTML(), await window.reportCSS())</script>' }
       case '/file/report.html': return { type: 'text/html; charset=utf-8', body: pageHTML }
     }
@@ -128,15 +132,17 @@ test.beforeEach(() => {
   seen = []
 })
 
+type Mode = 'standalone' | 'no policy' | 'embedded'
+
 interface World {
   page: Page
   frame: () => Promise<Frame>
 }
 
 /** Opens the console's page (or the host's) with the report's frame in it. */
-async function world(page: Page, mode: 'standalone' | 'embedded', html = hostile()): Promise<World> {
+async function world(page: Page, mode: Mode, html = hostile()): Promise<World> {
   pageHTML = html
-  await page.goto(mode === 'standalone' ? `${kista}/ui/t/acme/decisions` : `${host}/platform`)
+  await page.goto(mode === 'standalone' ? `${kista}/ui/t/acme/decisions` : mode === 'no policy' ? `${kista}/ui/bare` : `${host}/platform`)
   await expect(page.locator('#report')).toBeVisible()
   const frame = async () => {
     const el = await page.locator('#report').elementHandle()
@@ -152,7 +158,7 @@ async function world(page: Page, mode: 'standalone' | 'embedded', html = hostile
 /** Long enough for a refresh, a load or a navigation that was going to happen. */
 const settle = (page: Page) => page.waitForTimeout(1500)
 
-for (const mode of ['standalone', 'embedded'] as const) {
+for (const mode of ['standalone', 'no policy', 'embedded'] as const) {
   test.describe(`a report's page, ${mode}`, () => {
     test('no script runs', async ({ page }) => {
       const w = await world(page, mode)
@@ -214,8 +220,27 @@ for (const mode of ['standalone', 'embedded'] as const) {
       await expect.poll(look).toEqual({ background: 'rgb(6, 28, 40)', ink: 'rgb(232, 241, 242)', th: 'rgb(10, 49, 70)' })
     })
 
+    test('presentational attributes neither hide nor recolour text', async ({ page }) => {
+      const w = await world(page, mode)
+      const f = await w.frame()
+      const style = (id: string, prop: 'color' | 'backgroundColor' | 'backgroundImage') => f.locator(id).evaluate((el, p) => getComputedStyle(el)[p], prop)
+      const ink = 'rgb(11, 31, 42)'
+      // body text="#000000" bgcolor="#000000" background=…, a table, row and cell with bgcolor, a font element
+      expect(await style('body', 'color')).toBe(ink)
+      expect(await style('body', 'backgroundColor')).toBe('rgb(255, 255, 255)')
+      expect(await style('body', 'backgroundImage')).toBe('none')
+      expect(await style('#cell', 'color')).toBe(ink)
+      expect(await style('#cell', 'backgroundColor')).toBe('rgba(0, 0, 0, 0)')
+      expect(await style('table >> nth=1', 'backgroundColor')).toBe('rgba(0, 0, 0, 0)')
+      expect(await style('#font', 'color')).toBe(ink)
+      expect(await style('#link', 'color')).toBe('rgb(42, 116, 112)')
+      expect(await f.locator('#font').evaluate((el) => getComputedStyle(el).fontSize)).toBe(await f.locator('#cell').evaluate((el) => getComputedStyle(el).fontSize))
+    })
+
     test('a link does not navigate: the frame, the top, a new window', async ({ page, context }) => {
-      for (const id of ['#link', '#top', '#blank']) {
+      // a navigation of the frame itself is the page's policy's to refuse (frame-src): with no policy
+      // on the page nothing refuses it, which is why the console sends one and a host must
+      for (const id of mode === 'no policy' ? ['#top', '#blank'] : ['#link', '#top', '#blank']) {
         const w = await world(page, mode)
         const at = page.url()
         await (await w.frame()).locator(id).click()

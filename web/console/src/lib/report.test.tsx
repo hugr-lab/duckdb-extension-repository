@@ -1,14 +1,15 @@
 import { readFileSync } from 'node:fs'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { Perms, TenantContext } from './context'
 import { Client } from './http'
 import {
-  attentionText, issuerHost, policyURL, reportBehind, reportFile, reportHTML, reportPageLabel, reportParts, reportPolicy, reportSrcdoc, reportText,
+  attentionText, issuerHost, orderReports, policyURL, reportBehind, reportFile, reportHTML, reportPageLabel, reportParts, reportPolicy, reportSrcdoc, reportText,
   rowLines, staleScanOf, vulnerabilitiesText,
 } from './report'
-import { feedBody, feedRelayStopped, handOn, handOnWarning, feedKinds } from '../screens/Feeds'
+import { buildsOf } from '../screens/Decisions'
+import { NewFeed, feedBody, feedRelayStopped, handOn, handOnWarning, feedKinds } from '../screens/Feeds'
 import { ReportFrame, ReportLines, ReportPage, feedsLastSuccess } from '../screens/ReportPage'
 import { summaryText } from '../screens/Reports'
 import type { Attachment } from '../screens/types'
@@ -18,6 +19,17 @@ const reportCss = readFileSync('src/report.css', 'utf8')
 
 // Spec 0045 in the console: the frame's document and the download, the row's texts, the
 // vulnerabilities rules. A report's html and every member of its summary are hostile input.
+
+beforeAll(() => {
+  // jsdom has no modal dialogs: open and close as the attribute
+  const proto = HTMLDialogElement.prototype as { showModal?: () => void; close: () => void }
+  proto.showModal ??= function (this: HTMLDialogElement) {
+    this.setAttribute('open', '')
+  }
+  proto.close = function (this: HTMLDialogElement) {
+    this.removeAttribute('open')
+  }
+})
 
 afterEach(() => {
   cleanup()
@@ -74,7 +86,40 @@ describe('the report frame', () => {
     expect(frame.getAttribute('sandbox')).toBe('')
     delete document.documentElement.dataset.kistaTheme
   })
-  it('names the tenant on its own report', () => {
+  it('builds the frame anew on "Show the page again", after a link left the browser\'s blocked page in it', () => {
+    render(<ReportFrame a={{ origin: 'tenant' }} html="<p>x</p>" />)
+    const before = screen.getByTitle("The tenant's own report's page")
+    fireEvent.click(screen.getByRole('button', { name: 'Show the page again' }))
+    const after = screen.getByTitle("The tenant's own report's page")
+    expect(after).not.toBe(before) // another element: the browser loads its srcdoc again
+    expect(after.getAttribute('sandbox')).toBe('')
+    expect(after.getAttribute('srcdoc')).toBe(before.getAttribute('srcdoc'))
+  })
+  it('reads the theme from the shadow host when embedded, on its first render', () => {
+    document.documentElement.dataset.kistaTheme = 'light'
+    const host = document.createElement('div')
+    host.dataset.kistaTheme = 'dark'
+    document.body.appendChild(host)
+    const root = host.attachShadow({ mode: 'open' })
+    const container = root.appendChild(document.createElement('div'))
+    const seen: string[] = []
+    const record = new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => {
+      if (n instanceof HTMLIFrameElement) seen.push(n.getAttribute('srcdoc') ?? '')
+    })))
+    record.observe(container, { childList: true, subtree: true })
+    render(<ReportFrame a={{ origin: 'tenant' }} html="<p>x</p>" />, { container })
+    const frame = container.querySelector('iframe')!
+    expect(frame.getAttribute('srcdoc')).toContain('<html data-kista-theme="dark">')
+    expect(frame.getAttribute('sandbox')).toBe('')
+    record.disconnect()
+    host.remove()
+    delete document.documentElement.dataset.kistaTheme
+  })
+  it('names the tenant, a publisher, and who stands behind a feed\'s document at its source', () => {
+    expect(reportPageLabel({ origin: 'publisher', attached_by: 'publisher:acme/ci' })).toBe("The page of a publisher's own report (publisher:acme/ci)")
+    expect(reportPageLabel({ origin: 'feed', issuer: 'https://enterest.example/api/v1/tenants/acme', source_origin: 'publisher:lab' }))
+      .toBe("enterest.example's page, by publisher:lab there")
+    expect(reportPageLabel({ origin: 'feed', issuer: 'https://enterest.example/api/v1/tenants/acme', source_origin: 'tenant' })).toBe("enterest.example's page")
     expect(reportPageLabel({ origin: 'tenant' })).toBe("The tenant's own report's page")
     expect(issuerHost('not a url')).toBe('not a url')
   })
@@ -114,12 +159,17 @@ describe("a report's row texts", () => {
     expect(reportBehind({ origin: 'feed', issuer: 'https://enterest.example/api/v1/tenants/acme' })).toBe('Report from enterest.example, signature verified')
     expect(reportBehind({ origin: 'tenant', attached_by: 'acme/kc|tom' })).toBe("The tenant's own report, attached by acme/kc|tom")
     expect(reportBehind({ origin: 'tenant' })).toBe("The tenant's own report")
+    // a publisher's is never the tenant's own; a feed's says who stands behind it at the source
+    expect(reportBehind({ origin: 'publisher', attached_by: 'publisher:acme/ci' })).toBe("A publisher's own report, attached by publisher:acme/ci")
+    expect(reportBehind({ origin: 'feed', issuer: 'https://enterest.example/api/v1/tenants/acme', source_origin: 'publisher:lab' }))
+      .toBe('Report from enterest.example, by publisher:lab there, signature verified')
   })
   it('says issue, date, depth, attention, open sections and whether the build was read, open strings quoted', () => {
     expect(reportText(summary)).toBe('issue 2 · 2026-11-16T09:00:00Z · depth "static_v1" · attention: "network" 3, "process" 1 · ' +
       'sections not analysed: "strings" ("skipped") · this build was read')
     expect(reportParts({ ...summary, read: false })).toContain('this build was not read')
-    expect(reportParts(summary, 1, 3)).toContain('1 of 3 builds read')
+    expect(reportParts(summary, { held: 1, read: 1, builds: 3 })).toContain('report held for 1 of 3 builds; 1 read')
+    expect(reportParts(summary, { held: 3, read: 2, builds: 3 })).toContain('report held for 3 of 3 builds; 2 read')
     expect(summaryText('report', summary)).toBe(reportText(summary))
   })
   it('never reads no attention as "no points of attention" when nothing was evaluated', () => {
@@ -193,11 +243,31 @@ describe('the row of a waiting version', () => {
     expect(lines.reports.map((l) => l.behind)).toEqual(['Report from enterest.example, signature verified', 'Report from enterest.example, signature verified',
       "The tenant's own report, attached by acme/kc|tom"])
     expect(lines.reports[0].text).toContain('issue 2 ·')
-    expect(lines.reports[0].text).toContain('1 of 2 builds read')
+    expect(lines.reports[0].text).toContain('report held for 2 of 2 builds; 1 read')
     expect(lines.reports[1].text).toContain('issue 1 ·')
     expect(lines.reports[2].text).toContain('issue 7 ·')
     expect(lines.vulnerabilities).toEqual([{ key: 'v1', behind: 'Vulnerabilities from enterest.example, signature verified', text: '4 of 10 components checked' }])
     expect(rowLines([]).reports).toEqual([])
+  })
+  it("counts a report's coverage against the version's builds, and says its validity", () => {
+    // the version has three builds; the report is held for one of them
+    const one = rowLines([held({ id: 'd1', valid_until: '2027-01-01T00:00:00Z' })], (iso) => iso, 3)
+    expect(one.reports[0].text).toContain('report held for 1 of 3 builds; 1 read')
+    expect(one.reports[0].text).toContain('valid until 2027-01-01T00:00:00Z')
+    expect(rowLines([held({ id: 'd1', expired: true, valid_until: '2026-01-01T00:00:00Z' })]).reports[0].text).toContain(' · expired')
+    expect(rowLines([held({ id: 'd1' })], (iso) => iso, 1).reports[0].text).toContain('this build was read')
+    const v = rowLines([held({ id: 'v1', kind: 'vulnerabilities', summary: { findings: 0 }, valid_until: '2027-01-01T00:00:00Z' })])
+    expect(v.vulnerabilities[0].text).toBe('no findings; valid until 2027-01-01T00:00:00Z')
+    // a publisher's report is its own line, never the tenant's
+    const p = rowLines([held({ id: 'd1', origin: 'publisher', issuer: undefined, attached_by: 'publisher:acme/ci' }),
+      held({ id: 'd2', origin: 'tenant', issuer: undefined, attached_by: 'acme/kc|tom' })])
+    expect(p.reports.map((l) => l.behind)).toEqual(["A publisher's own report, attached by publisher:acme/ci", "The tenant's own report, attached by acme/kc|tom"])
+  })
+  it("orders a body's unchained report heads by issue in the Reports block, and moves nothing else", () => {
+    const row = (id: string, kind: string, body: string, issue: number, head = true) => ({ id, kind, body_hash: body, head, summary: { issue } })
+    const rows = [row('n1', 'notes', 'a', 0), row('p1', 'report', 'a', 1), row('p0', 'report', 'a', 9, false), row('p3', 'report', 'a', 3), row('p2', 'report', 'a', 2),
+      row('s1', 'sbom', 'a', 0), row('q1', 'report', 'b', 1), row('q5', 'report', 'b', 5)]
+    expect(orderReports(rows).map((r) => r.id)).toEqual(['n1', 'p3', 'p2', 'p1', 'p0', 's1', 'q5', 'q1'])
   })
   it('says when the feeds that take reports last succeeded', () => {
     expect(feedsLastSuccess(undefined)).toBe('')
@@ -208,13 +278,13 @@ describe('the row of a waiting version', () => {
   })
 })
 
-type Call = { path: string; search: string }
+type Call = { path: string; search: string; method: string; body?: unknown }
 
 function api(answer: (c: Call) => Response) {
   const calls: Call[] = []
-  vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+  vi.stubGlobal('fetch', vi.fn(async (input: string, init?: RequestInit) => {
     const u = new URL(input)
-    const c = { path: u.pathname, search: u.search }
+    const c = { path: u.pathname, search: u.search, method: init?.method ?? 'GET', body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined }
     calls.push(c)
     return answer(c)
   }))
@@ -290,6 +360,29 @@ describe('a feed handed on, and taken through a relay', () => {
   it('says when its relayed answers end early', () => {
     expect(feedRelayStopped({})).toBe('')
     expect(feedRelayStopped({ relay_stopped: 2 })).toContain('ended 2 bodies at a statement that does not verify')
+  })
+  it('asks before adding a feed with export set, naming the source, and adds nothing until confirmed', async () => {
+    const calls = api((c) => (c.method === 'POST' ? json({ name: 'reports' }, 201) : json({ channels: [] })))
+    let done = false
+    tenant(<NewFeed onDone={() => { done = true }} />)
+    const type = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label, { exact: false }), { target: { value } })
+    type('Name', 'reports')
+    type('Source URL', 'https://enterest.example/api/v1/tenants/acme')
+    type('Credential', 'src')
+    type('Pinned keys', 'sha256:a')
+    fireEvent.click(screen.getByLabelText(/^Hand on: to bundles/))
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(screen.getByText(/Every holder of feed on a channel of this tenant will receive the documents of https:\/\/enterest\.example\/api\/v1\/tenants\/acme \(the feed reports\)/)).toBeTruthy())
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Add and hand on' }))
+    await waitFor(() => expect(done).toBe(true))
+    expect(calls.filter((c) => c.method === 'POST').map((c) => c.body)).toEqual([expect.objectContaining({ name: 'reports', export: true })])
+  })
+  it("counts the version's builds the catalogue holds, withdrawn ones aside", () => {
+    const b = (state: string) => ({ state }) as never
+    const v = { versions: [{ version: '1.2.0', builds: [b('available'), b('held'), b('withdrawn')] }, { version: '1.1.0', builds: [b('available')] }] }
+    expect(buildsOf(v, '1.2.0')).toBe(2)
+    expect(buildsOf(v, '9.9.9')).toBe(0)
   })
   it('names the source and who receives its documents before handing it on', () => {
     expect(handOn).toBe("Hand on: to bundles and to kistas that take this tenant's feed")

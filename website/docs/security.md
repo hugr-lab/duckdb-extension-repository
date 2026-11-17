@@ -403,9 +403,14 @@ the issuer's statements unchanged: it signs nothing.
 
 **A report's page.** A report carries its issuer's HTML, which is hostile input. kista never parses
 it and never serves it as `text/html`. The console shows it in a frame with an empty `sandbox`
-(no script, no form, no `meta` refresh, a unique origin), under a `meta` policy that lets nothing
-load but kista's one stylesheet, and the console's `frame-src 'none'` stops a link from navigating
-the frame ([Console](console.md#a-reports-page)). In the embedded mount the host's policy governs:
+(no script, no form, no `meta` refresh, a unique origin), under a `meta` policy that lets no
+image, style sheet, font, media, frame or object load but kista's one stylesheet and `data:`
+images, and no style sheet, style element or style attribute of the page apply. HTML's
+presentational attributes (`bgcolor`, `text`, a `font` element's `color`, `width`, `align`) are
+not styles to a policy and still apply: kista's stylesheet states the colours and backgrounds they
+could change, so none of them hides or recolours text, but the page's layout is the issuer's.
+Resource hints in the page (`dns-prefetch`, `preconnect`) are not verified closed. The console's
+`frame-src 'none'` stops a link from navigating the frame ([Console](console.md#a-reports-page)). In the embedded mount the host's policy governs:
 link navigation inside the frame is the host's `frame-src` to block. The downloaded page is a file
 opened outside kista, under its own `meta` policy and no sandbox: it loads nothing and runs
 nothing, but its links, and a `meta` refresh in it, are followed by the browser. What the page

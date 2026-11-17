@@ -226,7 +226,7 @@ export function Feeds() {
   )
 }
 
-function NewFeed({ onDone }: { onDone: () => void }) {
+export function NewFeed({ onDone }: { onDone: () => void }) {
   const { client, api } = useTenant()
   const channels = useLoad(() => client.get<{ channels: { name: string }[] }>(`${api}/channels`), [api])
   const [f, setF] = useState<FeedForm>({ name: '', url: '', credential: '', keys: '', kinds: [...feedKinds], readers: false, offer: 'upstreams', channels: [],
@@ -235,11 +235,19 @@ function NewFeed({ onDone }: { onDone: () => void }) {
   const { busy, failure, act } = useAction()
   const relayed = !bundle && f.via.trim() !== ''
   const set = (k: 'name' | 'url' | 'credential' | 'keys' | 'via') => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  // a feed added with export set hands its documents on from its first run: the same confirmation
+  // as "Hand on…" on a feed's row, naming the source
+  const [confirming, setConfirming] = useState(false)
+  const add = async () => {
     if (await act(() => client.post(`${api}/feeds`, { body: feedBody(f) }))) onDone()
   }
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!bundle && f.export) setConfirming(true)
+    else add()
+  }
   return (
+    <>
     <form onSubmit={submit} className="flex flex-col gap-4 rounded-md border border-line p-4">
       <div className="flex flex-col gap-1">
         <span className="text-[13px] font-semibold text-ink">Mode</span>
@@ -296,5 +304,15 @@ function NewFeed({ onDone }: { onDone: () => void }) {
       {failure != null && <ErrorBox error={failure} />}
       <div><Button type="submit" tone="brand" disabled={busy || f.kinds.length === 0 || f.offer === 'channels' && f.channels.length === 0}>Add</Button></div>
     </form>
+    <Confirm open={confirming} title={`Add ${f.name} and hand it on?`} confirm="Add and hand on"
+      onConfirm={() => {
+        setConfirming(false)
+        add()
+      }}
+      onClose={() => setConfirming(false)}>
+      <p>{handOn}.</p>
+      <p><strong>{handOnWarning(f)}</strong></p>
+    </Confirm>
+    </>
   )
 }
