@@ -229,6 +229,12 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 	reason, err := r.store(ctx, st, s.Statement, s.Signature)
 	var tr transient
 	switch {
+	case errors.Is(err, errHeldByQuota):
+		// spec 0045: the tenant's document quota holds the body, it does not refuse; the target ends
+		// failing (limits), the cursors of what was taken before moved
+		fi.held[st.BodyHash], r.quota = true, true
+		r.res.Counts["held"]++
+		return nil
 	case errors.As(err, &tr):
 		fi.held[st.BodyHash] = true
 		r.res.Counts["failed"]++
@@ -387,6 +393,9 @@ func (fi *FeedImport) Finish(ctx context.Context, actor string, whole bool) (Run
 		if err != nil {
 			fi.Fail(err)
 		}
+	}
+	if r.quota {
+		fi.Fail(errHeldByQuota)
 	}
 	res := *r.res
 	res.Ended = time.Now().UTC()

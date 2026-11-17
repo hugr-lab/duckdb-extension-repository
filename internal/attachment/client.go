@@ -31,7 +31,9 @@ import (
 // The feed client (spec 0011 phase 1b): a tenant's subscriptions to other repositories' feeds. A
 // run sends the bodies the feed offers with the last seq received for each, verifies every
 // statement against a pinned key, fetches each new document from the fixed path under the feed's
-// URL, and stores it if its body is one it sent and still holds.
+// URL, and stores it if its body is one it sent and still holds. A feed with via (spec 0045) asks a
+// relaying tenant for its issuer's statements instead: the issuer's URL stays the statements'
+// identity and is never contacted, and the keys come in the relay's answers.
 
 // Fetcher is egress as the feed client uses it.
 type Fetcher interface {
@@ -80,8 +82,11 @@ type FeedSpec struct {
 	// Mode is store.FeedOnline (the default) or store.FeedBundle: statements arrive in bundles
 	// (spec 0014), never from the URL
 	Mode string
-	// Export keeps what a bundle needs to answer a site's plan (online feeds only)
+	// Export keeps what a bundle needs to answer a site's plan, and hands the source's documents on
+	// online to every holder of feed (spec 0045); online feeds only
 	Export bool
+	// Via is the relaying tenant's feed URL (spec 0045; online feeds only), set at creation only
+	Via string
 }
 
 // ErrBundle is a run asked of a bundle-mode feed: it never runs (spec 0014).
@@ -93,36 +98,17 @@ var feedPath = regexp.MustCompile(`^(/[A-Za-z0-9._~-]+)*/api/v1/tenants/[a-z0-9]
 // info, query or fragment, at a port egress may reach (unless egress is false: a bundle-mode feed's
 // URL is only its issuer's identity).
 func (f *Feeds) checkFeedURL(raw string, egress bool) (string, error) {
-	bad := func(why string) (string, error) {
-		return "", fmt.Errorf("%w: feed URL %q: %s", store.ErrInvalid, raw, why)
+	out, err := NormalFeedURL(raw)
+	if err != nil {
+		return "", err
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.Opaque != "" {
-		return bad("not an absolute URL")
-	}
-	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") || u.RawPath != "" {
-		return bad("no user info, query, fragment or escapes")
-	}
-	if u.Scheme != "https" {
-		return bad("not https")
-	}
-	if !feedPath.MatchString(u.Path) || slices.ContainsFunc(strings.Split(u.Path, "/"), func(seg string) bool { return seg == "." || seg == ".." }) {
-		return bad("not …/api/v1/tenants/<tenant>")
-	}
-	if p := u.Port(); p != "" {
-		n, err := strconv.ParseUint(p, 10, 16)
-		if err != nil || egress && !f.Fetch.PortAllowed(uint16(n)) {
-			return bad("egress does not reach that port")
-		}
-		if n == 443 { // the default port is dropped: one feed, one form (its statements' issuer)
-			u.Host = u.Hostname()
-			if strings.Contains(u.Host, ":") {
-				u.Host = "[" + u.Host + "]"
-			}
+	if u, _ := url.Parse(out); egress && u.Port() != "" {
+		n, _ := strconv.ParseUint(u.Port(), 10, 16)
+		if !f.Fetch.PortAllowed(uint16(n)) {
+			return "", fmt.Errorf("%w: feed URL %q: egress does not reach that port", store.ErrInvalid, raw)
 		}
 	}
-	u.Host = strings.ToLower(u.Host)
-	return u.String(), nil
+	return out, nil
 }
 
 func checkFingerprint(fp string) error {
@@ -182,16 +168,32 @@ func (f *Feeds) Add(ctx context.Context, a authz.Actor, tenant string, sp FeedSp
 		return store.Feed{}, fmt.Errorf("%w: a bundle-mode feed takes no credential: kista never contacts its source", store.ErrInvalid)
 	case bundle && sp.Export:
 		return store.Feed{}, fmt.Errorf("%w: export is for online feeds", store.ErrInvalid)
+	case bundle && sp.Via != "":
+		return store.Feed{}, fmt.Errorf("%w: via is for online feeds", store.ErrInvalid)
 	}
-	u, err := f.checkFeedURL(sp.URL, !bundle)
+	// with via the URL is only the issuer's identity, as a bundle-mode feed's: never contacted
+	u, err := f.checkFeedURL(sp.URL, !bundle && sp.Via == "")
 	if err != nil {
 		return store.Feed{}, err
 	}
-	if !bundle { // a bundle-mode feed contacts nothing
-		if err := egress.CheckHost(f.Hosts, u, f.Log, "tenant", tenant, "feed", sp.Name); err != nil {
+	via := ""
+	if sp.Via != "" {
+		if via, err = f.checkFeedURL(sp.Via, true); err != nil {
 			return store.Feed{}, err
 		}
-		if err := f.checkCredential(sp.Credential, tenant, u); err != nil {
+		if via == u {
+			return store.Feed{}, fmt.Errorf("%w: via is the relaying tenant's URL, not the issuer's", store.ErrInvalid)
+		}
+	}
+	if !bundle { // a bundle-mode feed contacts nothing; a via feed contacts only via
+		host := u
+		if via != "" {
+			host = via
+		}
+		if err := egress.CheckHost(f.Hosts, host, f.Log, "tenant", tenant, "feed", sp.Name); err != nil {
+			return store.Feed{}, err
+		}
+		if err := f.checkCredential(sp.Credential, tenant, host); err != nil {
 			return store.Feed{}, err
 		}
 	}
@@ -212,7 +214,7 @@ func (f *Feeds) Add(ctx context.Context, a authz.Actor, tenant string, sp FeedSp
 		return store.Feed{}, fmt.Errorf("%w: offer is upstreams, or channels with the channels named", store.ErrInvalid)
 	}
 	fd := store.Feed{TenantID: t.ID, Name: sp.Name, URL: u, Credential: sp.Credential, Keys: keys, Kinds: kinds, Readers: sp.Readers,
-		Offer: sp.Offer, Mode: sp.Mode, Export: sp.Export, CreatedBy: a.String()}
+		Offer: sp.Offer, Mode: sp.Mode, Export: sp.Export, Via: via, CreatedBy: a.String()}
 	var names []string
 	for _, c := range dedup(sp.Channels) {
 		ch, err := f.Store.GetChannel(ctx, tenant, c)
@@ -230,9 +232,13 @@ func (f *Feeds) Add(ctx context.Context, a authz.Actor, tenant string, sp FeedSp
 				return err
 			}
 		}
-		return tx.Event(ctx, t.ID, a.String(), "feed.add", "feed:"+fd.Name, map[string]any{"name": fd.Name, "url": fd.URL,
+		data := map[string]any{"name": fd.Name, "url": fd.URL,
 			"credential": fd.Credential, "kinds": fd.Kinds, "readers": fd.Readers, "offer": fd.Offer, "channels": names, "keys": fd.Keys,
-			"mode": fd.Mode, "export": fd.Export})
+			"mode": fd.Mode, "export": fd.Export}
+		if fd.Via != "" {
+			data["via"] = fd.Via
+		}
+		return tx.Event(ctx, t.ID, a.String(), "feed.add", "feed:"+fd.Name, data)
 	})
 	return fd, err
 }
@@ -337,7 +343,7 @@ func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, 
 			if bundle {
 				return fmt.Errorf("%w: a bundle-mode feed takes no credential: kista never contacts its source", store.ErrInvalid)
 			}
-			if err := f.checkCredential(*ch.Credential, tenant, fd.URL); err != nil {
+			if err := f.checkCredential(*ch.Credential, tenant, contacted(fd)); err != nil {
 				return err
 			}
 			change["credential"], fd.Credential = *ch.Credential, *ch.Credential
@@ -474,6 +480,19 @@ func (f *Feeds) Sync(ctx context.Context, a authz.Actor, tenant, name string) (s
 	return out, nil
 }
 
+// contacted is the URL a feed's runs contact, and its credential is matched against and sent to:
+// the relaying tenant's when it has one (spec 0045), else its own.
+func contacted(fd store.Feed) string {
+	if fd.Via != "" {
+		return fd.Via
+	}
+	return fd.URL
+}
+
+// relayNoContent refuses, for good, a statement a relay sends without content (spec 0045), unless
+// its note says the relay left it waiting (spec 0046); a bundle's word is noContent.
+const relayNoContent = "no content"
+
 // --- runs ---
 
 // ErrNotDue is a feed neither requested nor due (or paused, or run by another replica).
@@ -494,7 +513,7 @@ type Refusal struct {
 	IssuerID string `json:"issuer_id,omitempty"`
 	BodyHash string `json:"body_hash,omitempty"`
 	Reason   string `json:"reason"`
-	Note     string `json:"note,omitempty"` // a bundle's: the exporting side's word on a statement without content
+	Note     string `json:"note,omitempty"` // a bundle's or a relay's: the exporting side's word on a statement without content
 }
 
 const (
@@ -506,9 +525,19 @@ const (
 // errAuth marks a run the source refused (the feed's status: unauthorized).
 var errAuth = errors.New("attachment: the source refuses the feed's credential")
 
-// errHeldByQuota is an export feed's refusal or statement that could not be kept within the cap on
-// what export feeds keep: its body's cursor holds, so no gap is silent (spec 0014).
-var errHeldByQuota = errors.New("attachment: what export feeds keep is at its cap; statements wait")
+// errHeldByQuota is a document that does not fit the tenant's document quota (spec 0045), or an
+// export feed's refusal or statement that could not be kept within the cap on what export feeds
+// keep (spec 0014): its body's cursor holds, so nothing is lost and no gap is silent, and the run
+// ends failing (limits).
+var errHeldByQuota = errors.New("attachment: the tenant's document quota, or the cap on what export feeds keep, is reached; statements wait")
+
+// A via feed's run fails on the keys its relay serves (spec 0045). Neither error names a
+// fingerprint: none a relay sent is ever shown, so a relay cannot talk an administrator into pinning
+// its key.
+var (
+	errRelayKeys   = fmt.Errorf("%w: none of the pinned keys is in what the relay serves; take the issuer's current fingerprint from the issuer", ErrStatement)
+	errRelayNoKeys = fmt.Errorf("%w: the relay serves no keys of this issuer: it does not hand the issuer's documents on (its feed's export), or the feed's URL is not the issuer's as the relay has it", ErrStatement)
+)
 
 // errOvertaken is a run whose feed's export setting changed meanwhile: the change reset or dropped
 // what it would write and asked for another run, so this one stops.
@@ -534,8 +563,11 @@ type run struct {
 	header   http.Header
 	cred     *credential.Credential
 	token    string
-	// quota: an export feed held a body at the quota; the run ends failing
+	// quota: a body was held at the document quota, or at the cap on what an export feed keeps; the
+	// run ends failing
 	quota bool
+	// keysKept: a via feed with export kept the relay's keys file in this run
+	keysKept bool
 	// content reads a new document's content: from its source (a run), or from a bundle (spec 0014);
 	// a reason refuses the statement for good
 	content func(ctx context.Context, st Statement) ([]byte, string, error)
@@ -632,10 +664,11 @@ func (r *run) refuse(st Statement, reason string) {
 
 func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) error) error {
 	// spec 0044: a host off egress.hosts fails the run before a token or a request
-	if err := egress.CheckHost(f.Hosts, r.fd.URL, f.Log, "tenant", r.t.Name, "feed", r.fd.Name); err != nil {
+	// (a via feed's host is its relay's: its issuer's URL is never contacted, spec 0045)
+	if err := egress.CheckHost(f.Hosts, contacted(r.fd), f.Log, "tenant", r.t.Name, "feed", r.fd.Name); err != nil {
 		return err
 	}
-	cred, err := f.Credentials.For(r.fd.Credential, r.t.Name, r.fd.URL)
+	cred, err := f.Credentials.For(r.fd.Credential, r.t.Name, contacted(r.fd))
 	if err != nil {
 		return err
 	}
@@ -643,11 +676,13 @@ func (f *Feeds) run(ctx context.Context, r *run, renew func(context.Context) err
 	if err := r.authorize(ctx); err != nil {
 		return err
 	}
-	if r.pinned, err = r.keys(ctx); errors.Is(err, errOvertaken) {
-		r.res.Counts["overtaken"]++
-		return nil
-	} else if err != nil {
-		return err
+	if r.fd.Via == "" { // a via feed's keys come in each of the relay's answers
+		if r.pinned, err = r.keys(ctx); errors.Is(err, errOvertaken) {
+			r.res.Counts["overtaken"]++
+			return nil
+		} else if err != nil {
+			return err
+		}
 	}
 	bodies, err := f.Store.OfferedBodies(ctx, r.fd)
 	if err != nil {
@@ -763,7 +798,7 @@ func ParseKeysFile(b []byte) (map[string]*rsa.PublicKey, error) {
 // post sends one feed request; a refused token is invalidated and taken again once.
 func (r *run) post(ctx context.Context, body []byte) ([]byte, error) {
 	for attempt := 0; ; attempt++ {
-		b, err := r.f.Fetch.PostJSON(ctx, r.fd.URL+"/feed", r.header, body, MaxFeedAnswer+64<<10)
+		b, err := r.f.Fetch.PostJSON(ctx, contacted(r.fd)+"/feed", r.header, body, MaxFeedAnswer+64<<10)
 		var se *egress.StatusError
 		if errors.As(err, &se) && se.Status == http.StatusNotFound {
 			// a kista source answers a principal without feed as it answers a missing route
@@ -792,7 +827,8 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 	for page := 0; page < maxPagesPerRun; page++ {
 		req := struct {
 			Bodies []FeedBody `json:"bodies"`
-		}{}
+			Issuer string     `json:"issuer,omitempty"` // a via feed's: the issuer the relay is asked for
+		}{Issuer: r.issuer()}
 		for _, b := range bodies {
 			if !failed[b] {
 				req.Bodies = append(req.Bodies, FeedBody{BodyHash: b, AfterSeq: cursors[b]})
@@ -813,12 +849,22 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 		if err := json.Unmarshal(raw, &ans); err != nil {
 			return fmt.Errorf("%w: the feed's answer does not parse", egress.ErrStatus)
 		}
+		if r.fd.Via != "" {
+			if err := r.relayKeys(ctx, ans.Keys); err != nil {
+				return err
+			}
+		}
 		for _, w := range ans.Statements {
 			if err := r.one(ctx, w, sent, cursors, failed); err != nil {
 				return err
 			}
 		}
+		// a relay's high-water is unsigned and moves nothing (spec 0045): a via feed's cursor for a
+		// body moves only to that body's own verified statements, each as it is taken (one)
 		for _, h := range ans.Bodies {
+			if r.fd.Via != "" {
+				break
+			}
 			if sent[h.BodyHash] && !failed[h.BodyHash] && h.Seq > cursors[h.BodyHash] && h.Seq <= r.verified {
 				if err := r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, h.BodyHash, h.Seq) }); err != nil {
 					return err
@@ -829,6 +875,47 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 		if !ans.More {
 			return nil
 		}
+	}
+	return nil
+}
+
+// issuer is the issuer a via feed asks its relay for: the feed's URL ("" for a feed without via,
+// whose request names none).
+func (r *run) issuer() string {
+	if r.fd.Via == "" {
+		return ""
+	}
+	return r.fd.URL
+}
+
+// relayKeys takes the keys file a relay's answer carries (spec 0045): only the keys the feed pins
+// are kept, and the run fails when there is none. No fingerprint the relay sent is ever shown. A
+// via feed with export keeps the file, once a run, to hand the issuer's documents on in turn.
+func (r *run) relayKeys(ctx context.Context, keys []byte) error {
+	if len(keys) == 0 {
+		return errRelayNoKeys
+	}
+	all, err := ParseKeysFile(keys)
+	if err != nil {
+		return errRelayKeys
+	}
+	r.pinned = map[string]*rsa.PublicKey{}
+	for fp, pub := range all {
+		if slices.Contains(r.fd.Keys, fp) {
+			r.pinned[fp] = pub
+		}
+	}
+	if len(r.pinned) == 0 {
+		return errRelayKeys
+	}
+	if r.fd.Export && !r.keysKept {
+		if len(keys) > store.MaxFeedKeysFile || !utf8.Valid(keys) {
+			return fmt.Errorf("%w: the keys file the relay serves is over %d bytes, or not UTF-8", ErrStatement, store.MaxFeedKeysFile)
+		}
+		if err := r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedKeysFile(ctx, r.fd.ID, keys) }); err != nil {
+			return err
+		}
+		r.keysKept = true
 	}
 	return nil
 }
@@ -880,8 +967,19 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 		return nil // after a failure, the body's later statements wait for the next run; or a replay
 	}
 	reason, err := "statement", error(nil)
+	note, level := Text(w.Note, MaxNote), r.f.ReaderLevel()
 	if !malformed {
+		if note != "" {
+			// a relay sent it without content (spec 0045): none is fetched
+			r.content = func(context.Context, Statement) ([]byte, string, error) { return nil, relayNoContent, nil }
+		}
 		reason, err = r.store(ctx, st, stmt, sig)
+		r.content = nil
+	}
+	if !malformed && reason == relayNoContent && Waits(note) {
+		// this binary reads it, but the relay could not and sent no content: it waits under the
+		// relay's reason, asked for again at every run (level 0) until the relay carries the content
+		reason, level = note, 0
 	}
 	waits := !malformed && Waits(reason) // passed over until an upgrade, not refused (spec 0046)
 	if err == nil && reason != "" && r.fd.Export {
@@ -905,12 +1003,17 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 		r.res.Counts["waiting"]++
 	case reason != "":
 		r.refuse(st, reason)
+		if reason == relayNoContent && note != "" && len(r.res.Refused) > 0 {
+			if x := &r.res.Refused[len(r.res.Refused)-1]; x.IssuerID == st.IssuerID {
+				x.Note = note // the relay's word, kept beside the fixed reason
+			}
+		}
 	}
 	err = r.write(ctx, false, func(tx *store.Tx) error {
 		if err := tx.SetFeedCursor(ctx, r.fd.ID, st.BodyHash, st.Seq); err != nil || !waits {
 			return err
 		}
-		return tx.AddFeedWait(ctx, r.fd.ID, store.FeedWait{BodyHash: st.BodyHash, From: st.Seq, Count: 1, Why: reason, Level: r.f.ReaderLevel()})
+		return tx.AddFeedWait(ctx, r.fd.ID, store.FeedWait{BodyHash: st.BodyHash, From: st.Seq, Count: 1, Why: reason, Level: level})
 	})
 	if err == nil {
 		cursors[st.BodyHash] = st.Seq
@@ -939,13 +1042,18 @@ func (r *run) write(ctx context.Context, attachments bool, fn func(*store.Tx) er
 	})
 }
 
-// download fetches a new document's content from the fixed path under the feed's URL.
+// download fetches a new document's content from the fixed path under the feed's URL, or, for a
+// via feed, under its relay's, naming the issuer (spec 0045).
 func (r *run) download(ctx context.Context, st Statement) ([]byte, string, error) {
 	if err := r.renew(ctx); err != nil {
 		return nil, "", err
 	}
+	from := contacted(r.fd) + "/feed/documents/" + url.PathEscape(st.IssuerID)
+	if r.fd.Via != "" {
+		from += "?issuer=" + url.QueryEscape(r.fd.URL)
+	}
 	var buf bytes.Buffer
-	_, err := r.f.Fetch.Download(ctx, r.fd.URL+"/feed/documents/"+url.PathEscape(st.IssuerID),
+	_, err := r.f.Fetch.Download(ctx, from,
 		egress.DownloadOptions{MaxBytes: st.Size, Timeout: 2 * time.Minute, MinRate: 16 << 10, Header: r.header}, &buf)
 	switch {
 	case errors.Is(err, egress.ErrNotFound):
@@ -964,7 +1072,7 @@ func (r *run) download(ctx context.Context, st Statement) ([]byte, string, error
 // statement's bytes (spec 0014).
 func (r *run) keepRefusal(ctx context.Context, st Statement, stmt, sig []byte, reason string) error {
 	err := r.write(ctx, true, func(tx *store.Tx) error {
-		return tx.KeepFeedRefusal(ctx, r.t.ID, store.FeedRefusal{FeedID: r.fd.ID, BodyHash: st.BodyHash, Seq: st.Seq, Reason: reason,
+		return tx.KeepFeedRefusal(ctx, r.t.ID, store.FeedRefusal{FeedID: r.fd.ID, BodyHash: st.BodyHash, Seq: st.Seq, IssuerID: st.IssuerID, Reason: reason,
 			Statement: string(stmt), Signature: base64.StdEncoding.EncodeToString(sig)})
 	})
 	if errors.Is(err, store.ErrQuota) {
@@ -1171,6 +1279,10 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		case errors.Is(err, store.ErrExists):
 			reason = "duplicate" // another feed stored it first
 			return nil
+		case errors.Is(err, store.ErrAttachmentQuota):
+			// spec 0045: the tenant's document quota holds the body's cursor, it does not refuse: the
+			// document is taken once there is room (only the heads limit, per issuer, refuses)
+			return errHeldByQuota
 		case errors.Is(err, store.ErrInvalid):
 			reason = "limits"
 			return nil

@@ -203,7 +203,19 @@ func (h *Handler) attachmentErr(w http.ResponseWriter, err error) {
 
 func (h *Handler) listAttachments(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	all, err := h.o.Attachments.List(r.Context(), a, p["t"], extOf(r, p))
+	q := r.URL.Query()
+	// spec 0045: ?source= and ?version= narrow the list to the documents about one source's version
+	// (the row of a version that waits for a decision), ?head=true to the chain heads
+	head := q.Get("head")
+	if head != "" && head != "true" && head != "false" || len(q.Get("version")) > 200 || len(q.Get("source")) > 200 {
+		problem(w, http.StatusBadRequest, typeInvalid, "head is true or false; source and version are at most 200 bytes")
+		return
+	}
+	all, err := h.o.Attachments.ListOf(r.Context(), a, p["t"], extOf(r, p), q.Get("source"), q.Get("version"))
+	if errors.Is(err, store.ErrNoSource) {
+		problem(w, http.StatusBadRequest, typeInvalid, "source is tenant, upstream:<name> or publisher:<name>, of this tenant")
+		return
+	}
 	if err != nil {
 		h.attachmentErr(w, err)
 		return
@@ -212,7 +224,10 @@ func (h *Handler) listAttachments(w http.ResponseWriter, r *http.Request, c call
 	for _, x := range attachment.Heads(all) {
 		heads[x.ID] = true
 	}
-	if o := r.URL.Query().Get("origin"); o != "" {
+	if head == "true" {
+		all = slices.DeleteFunc(all, func(x store.Attachment) bool { return !heads[x.ID] })
+	}
+	if o := q.Get("origin"); o != "" {
 		all = slices.DeleteFunc(all, func(x store.Attachment) bool { return x.Origin != o })
 	}
 	as, next, ok := pagedAttachments(w, r, all)

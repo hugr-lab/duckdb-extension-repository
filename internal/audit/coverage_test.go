@@ -148,7 +148,7 @@ var writes = map[string]map[string][]audit.Kind{
 	"attachment.Service": {
 		"Attach": {"attachment.add"}, "SetFlags": {"attachment.change"}, "Remove": {"attachment.remove"},
 		"RemoveBlockedDocument": {"attachment.remove"},
-		"List":                  nil, "Get": nil, "Content": nil, "ReadContent": nil, "BlockedDocuments": nil,
+		"List":                  nil, "ListOf": nil, "Get": nil, "Content": nil, "ReadContent": nil, "BlockedDocuments": nil,
 		"Feed": nil, "FeedDocument": nil,
 	},
 	"licenses.Service": {

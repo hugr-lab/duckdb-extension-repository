@@ -119,8 +119,8 @@ func attestationKeyState(activate bool) handler {
 
 // feed answers a subscriber's bodies with statements (not a management route: a feed credential
 // may be long-lived). It reads bodies and issuer and ignores other members (spec 0046): issuer
-// selects another issuer's statements relayed here (spec 0045), and before that relay exists a
-// request that names one is answered no statements.
+// selects another issuer's statements relayed here (spec 0045), with that issuer's keys file in
+// the answer; an issuer the tenant does not hand on is answered no statements and no keys.
 func (h *Handler) feed(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	var in struct {
 		Bodies []attachment.FeedBody `json:"bodies"`
@@ -138,10 +138,11 @@ func (h *Handler) feed(w http.ResponseWriter, r *http.Request, c caller, p param
 	reply(w, r, http.StatusOK, ans, "-", noStore)
 }
 
-// feedDocument sends a document a statement names, from the fixed path the subscriber fetches.
+// feedDocument sends a document a statement names, from the fixed path the subscriber fetches; with
+// ?issuer=, a document the tenant holds from that issuer and hands on (spec 0045).
 func (h *Handler) feedDocument(w http.ResponseWriter, r *http.Request, c caller, p params) {
 	a, _ := c.actor()
-	err := h.o.Attachments.FeedDocument(r.Context(), a, p["t"], p["id"], func(x store.Attachment, b []byte) error {
+	err := h.o.Attachments.FeedDocument(r.Context(), a, p["t"], p["id"], r.URL.Query().Get("issuer"), func(x store.Attachment, b []byte) error {
 		download(w, x, b)
 		return nil
 	})
@@ -153,8 +154,11 @@ func (h *Handler) feedDocument(w http.ResponseWriter, r *http.Request, c caller,
 // --- the feeds a tenant subscribes to ---
 
 type feedJSON struct {
-	Name       string   `json:"name"`
-	URL        string   `json:"url"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+	// Via is the relaying tenant's URL (spec 0045): the feed's runs contact it, never url, which
+	// stays the issuer's identity; set at creation only
+	Via        string   `json:"via,omitempty"`
 	Credential string   `json:"credential"`
 	Keys       []string `json:"keys"`
 	Kinds      []string `json:"kinds"`
@@ -186,7 +190,7 @@ type feedJSON struct {
 }
 
 func (h *Handler) feedOf(r *http.Request, f store.Feed, c caller) feedJSON {
-	o := feedJSON{Name: f.Name, URL: f.URL, Credential: f.Credential, Keys: f.Keys, Kinds: f.Kinds, Readers: f.Readers, Offer: f.Offer,
+	o := feedJSON{Name: f.Name, URL: f.URL, Via: f.Via, Credential: f.Credential, Keys: f.Keys, Kinds: f.Kinds, Readers: f.Readers, Offer: f.Offer,
 		State: f.State, Status: f.Status, LastError: f.LastError, LastSuccessAt: timeOf(f.LastSuccessAt), LastRunAt: timeOf(f.LastRunAt),
 		NextRunAt: timeOf(f.NextRunAt), RunRequested: !f.RequestedAt.IsZero(), CreatedAt: timeOf(f.CreatedAt),
 		CreatedBy: createdBy(f.CreatedBy, c), ETag: versionTag(f.Version), Mode: f.Mode, Export: f.Export, KeysFileAt: timeOf(f.KeysFileAt),
@@ -253,13 +257,14 @@ func (h *Handler) addFeed(w http.ResponseWriter, r *http.Request, c caller, p pa
 		Channels   []string `json:"channels"`
 		Mode       string   `json:"mode"`
 		Export     bool     `json:"export"`
+		Via        string   `json:"via"`
 	}
 	if !body(w, r, &in, maxBody) {
 		return
 	}
 	a, _ := c.actor()
 	f, err := h.o.Feeds.Add(r.Context(), a, p["t"], attachment.FeedSpec{Name: in.Name, URL: in.URL, Credential: in.Credential,
-		Keys: in.Keys, Kinds: in.Kinds, Readers: in.Readers, Offer: in.Offer, Channels: in.Channels, Mode: in.Mode, Export: in.Export})
+		Keys: in.Keys, Kinds: in.Kinds, Readers: in.Readers, Offer: in.Offer, Channels: in.Channels, Mode: in.Mode, Export: in.Export, Via: in.Via})
 	if err != nil {
 		h.serviceErr(w, err, true)
 		return

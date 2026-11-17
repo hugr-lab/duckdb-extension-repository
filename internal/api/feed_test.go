@@ -47,7 +47,12 @@ type subscriber struct {
 
 func newSubscriber(t *testing.T, srv *httptest.Server, token string) *subscriber {
 	t.Helper()
-	en := newEnv(t)
+	return subscriberOn(t, newEnv(t), srv, token)
+}
+
+// subscriberOn is a feed client over a kista's own store, reaching a TLS server.
+func subscriberOn(t *testing.T, en *env, srv *httptest.Server, token string) *subscriber {
+	t.Helper()
 	dir := t.TempDir()
 	ca := filepath.Join(dir, "ca.pem")
 	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}), 0o600); err != nil {

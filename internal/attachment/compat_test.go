@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,6 +55,16 @@ type newerSource struct {
 	down  map[string]bool   // documents that fail to download for now
 	// onKeys runs as the keys file is fetched: a run's first request
 	onKeys func()
+
+	// as a relay (spec 0045): via is the relaying tenant's URL; set, the stand-in answers only a
+	// request there that names the issuer, with the issuer's keys file in each answer, and fails the
+	// test when the issuer's own URL is contacted
+	via       string
+	notes     map[int64]string // seq: the relay's note on a statement it sends without content
+	relayKeys []byte           // the keys member, instead of the keys file (nil: the keys file)
+	noKeys    bool             // the answer carries no keys
+	highWater map[string]int64 // body: an unsigned high-water beyond the statements sent
+	posts     int
 }
 
 // spoil breaks a statement's signature.
@@ -153,6 +164,10 @@ func withdraw(st *attachment.Statement) {
 func v2(m map[string]any) { m["v"] = 2 }
 
 func (s *newerSource) Get(_ context.Context, raw string) ([]byte, http.Header, error) {
+	if s.via != "" {
+		s.t.Errorf("a via feed fetched %s: it reads no keys route, and never contacts its issuer", raw)
+		return nil, nil, egress.ErrNotFound
+	}
 	if !strings.HasSuffix(raw, "/attestation-keys") {
 		return nil, nil, egress.ErrNotFound
 	}
@@ -162,14 +177,28 @@ func (s *newerSource) Get(_ context.Context, raw string) ([]byte, http.Header, e
 	return s.keysFile(), nil, nil
 }
 
-func (s *newerSource) PostJSON(_ context.Context, _ string, _ http.Header, body []byte, _ int64) ([]byte, error) {
+func (s *newerSource) PostJSON(_ context.Context, raw string, _ http.Header, body []byte, _ int64) ([]byte, error) {
 	var req struct {
 		Bodies []attachment.FeedBody `json:"bodies"`
+		Issuer string                `json:"issuer"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	s.posts++
 	ans := attachment.FeedAnswer{Statements: []attachment.WireStatement{}, Bodies: []attachment.HighWater{}}
+	if s.via != "" {
+		if raw != s.via+"/feed" || req.Issuer != srcURL {
+			s.t.Errorf("a via feed posted to %s naming the issuer %q", raw, req.Issuer)
+		}
+		if !s.noKeys {
+			if ans.Keys = s.relayKeys; ans.Keys == nil {
+				ans.Keys = s.keysFile()
+			}
+		}
+	} else if req.Issuer != "" || !strings.HasPrefix(raw, srcURL) {
+		s.t.Errorf("a feed without via posted to %s naming the issuer %q", raw, req.Issuer)
+	}
 	for _, b := range req.Bodies {
 		high := b.AfterSeq
 		for _, st := range s.stmts {
@@ -177,9 +206,10 @@ func (s *newerSource) PostJSON(_ context.Context, _ string, _ http.Header, body 
 				continue
 			}
 			ans.Statements = append(ans.Statements, attachment.WireStatement{Statement: base64.StdEncoding.EncodeToString(st.stmt),
-				Signature: base64.StdEncoding.EncodeToString(st.sig)})
+				Signature: base64.StdEncoding.EncodeToString(st.sig), Note: s.notes[st.seq]})
 			high = st.seq
 		}
+		high = max(high, s.highWater[b.BodyHash])
 		if high > b.AfterSeq {
 			ans.Bodies = append(ans.Bodies, attachment.HighWater{BodyHash: b.BodyHash, Seq: high})
 		}
@@ -188,6 +218,14 @@ func (s *newerSource) PostJSON(_ context.Context, _ string, _ http.Header, body 
 }
 
 func (s *newerSource) Download(_ context.Context, raw string, o egress.DownloadOptions, w io.Writer) (egress.Download, error) {
+	if s.via != "" {
+		var ok bool
+		if raw, ok = strings.CutSuffix(raw, "?issuer="+url.QueryEscape(srcURL)); !ok || !strings.HasPrefix(raw, s.via+"/feed/documents/") {
+			s.t.Errorf("a via feed downloads from %s", raw)
+		}
+	} else if !strings.HasPrefix(raw, srcURL+"/feed/documents/") {
+		s.t.Errorf("a feed without via downloads from %s", raw)
+	}
 	doc, ok := s.docs[raw[strings.LastIndex(raw, "/")+1:]]
 	switch {
 	case !ok:
@@ -220,6 +258,7 @@ func newSubscriber(t *testing.T) *subscriber {
 		t.Fatal(err)
 	}
 	creds, err := credential.New([]config.Credential{{Name: "src", Tenants: []string{"acme"}, Prefixes: []string{"https://src.example/"},
+		Kind: "token_file", TokenFile: token}, {Name: "relay", Tenants: []string{"acme"}, Prefixes: []string{"https://relay.example/"},
 		Kind: "token_file", TokenFile: token}}, credential.Deps{})
 	if err != nil {
 		t.Fatal(err)

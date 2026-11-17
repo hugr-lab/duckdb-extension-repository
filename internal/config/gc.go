@@ -36,6 +36,10 @@ type Attachments struct {
 	MaxReads int `yaml:"max_reads"`
 	// FeedInterval is the time between a feed's scheduled runs (phase 1b; default 6h, at least 5m).
 	FeedInterval time.Duration `yaml:"feed_interval"`
+	// FeedAnswerMax is the most bytes an answer of the feed route holds, a relayed issuer's keys
+	// file included (spec 0045; default 1 MiB, 128 KiB to 1 MiB: a keys file may be 64 KiB, and a
+	// subscriber reads no more than 1 MiB).
+	FeedAnswerMax ByteSize `yaml:"feed_answer_max"`
 }
 
 // FeedIntervalOrDefault is attachments.feed_interval or its default.
@@ -55,5 +59,8 @@ func validateAttachments(bad func(string, ...any), c Config) {
 	}
 	if i := c.Attachments.FeedInterval; i != 0 && i < 5*time.Minute {
 		bad("attachments.feed_interval must be 0 (6h) or at least 5m")
+	}
+	if m := c.Attachments.FeedAnswerMax; m != 0 && (m < 128<<10 || m > 1<<20) {
+		bad("attachments.feed_answer_max must be 0 (1 MiB) or within 128 KiB..1 MiB")
 	}
 }

@@ -189,8 +189,8 @@ func TestSkew(t *testing.T) {
 		},
 		statements: []skewStatement{
 			{mod: func(s *attachment.Statement) { s.Kind, s.MediaType = "audit", "application/vnd.kista.audit.v1+json" }}, // 4: an unknown kind
-			{raw: func(m map[string]any) { m["envelope"] = map[string]any{"version": 3, "parts": []any{"summary"}} }},       // 5: an extra member
-			{raw: func(m map[string]any) { m["v"] = 2; m["size"] = map[string]any{"bytes": 10} }},                           // 6: a newer format
+			{raw: func(m map[string]any) { m["envelope"] = map[string]any{"version": 3, "parts": []any{"summary"}} }},     // 5: an extra member
+			{raw: func(m map[string]any) { m["v"] = 2; m["size"] = map[string]any{"bytes": 10} }},                         // 6: a newer format
 		}}
 	_, fsigned, afp := feedFixture(t, fdir, fp, 0, "")
 	skew = skewHooks{}

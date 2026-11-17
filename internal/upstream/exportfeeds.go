@@ -329,90 +329,65 @@ func (x *exporter) changed(ctx context.Context, cands []store.Feed, cursors map[
 	return false, nil
 }
 
-// bodyStatements collects a body's statements in (from, upTo] as the tenant holds them: its
-// documents of the issuer (whichever feed stored them), the statements an export feed kept, the
-// chosen feed's refusals, among them the statements that wait for this kista's upgrade (spec 0046:
-// carried without content, their note the waiting reason); at one seq the first of these wins. The
+// bodyStatements collects a body's statements in (from, upTo] as the tenant holds them
+// (attachment.HeldStatements, shared with the online relay of spec 0045): its documents of the
+// issuer (whichever feed stored them), the statements an export feed kept, the chosen feed's
+// refusals, among them the statements that wait for this kista's upgrade (spec 0046: carried
+// without content, their note the waiting reason); at one seq the first of these wins. The
 // range ends just below a statement that does not verify with the plan's keys, or whose live
 // document cannot be read.
 func (x *exporter) bodyStatements(ctx context.Context, pf *bundle.PlanFeed, pinned map[string]*rsa.PublicKey, best store.Feed,
 	body string, from, upTo int64) ([]xstatement, int64, error) {
-	type cand struct {
-		stmt, sig string
-		note      string
-		doc       *store.Attachment
-	}
-	bySeq := map[int64]cand{}
-	refusals, err := x.s.Store.FeedRefusals(ctx, best.ID, body, from, upTo)
+	held, err := attachment.HeldStatements(ctx, x.s.Store, x.t.ID, pf.URL, best.ID, body, from, upTo)
 	if err != nil {
 		return nil, 0, err
 	}
-	for _, r := range refusals {
-		note := bundle.Text(r.Reason, bundle.MaxDetail)
-		if note == "" {
-			note = noteRefused
-		}
-		bySeq[r.Seq] = cand{stmt: r.Statement, sig: r.Signature, note: note}
-	}
-	kept, err := x.s.Store.FeedKeptOf(ctx, x.t.ID, pf.URL, body, from, upTo)
-	if err != nil {
-		return nil, 0, err
-	}
-	for _, k := range kept {
-		bySeq[k.Seq] = cand{stmt: k.Statement, sig: k.Signature, note: noteNotHeld}
-	}
-	docs, err := x.s.Store.FeedDocumentsOf(ctx, x.t.ID, pf.URL, body, from, upTo)
-	if err != nil {
-		return nil, 0, err
-	}
-	for i := range docs {
-		d := &docs[i]
-		c := cand{stmt: d.Statement, sig: d.Signature}
-		if d.RemovedAt.IsZero() {
-			c.doc = d
-		} else {
-			c.note = noteRemoved
-		}
-		bySeq[d.Seq] = c
-	}
-	seqs := make([]int64, 0, len(bySeq))
-	for q := range bySeq {
-		seqs = append(seqs, q)
-	}
-	slices.Sort(seqs)
 	var out []xstatement
-	for _, q := range seqs {
-		c := bySeq[q]
-		stmt := []byte(c.stmt)
-		sig, err := base64.StdEncoding.DecodeString(c.sig)
+	for _, c := range held {
+		q := c.Seq
+		// why the exporting side holds no content for it: its refusal's reason, a removal, a document
+		// it never held
+		note := ""
+		switch {
+		case c.Removed:
+			note = noteRemoved
+		case c.NotHeld:
+			note = noteNotHeld
+		case c.Doc == nil:
+			if note = bundle.Text(c.Refused, bundle.MaxDetail); note == "" {
+				note = noteRefused
+			}
+		}
+		stmt := []byte(c.Statement)
+		sig, err := base64.StdEncoding.DecodeString(c.Signature)
 		if err != nil {
 			return out, q - 1, nil
 		}
 		st, err := attachment.Verify(stmt, sig, pinned)
 		// authentic, with a member out of its bounds: refused for good here, and carried so the site
 		// refuses it too (spec 0046); it has no document
-		malformed := errors.Is(err, attachment.ErrMalformed) && c.doc == nil
+		malformed := errors.Is(err, attachment.ErrMalformed) && c.Doc == nil
 		if err != nil && !malformed || st.Issuer != pf.URL || st.BodyHash != body || st.Seq != q {
 			return out, q - 1, nil // as an unverified statement holds a cursor online
 		}
-		xs := xstatement{stmt: stmt, sig: sig, st: st, note: c.note}
+		xs := xstatement{stmt: stmt, sig: sig, st: st, note: note}
 		switch {
 		case malformed:
 		case st.Withdrawn:
 			xs.note = ""
-		case c.doc != nil && len(pf.Kinds) > 0 && !slices.Contains(pf.Kinds, st.Kind):
+		case c.Doc != nil && len(pf.Kinds) > 0 && !slices.Contains(pf.Kinds, st.Kind):
 			// online, the site's feed refuses it before fetching: its content does not leave
 			xs.note = noteKind
-		case c.doc != nil && c.doc.ContentHash == st.ContentHash && c.doc.Size == st.Size:
-			err := x.s.Blob.ReadAttachment(ctx, x.t.StorageDomain, c.doc.ID, st.ContentHash, st.Size, func([]byte) error { return nil })
+		case c.Doc != nil && c.Doc.ContentHash == st.ContentHash && c.Doc.Size == st.Size:
+			err := x.s.Blob.ReadAttachment(ctx, x.t.StorageDomain, c.Doc.ID, st.ContentHash, st.Size, func([]byte) error { return nil })
 			if errors.Is(err, blob.ErrCorrupt) {
 				return out, q - 1, nil // its object missing or corrupt: the site moves no further
 			}
 			if err != nil {
 				return nil, 0, err
 			}
-			xs.doc = c.doc
-		case c.doc != nil:
+			xs.doc = c.Doc
+		case c.Doc != nil:
 			return out, q - 1, nil // a record that does not match its own statement
 		}
 		out = append(out, xs)

@@ -354,6 +354,16 @@ func TestAdminCLI(t *testing.T) {
 	run(0, "feed", "sync", "acme", "src")
 	run(0, "feed", "remove", "acme", "src", "-documents")
 	run(1, "feed", "show", "acme", "src")
+	// a feed taken through a relay (spec 0045): -via at creation only; the credential is the relay's
+	issuerURL := "https://issuer.example/api/v1/tenants/x"
+	run(1, "feed", "add", "acme", "own", "-url", issuerURL, "-via", issuerURL, "-credential", "src", "-key", fp, "-kinds", "report")
+	run(1, "feed", "add", "acme", "own", "-url", issuerURL, "-via", "https://relay.example/api/v1/tenants/y", "-credential", "src", "-key", fp) // not the credential's host
+	run(0, "feed", "add", "acme", "own", "-url", issuerURL, "-via", feedURL, "-credential", "src", "-key", fp, "-kinds", "report")
+	if got := run(0, "feed", "show", "acme", "own"); !strings.Contains(got, "own "+issuerURL) || !strings.Contains(got, "via "+feedURL) || !strings.Contains(got, "kinds report") {
+		t.Fatalf("feed show of a via feed: %q", got)
+	}
+	run(2, "feed", "set", "acme", "own", "-via", feedURL) // never changed
+	run(0, "feed", "remove", "acme", "own")
 	run(0, "attachment", "remove", "acme", "tresor", aid)
 	run(1, "attachment", "show", "acme", "tresor", aid)
 	run(1, "release", "promote", "acme/prod", "-name", "tresor", "-from", "prod", "-version", "1.0") // to itself
