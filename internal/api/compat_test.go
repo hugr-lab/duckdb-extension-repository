@@ -82,16 +82,17 @@ func TestOlderThanSourceRecords(t *testing.T) {
 	if rec := finish(`{"started":"2026-11-17T00:00:00Z","ended":"2026-11-17T00:00:01Z","counts":{"released":1}}`); rec["older_than_source"] != nil {
 		t.Fatalf("a plain run: %v", rec["older_than_source"])
 	}
-	rec := finish(`{"started":"2026-11-17T00:00:00Z","ended":"2026-11-17T00:00:01Z","counts":{"revocations_unknown":2}}`)
+	// the member is the run's own, as the run settled it: neither a count nor an error's text is
+	// read for it here
+	rec := finish(`{"started":"2026-11-17T00:00:00Z","ended":"2026-11-17T00:00:01Z","counts":{"revocations_unknown":2},"error":"an api newer than this kista reads"}`)
+	if rec["older_than_source"] != nil {
+		t.Fatalf("a count or an error's text read as the member: %v", rec["older_than_source"])
+	}
+	rec = finish(`{"started":"2026-11-17T00:00:00Z","ended":"2026-11-17T00:00:01Z","counts":{},"older_than_source":{"revocations_unknown":2}}`)
 	if a, _ := rec["older_than_source"].(map[string]any); a["revocations_unknown"] != float64(2) || a["api"] != nil {
 		t.Fatalf("revocations in an unknown state: %v", rec["older_than_source"])
 	}
-	// the flag is the run's own member: an error that merely says the same words sets nothing
-	rec = finish(`{"started":"2026-11-17T00:00:00Z","ended":"2026-11-17T00:00:01Z","counts":{},"error":"an api newer than this kista reads"}`)
-	if rec["older_than_source"] != nil {
-		t.Fatalf("an error's text read as the flag: %v", rec["older_than_source"])
-	}
-	rec = finish(`{"started":"2026-11-17T00:00:00Z","ended":"2026-11-17T00:00:01Z","counts":{},"error":"the run failed","newer_api":true}`)
+	rec = finish(`{"started":"2026-11-17T00:00:00Z","ended":"2026-11-17T00:00:01Z","counts":{},"error":"the run failed","older_than_source":{"api":true}}`)
 	if a, _ := rec["older_than_source"].(map[string]any); a["api"] != true {
 		t.Fatalf("a newer api: %v", rec["older_than_source"])
 	}

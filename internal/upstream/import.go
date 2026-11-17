@@ -39,6 +39,9 @@ type ImportOptions struct {
 	Idle, Floor time.Duration
 	// ID is the import record's id (an upload's attempt, spec 0014 phase 2); "": a new one.
 	ID string
+	// MaxBytes is the most bytes the import reads of its input (bundles.max_size; 0: no bound): a
+	// bundle past it stops the import, as a truncated one does, whatever the manifest names.
+	MaxBytes int64
 	// Trusted skips the server-administrator check: the upload runner's, the actor checked when the
 	// upload was completed. Only the runner sets it.
 	Trusted bool
@@ -140,6 +143,9 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 	rate := s.Config.MinRate
 	if rate <= 0 {
 		rate = 64 << 10
+	}
+	if o.MaxBytes > 0 {
+		in = &capped{r: in, left: o.MaxBytes, max: o.MaxBytes}
 	}
 	w := watch(ictx, in, o.Idle, o.Floor, rate)
 	defer w.stop()
@@ -301,6 +307,23 @@ func (s *Service) Import(ctx context.Context, a authz.Actor, tenant string, in i
 	s.finishFeeds(ctx, a, b, fts, streamErr != nil)
 	s.finishImport(ctx, a, t, &rec, b, &out, targets, fts, streamErr)
 	return out, nil
+}
+
+// ErrBundleTooLarge is an import's input past ImportOptions.MaxBytes.
+var ErrBundleTooLarge = errors.New("upstream: the bundle is over bundles.max_size")
+
+// capped reads at most max bytes: one more is ErrBundleTooLarge.
+type capped struct {
+	r         io.Reader
+	left, max int64
+}
+
+func (c *capped) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if c.left -= int64(n); c.left < 0 {
+		return 0, fmt.Errorf("%w (%d bytes)", ErrBundleTooLarge, c.max)
+	}
+	return n, err
 }
 
 // errLeaseLost stops an import whose lease another holder took.
@@ -996,6 +1019,7 @@ func (s *Service) finishImport(ctx context.Context, a authz.Actor, t store.Tenan
 			if problem != nil && tg.res.Error == "" {
 				tg.res.Error = "the import stopped (" + stop + "): " + out.Problem
 			}
+			tg.res.settleAhead(tg.u.LastRun)
 			data, _ := json.Marshal(tg.res)
 			class := runClass(tg.runErr)
 			if tg.status == TargetStale {

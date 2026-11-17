@@ -708,3 +708,144 @@ func TestProbeNewerAPI(t *testing.T) {
 		}
 	})
 }
+
+// Spec 0046 (review): an import reads no more of its input than ImportOptions.MaxBytes (the
+// administrators' bundles.max_size, as for an upload): a bundle past it stops, whatever it holds.
+func TestImportMaxBytes(t *testing.T) {
+	for _, e := range storetest.Engines(t) {
+		t.Run(e.Name, func(t *testing.T) {
+			g := newGateway(t, e)
+			g.put(t, "tresor", "1.0", 1)
+			sp := g.spec(store.UpstreamEntry{Name: "tresor"})
+			sp.Visibility = store.Public
+			if _, err := g.up.Add(ctx, admin, "acme", sp); err != nil {
+				t.Fatal(err)
+			}
+			g.sync(t, false)
+			g.air(t, "tresor")
+			_, data := g.export(t, g.plan(t), upstream.ExportOptions{})
+			imp := func(max int64) (upstream.ImportResult, error) {
+				return g.up.Import(ctx, admin, "site", bytes.NewReader(data), upstream.ImportOptions{BundleKeys: []string{g.fp}, Holder: "test",
+					MaxBytes: max})
+			}
+			res, err := imp(int64(len(data)) - 600) // the bundle's last blocks are past the bound
+			if !errors.Is(err, upstream.ErrBundleTooLarge) && !strings.Contains(res.Problem, "bundles.max_size") {
+				t.Fatalf("a bundle over the bound: %+v %v", res, err)
+			}
+			if res, err := imp(2048); !errors.Is(err, upstream.ErrBundleTooLarge) { // not even its head
+				t.Fatalf("a bundle whose head is over the bound: %+v %v", res, err)
+			}
+			res, err = imp(int64(len(data)))
+			if err != nil || res.Problem != "" || len(res.Targets) != 1 || res.Targets[0].Status != upstream.TargetImported {
+				t.Fatalf("a bundle within the bound: %+v %v", res, err)
+			}
+		})
+	}
+}
+
+// Spec 0046 (review): a plan takes back the cursors of the feeds it names, those only: another
+// feed of the same URL keeps its cursor.
+func TestPlanRetakesItsOwnFeeds(t *testing.T) {
+	for _, e := range storetest.Engines(t) {
+		t.Run(e.Name, func(t *testing.T) {
+			g := newGateway(t, e)
+			feeds := g.feeds()
+			key := "sha256:" + strings.Repeat("9", 64)
+			body := strings.Repeat("a", 64)
+			ids := map[string]string{}
+			for _, name := range []string{"a", "b"} {
+				f, err := feeds.Add(ctx, admin, "site", attachment.FeedSpec{Name: name, URL: feedURL, Keys: []string{key}, Mode: store.FeedBundle})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids[name] = f.ID
+				must(t, func() error {
+					return g.st.InTx(ctx, "", func(tx *store.Tx) error {
+						if err := tx.SetFeedCursor(ctx, f.ID, body, 20); err != nil {
+							return err
+						}
+						return tx.AddFeedWait(ctx, f.ID, store.FeedWait{BodyHash: body, From: 12, Count: 1, Why: attachment.WaitKind, Level: 0})
+					})
+				})
+			}
+			cursor := func(name string) int64 {
+				t.Helper()
+				cur, err := g.st.FeedCursors(ctx, ids[name])
+				if err != nil {
+					t.Fatal(err)
+				}
+				return cur[body]
+			}
+			if _, err := g.up.Plan(ctx, admin, "site", upstream.PlanTargets{Feeds: []string{"a"}}, []string{g.fp}); err != nil {
+				t.Fatal(err)
+			}
+			if cursor("a") != 11 || cursor("b") != 20 {
+				t.Fatalf("after a plan of feed a: a at %d, b at %d", cursor("a"), cursor("b"))
+			}
+			if _, err := g.up.Plan(ctx, admin, "site", upstream.PlanTargets{}, []string{g.fp}); err != nil {
+				t.Fatal(err)
+			}
+			if cursor("a") != 11 || cursor("b") != 11 {
+				t.Fatalf("after a plan of every feed: a at %d, b at %d", cursor("a"), cursor("b"))
+			}
+		})
+	}
+}
+
+// Spec 0046 (review): what an upstream last learned of a newer source stays in its record through
+// runs that do not reach the source's revocations (a dry run, a source that does not answer): the
+// yanks stored then still stand. A run that reads them says it anew.
+func TestOlderThanSourceKept(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		k := en.kista()
+		en.repo.put("v2.0.0", "linux_amd64", "tresor", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "tresor_duckdb_cpp_init"))
+		sp := en.spec(store.UpstreamEntry{Name: "tresor"})
+		sp.Revocations = true
+		if _, err := en.up.Add(ctx, admin, "acme", sp); err != nil {
+			t.Fatal(err)
+		}
+		en.sync(t, false)
+		c := en.releases(t, "tresor")[0]
+		ahead := func() (upstream.SourceAhead, bool) {
+			t.Helper()
+			u, err := en.up.Get(ctx, admin, "acme", "acme-repo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return upstream.AheadOf(u.LastRun)
+		}
+		if _, ok := ahead(); ok {
+			t.Fatal("a plain run says the source is newer")
+		}
+		k.set(row(c, "recalled", ""))
+		en.sync(t, false)
+		if a, ok := ahead(); !ok || a.RevocationsUnknown != 1 || a.API {
+			t.Fatalf("after an unknown state: %+v %v", a, ok)
+		}
+		// a dry run reads and stores nothing: the record keeps what it said
+		if r := en.sync(t, true); r.Counts["revocations_unknown"] != 0 {
+			t.Fatalf("a dry run counted: %+v", r)
+		}
+		if a, ok := ahead(); !ok || a.RevocationsUnknown != 1 {
+			t.Fatalf("after a dry run: %+v %v", a, ok)
+		}
+		// the source stops answering the route: the same
+		en.repo.mu.Lock()
+		serve := en.repo.kista
+		en.repo.kista = nil
+		en.repo.mu.Unlock()
+		en.sync(t, false)
+		if a, ok := ahead(); !ok || a.RevocationsUnknown != 1 {
+			t.Fatalf("after a run that did not reach the route: %+v %v", a, ok)
+		}
+		// it answers again, in a state this kista knows: read anew, nothing is ahead
+		en.repo.mu.Lock()
+		en.repo.kista = serve
+		en.repo.mu.Unlock()
+		k.set(row(c, store.RevokeYanked, ""))
+		en.sync(t, false)
+		if a, ok := ahead(); ok {
+			t.Fatalf("after the real state: %+v", a)
+		}
+	})
+}

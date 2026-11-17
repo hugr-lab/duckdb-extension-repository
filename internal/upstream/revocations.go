@@ -54,14 +54,16 @@ type SourceAhead struct {
 	RevocationsUnknown int  `json:"revocations_unknown,omitempty"`
 }
 
-// AheadOf reads SourceAhead from an upstream's last run; ok is false when the run met neither.
+// AheadOf reads SourceAhead from an upstream's last run; ok is false when there is none.
 func AheadOf(lastRun string) (SourceAhead, bool) {
 	var r Result
 	if lastRun == "" || json.Unmarshal([]byte(lastRun), &r) != nil {
 		return SourceAhead{}, false
 	}
-	a := SourceAhead{API: r.NewerAPI, RevocationsUnknown: r.Counts[countUnknownState]}
-	return a, a.API || a.RevocationsUnknown > 0
+	if r.Ahead == nil {
+		return SourceAhead{}, false
+	}
+	return *r.Ahead, true
 }
 
 // OlderThanSource says, from an upstream's last run, that this kista is older than its source
@@ -262,6 +264,7 @@ func (s *Service) revocationPass(ctx context.Context, sc store.ServeChannel, u s
 		problem("", "", err.Error())
 		return nil
 	}
+	res.reached = got.complete || got.notModified // a cut read says nothing of the rows it did not reach
 	s.applyRevocations(ctx, u, a, res, problem)
 	return nil
 }
@@ -472,6 +475,7 @@ func (s *Service) importRevocations(ctx context.Context, t store.Tenant, tg *tar
 			problem("", "", "storing the bundle's revocations: "+err.Error())
 			return
 		}
+		res.reached = true
 	}
 	a := authz.Actor{Kind: authz.ActorSystem, ID: "upstream:" + t.Name + "/" + tg.u.Name}
 	s.applyRevocations(ctx, tg.u, a, res, problem)

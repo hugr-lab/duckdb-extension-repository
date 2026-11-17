@@ -2656,7 +2656,9 @@ func (a *adminCmd) bundle(ctx context.Context, sub string, args []string) error 
 			Licenses: *withLicenses})
 	case sub == "import" && len(pos) == 2:
 		return a.bundleImport(ctx, pos[0], pos[1], upstream.ImportOptions{Upstreams: commaList(*names), Feeds: commaList(*feedNames),
-			DryRun: *dryRun, AnyTenant: *anyTenant, BundleKeys: a.cfg.BundleKeysFor(pos[0])})
+			DryRun: *dryRun, AnyTenant: *anyTenant, BundleKeys: a.cfg.BundleKeysFor(pos[0]),
+			// the same managed bound as an upload's: no bundle is read past bundles.max_size
+			MaxBytes: int64(a.cfg.Bundles.Settings().MaxSize)})
 	case sub == "list" && len(pos) == 1:
 		is, err := a.svc.Upstreams.Imports(ctx, a.actor, pos[0], *limit)
 		if err != nil {

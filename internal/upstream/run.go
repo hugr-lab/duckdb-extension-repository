@@ -82,8 +82,28 @@ type Result struct {
 	// NewerAPI: the run failed because the source's dash routes answer an api above the one this
 	// kista reads (spec 0046)
 	NewerAPI bool `json:"newer_api,omitempty"`
+	// Ahead is what the upstream last learned of a source newer than this kista (spec 0046). A run
+	// that read the source's revocations, or met a newer api, says it anew; one that did not reach
+	// them (a dry run, a failure before or while reading, a bundle that carries none) keeps the
+	// last one, since what was stored then still stands.
+	Ahead *SourceAhead `json:"older_than_source,omitempty"`
 
 	actor string // the run's actor, for its event
+	// reached: the run read the source's revocations to their end, or met a newer api
+	reached bool
+}
+
+// settleAhead sets Ahead once the run is over; last is the upstream's previous last run.
+func (r *Result) settleAhead(last string) {
+	if !r.reached {
+		if prev, ok := AheadOf(last); ok {
+			r.Ahead = &prev
+		}
+		return
+	}
+	if a := (SourceAhead{API: r.NewerAPI, RevocationsUnknown: r.Counts[countUnknownState]}); a != (SourceAhead{}) {
+		r.Ahead = &a
+	}
 }
 
 // CellNote is one cell's outcome in a run's record.
@@ -148,7 +168,9 @@ func (s *Service) runUpstream(ctx context.Context, id string, renew func(context
 	if runErr != nil {
 		res.Error = runErr.Error()
 		res.NewerAPI = errors.Is(runErr, errNewerAPI)
+		res.reached = res.reached || res.NewerAPI
 	}
+	res.settleAhead(u.LastRun)
 	res.Ended = time.Now().UTC()
 	b, _ := json.Marshal(res)
 	fctx := context.WithoutCancel(ctx) // a stopping run still records its result

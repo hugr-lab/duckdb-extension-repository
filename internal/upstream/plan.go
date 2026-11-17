@@ -184,23 +184,54 @@ func (s *Service) Plan(ctx context.Context, a authz.Actor, tenant string, sel Pl
 	if plan.Sources == nil {
 		plan.Sources = []bundle.PlanSource{}
 	}
+	var feeds []plannedFeed
 	if len(sel.Upstreams) == 0 || len(sel.Feeds) > 0 {
-		if plan.Feeds, err = s.planFeeds(ctx, t, sel.Feeds, ups, plan.Sources); err != nil {
+		if feeds, err = s.selectFeeds(ctx, t, sel.Feeds); err != nil {
 			return bundle.Plan{}, err
 		}
 	}
-	if err := plan.Validate(); err != nil {
-		return plan, err
+	if len(feeds) == 0 {
+		return plan, plan.Validate()
 	}
-	return plan, s.retakeFeeds(ctx, t, plan)
+	// spec 0046: the feeds' cursors and what they passed over are read, the plan is made whole, and
+	// the cursors of the feeds it names (those only) are taken back to where it asks from, in one
+	// transaction under the feed lock: a plan that fails rewinds nothing, and of two plans written
+	// at once the second reads what the first rewound. An import running meanwhile notices and
+	// fails its feed target.
+	err = s.Store.InTenantTx(ctx, t.ID, []string{store.FeedLock(t.ID)}, func(tx *store.Tx) error {
+		pf, err := s.planFeeds(ctx, tx, feeds, ups, plan.Sources)
+		if err != nil {
+			return err
+		}
+		plan.Feeds = pf
+		if err := plan.Validate(); err != nil {
+			return err
+		}
+		for _, f := range feeds {
+			if _, err := tx.RetakeFeedCursors(ctx, f.ID, s.readerLevel()); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return bundle.Plan{}, err
+	}
+	return plan, nil
 }
 
-// planFeeds lists a plan's feeds (spec 0014 phase 1b): the tenant's active bundle-mode feeds (all,
-// or the named ones), merged by URL, each with the bodies it offers now and the last seq received
+// plannedFeed is a feed a plan names, with the bodies it offers now.
+type plannedFeed struct {
+	store.Feed
+	bodies []string
+}
+
+// selectFeeds lists the feeds a plan names (spec 0014 phase 1b): the tenant's active bundle-mode
+// feeds (all, or the named ones), each with the bodies it offers now. planFeeds merges them by URL, each with the bodies it offers now and the last seq received
 // (the lowest among feeds of one URL, so no feed's range starts above its cursor), and the plan's
 // sources whose files it may then be offered.
-func (s *Service) planFeeds(ctx context.Context, t store.Tenant, names []string, ups []store.Upstream, sources []bundle.PlanSource) ([]bundle.PlanFeed, error) {
-	var feeds []store.Feed
+func (s *Service) selectFeeds(ctx context.Context, t store.Tenant, names []string) ([]plannedFeed, error) {
+	var feeds []plannedFeed
 	if err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		all, err := tx.ListFeeds(ctx, t.ID)
 		if err != nil {
@@ -219,13 +250,25 @@ func (s *Service) planFeeds(ctx context.Context, t store.Tenant, names []string,
 		}
 		for _, f := range all {
 			if f.Mode == store.FeedBundle && f.State == store.FeedActive && (len(names) == 0 || slices.Contains(names, f.Name)) {
-				feeds = append(feeds, f)
+				feeds = append(feeds, plannedFeed{Feed: f})
 			}
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
+	for i := range feeds {
+		var err error
+		if feeds[i].bodies, err = s.Store.OfferedBodies(ctx, feeds[i].Feed); err != nil {
+			return nil, err
+		}
+	}
+	return feeds, nil
+}
+
+// planFeeds merges the selected feeds by URL, reading their cursors and what they passed over in
+// the caller's transaction.
+func (s *Service) planFeeds(ctx context.Context, tx *store.Tx, feeds []plannedFeed, ups []store.Upstream, sources []bundle.PlanSource) ([]bundle.PlanFeed, error) {
 	index := map[string]int{}
 	for i, src := range sources {
 		index[src.Kind+"\x00"+src.Prefix] = i
@@ -259,18 +302,15 @@ func (s *Service) planFeeds(ctx context.Context, t store.Tenant, names []string,
 				pf.Sources = append(pf.Sources, i)
 			}
 		}
-		bodies, err := s.Store.OfferedBodies(ctx, f)
-		if err != nil {
-			return nil, err
-		}
-		cur, err := s.Store.FeedCursors(ctx, f.ID)
+		bodies := f.bodies
+		cur, err := tx.FeedCursors(ctx, f.ID)
 		if err != nil {
 			return nil, err
 		}
 		// spec 0046: what the feed passed over at a lower reader level than this binary's (or without
 		// content, level 0) is asked for again: the plan asks from just below it. The cursors
-		// themselves go back only once the plan is whole (retakeFeeds)
-		waits, err := s.Store.FeedWaits(ctx, f.ID)
+		// themselves go back once the plan is whole
+		waits, err := tx.FeedWaits(ctx, f.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -324,30 +364,6 @@ func (s *Service) readerLevel() int {
 		return s.Feeds.ReaderLevel()
 	}
 	return attachment.ReaderLevel
-}
-
-// retakeFeeds takes back the cursors of the bundle-mode feeds a plan names to where the plan asks
-// from (spec 0046), in one transaction under the feed lock, once the plan is known to be whole: a
-// plan that fails rewinds nothing. An import running meanwhile notices and fails its feed target.
-func (s *Service) retakeFeeds(ctx context.Context, t store.Tenant, plan bundle.Plan) error {
-	if len(plan.Feeds) == 0 {
-		return nil
-	}
-	return s.Store.InTenantTx(ctx, t.ID, []string{store.FeedLock(t.ID)}, func(tx *store.Tx) error {
-		all, err := tx.ListFeeds(ctx, t.ID)
-		if err != nil {
-			return err
-		}
-		for _, f := range all {
-			if f.Mode != store.FeedBundle || f.State != store.FeedActive || !slices.ContainsFunc(plan.Feeds, func(pf bundle.PlanFeed) bool { return pf.URL == f.URL }) {
-				continue
-			}
-			if _, err := tx.RetakeFeedCursors(ctx, f.ID, s.readerLevel()); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }
 
 // union adds ys to xs, sorted, each once.

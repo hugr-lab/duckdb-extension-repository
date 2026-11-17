@@ -160,6 +160,14 @@ func TestSkew(t *testing.T) {
 		t.Errorf("sign does not name the licence it skipped:\n%s%s", out.String(), errb.String())
 	}
 
+	// the same bundle with 2 MiB more for the left-out source: read through uncounted, yet within
+	// what the administrator lets a bundle be (bundles.max_size, as for an upload)
+	bdir := t.TempDir()
+	skew.after = func(w *bundle.Writer) {
+		w.Entry("files/"+strings.Repeat("f", 64)+".gz", 2<<20, bytes.NewReader(make([]byte, 2<<20)))
+	}
+	_, bigSigned := bundleFixture(t, bdir, fp, files)
+
 	// the same exporter writing a higher format
 	d3 := t.TempDir()
 	skew.before, skew.after = nil, nil
@@ -217,6 +225,26 @@ func TestSkew(t *testing.T) {
 	admin(0, "upstream", "add", "acme", "air", "-kind", "repository", "-mode", "bundle", "-channel", "prod",
 		"-platforms", "linux_amd64", "-extensions", "x,y", "-prefix", p.Sources[0].Prefix, "-keys", p.Sources[0].Keys[0], "-revocations")
 	admin(0, "feed", "add", "acme", "reviews", "-url", "https://gw.example.org/api/v1/tenants/reviews", "-key", afp, "-mode", "bundle")
+
+	// a bundle over bundles.max_size is not read past it, whatever its entries are; under the
+	// default it is read
+	small := filepath.Join(dir, "small.yaml")
+	base, _ := os.ReadFile(cfg)
+	os.WriteFile(small, append(base, []byte("bundles: { max_size: 1MiB }\n")...), 0o600)
+	var sout, serr bytes.Buffer
+	if code := adminWithInput([]string{"-config", small, "bundle", "import", "acme", bigSigned, "-dry-run"}, nil, &sout, &serr); code == 0 ||
+		!strings.Contains(sout.String()+serr.String(), "bundles.max_size") {
+		t.Errorf("a bundle over bundles.max_size: exit %d\n%s%s", code, sout.String(), serr.String())
+	}
+	// (this fixture bundle's source key is another than the upstream pins, so its target fails for
+	// that; the point here is that the bundle was read whole)
+	sout.Reset()
+	serr.Reset()
+	_ = adminWithInput([]string{"-config", cfg, "bundle", "import", "acme", bigSigned, "-dry-run"}, nil, &sout, &serr)
+	if got := sout.String() + serr.String(); !strings.Contains(got, "bytes of entries were read through") || !strings.Contains(got, "input sha256") ||
+		strings.Contains(got, "bundles.max_size") {
+		t.Errorf("the same bundle under the default bound:\n%s", got)
+	}
 
 	// a higher format is refused whole, by every reader, saying which side to upgrade: the reader
 	out.Reset()
