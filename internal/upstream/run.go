@@ -79,6 +79,9 @@ type Result struct {
 	Counts   map[string]int `json:"counts"`
 	Problems []CellNote     `json:"problems,omitempty"` // the first 20 cells that were not released or unchanged
 	Bundle   string         `json:"bundle,omitempty"`   // a bundle import's manifest id (spec 0014)
+	// NewerAPI: the run failed because the source's dash routes answer an api above the one this
+	// kista reads (spec 0046)
+	NewerAPI bool `json:"newer_api,omitempty"`
 
 	actor string // the run's actor, for its event
 }
@@ -144,6 +147,7 @@ func (s *Service) runUpstream(ctx context.Context, id string, renew func(context
 	runErr := s.run(ctx, u, &res, renew, full, only, trigger)
 	if runErr != nil {
 		res.Error = runErr.Error()
+		res.NewerAPI = errors.Is(runErr, errNewerAPI)
 	}
 	res.Ended = time.Now().UTC()
 	b, _ := json.Marshal(res)

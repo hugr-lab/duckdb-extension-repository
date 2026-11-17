@@ -201,6 +201,11 @@ func bundleSign(args []string, stdout io.Writer) error {
 	if err := withinPlan(m, &plan); err != nil {
 		return err
 	}
+	if _, newer := licenceProblems(m); len(newer) > 0 { // spec 0046: skipped by themselves, the bundle is signed
+		for _, n := range newer {
+			fmt.Fprintln(stdout, n)
+		}
+	}
 	if _, err := os.Stat(*out); err == nil {
 		return fmt.Errorf("%s exists", *out)
 	}
@@ -315,7 +320,7 @@ func withinPlan(m *bundle.Manifest, p *bundle.Plan) error {
 	if m.Plan.Licenses != p.Licenses || m.Plan.LicenseHolder != p.LicenseHolder {
 		return errors.New("the bundle's licence request differs from the plan's")
 	}
-	if ps := licenceProblems(m); len(ps) > 0 {
+	if ps, _ := licenceProblems(m); len(ps) > 0 {
 		return errors.New(ps[0])
 	}
 	asked := map[string]map[[3]string]bool{}
@@ -343,12 +348,17 @@ func withinPlan(m *bundle.Manifest, p *bundle.Plan) error {
 // licenceProblems lists the licences a manifest carries that are not what they are carried as: a
 // token that does not parse, of another extension, or of another holder than the plan named. The
 // site checks them again, with their signatures.
-func licenceProblems(m *bundle.Manifest) []string {
-	var out []string
+// licenceProblems checks the licences a bundle carries: each one's extension and holder. One in a
+// format newer than this kista reads (spec 0046) is no problem of the bundle's: it is skipped by
+// itself and named in newer; the import refuses it by itself too.
+func licenceProblems(m *bundle.Manifest) (out, newer []string) {
 	for _, s := range m.Sources {
 		for _, l := range s.Licenses {
 			t, err := license.Parse(l.Token)
+			_, later := license.Newer(l.Token)
 			switch {
+			case err != nil && later:
+				newer = append(newer, fmt.Sprintf("%s: the licence of %s is in a format newer than this kista reads: not checked here", s.Prefix, l.Name))
 			case err != nil:
 				out = append(out, fmt.Sprintf("%s: the licence of %s: %v", s.Prefix, l.Name, err))
 			case t.Extension != l.Name:
@@ -358,7 +368,7 @@ func licenceProblems(m *bundle.Manifest) []string {
 			}
 		}
 	}
-	return out
+	return out, newer
 }
 
 func feedsWithinPlan(m *bundle.Manifest, p *bundle.Plan) error {
@@ -521,8 +531,12 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 	if plan != nil && (m.Plan.Licenses != plan.Licenses || m.Plan.LicenseHolder != plan.LicenseHolder) {
 		problem("the bundle's licence request differs from the plan's")
 	}
-	for _, p := range licenceProblems(m) {
+	lps, newer := licenceProblems(m)
+	for _, p := range lps {
 		problem("%s", p)
+	}
+	for _, n := range newer {
+		fmt.Fprintln(stdout, n)
 	}
 	// the keys each source's files verify with: DuckDB's, or the .well-known file's (the plan's
 	// pins among them, with -plan)
@@ -623,6 +637,9 @@ func bundleInspect(args []string, stdout io.Writer) (bool, error) {
 	if len(m.Feeds) > 0 {
 		fmt.Fprintf(stdout, "feeds: %d, statements %d (withdrawals %d, without content %d), documents %d, %d bytes\n", len(m.Feeds),
 			fc.counts["statements"], fc.counts["withdrawals"], fc.counts["without content"], fc.counts["documents"], fc.counts["bytes"])
+		if n := fc.counts["waiting"]; n > 0 { // spec 0046
+			fmt.Fprintf(stdout, "feeds: %d statements are of a newer source than this kista reads: an import leaves them waiting\n", n)
+		}
 	}
 	if b.Ended() {
 		fmt.Fprintf(stdout, "sha256 %s\n", b.SHA256())
@@ -687,6 +704,7 @@ type feedCheck struct {
 	cur    int
 	ranges map[string][2]int64
 	named  map[string]int64
+	unread bool // a statement this kista cannot read came: it may name a document the bundle carries
 }
 
 // at starts reading a feed's entries: its ranges built once per feed.
@@ -695,7 +713,7 @@ func (c *feedCheck) at(fi int, f *bundle.Feed) {
 		return
 	}
 	c.finish() // the previous feed's
-	c.cur, c.ranges, c.named = fi, map[string][2]int64{}, map[string]int64{}
+	c.cur, c.ranges, c.named, c.unread = fi, map[string][2]int64{}, map[string]int64{}, false
 	for _, b := range f.Bodies {
 		c.ranges[b.BodyHash] = [2]int64{b.AfterSeq, b.Seq}
 	}
@@ -774,6 +792,11 @@ func (c *feedCheck) entry(it bundle.Item) {
 			switch {
 			case st.Withdrawn:
 				c.counts["withdrawals"]++
+			case st.Major() > 1 || !slices.Contains(attachment.Kinds, st.Kind) || unknownMedia(st):
+				// spec 0046: this kista cannot read it and an import leaves it waiting: it names no
+				// document here, though the bundle may carry one for it
+				c.counts["waiting"]++
+				c.unread = true
 			case e.Note != "":
 				c.counts["without content"]++
 			default:
@@ -786,6 +809,8 @@ func (c *feedCheck) entry(it bundle.Item) {
 	default:
 		size, ok := c.named[fe.Document]
 		switch {
+		case !ok && c.unread:
+			// only a statement this kista cannot read could name it
 		case !ok:
 			c.problem("feed %s: document %s comes before a batch names it", f.URL, fe.Document)
 		case size != int64(len(it.Data)):
@@ -795,6 +820,12 @@ func (c *feedCheck) entry(it bundle.Item) {
 		c.counts["documents"]++
 		c.counts["bytes"] += len(it.Data)
 	}
+}
+
+// unknownMedia reports a statement whose kind does not take its media type here.
+func unknownMedia(st attachment.Statement) bool {
+	_, err := attachment.CanonicalMediaType(st.Kind, st.MediaType)
+	return err != nil
 }
 
 // finish reports the last feed's statements whose document never came.

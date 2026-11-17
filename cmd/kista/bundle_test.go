@@ -79,8 +79,14 @@ func bundleFixture(t *testing.T, dir, bundleFP string, edit func(*bundle.Manifes
 	if err := bundle.WriteHead(w, md, skew.key); err != nil {
 		t.Fatal(err)
 	}
+	if skew.before != nil {
+		skew.before(w)
+	}
 	w.Entry("sources/1/well-known.json", int64(len(wk)), bytes.NewReader(wk))
 	w.Entry(m.Sources[0].Cells[0].File, int64(z.Len()), bytes.NewReader(z.Bytes()))
+	if skew.after != nil {
+		skew.after(w)
+	}
 	w.Close()
 	unsigned = filepath.Join(dir, "b.unsigned")
 	os.WriteFile(unsigned, out.Bytes(), 0o644)

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/bundle"
 )
@@ -59,7 +61,8 @@ func TestForwardCompat(t *testing.T) {
 		if !errors.Is(err, bundle.ErrInvalid) || errors.Is(err, bundle.ErrNewer) != newer {
 			t.Errorf("a manifest of format %s: %v", format, err)
 		}
-		if newer && !strings.Contains(err.Error(), "upgrade the importing kista") {
+		// the reader is the side to upgrade, whichever it is: an importer, kista bundle sign or inspect
+		if newer && !strings.Contains(err.Error(), "this kista is older than the bundle's writer; upgrade this kista") {
 			t.Errorf("a newer manifest does not say which side to upgrade: %v", err)
 		}
 	}
@@ -70,7 +73,8 @@ func TestForwardCompat(t *testing.T) {
 		m["format"] = "kista-bundle-plan/v2"
 		m["sources"] = "another shape altogether" // never read: the format is said first
 	})
-	if err := bundle.Decode(newerPlan, &bundle.Plan{}); !errors.Is(err, bundle.ErrNewer) || !strings.Contains(err.Error(), "upgrade the exporting kista") {
+	if err := bundle.Decode(newerPlan, &bundle.Plan{}); !errors.Is(err, bundle.ErrNewer) ||
+		!strings.Contains(err.Error(), "this kista is older than the plan's writer; upgrade this kista") {
 		t.Errorf("a newer plan: %v", err)
 	}
 	withMember := edit(pdata, func(m map[string]any) { m["accepts_reports"] = true })
@@ -127,5 +131,101 @@ func TestForwardCompat(t *testing.T) {
 	plan.Sources[0].Kind = "a kind\x00with a control character"
 	if err := plan.Validate(); !errors.Is(err, bundle.ErrInvalid) {
 		t.Errorf("a left-out source's text is not bounded: %v", err)
+	}
+}
+
+// Spec 0046: what a bundle carries for a part this binary left out is read through without
+// counting toward MaxSkipped, so one unknown thing never stops the rest: the entries of a source of
+// an unknown package type (nothing of it is read, its entries' names neither), and the file of a
+// cell in an unknown outcome. Other unnamed entries are capped as before.
+func TestLeftOutEntriesAreNotCapped(t *testing.T) {
+	f := newFixture(t)
+	_, src, files := split(t, f, nil)
+	eoa := make([]byte, 1024)
+	cat := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
+	stray := "files/" + strings.Repeat("e", 64) + ".gz"
+	big := make([]byte, bundle.MaxSkipped+1)
+	head := func(edit func(m *bundle.Manifest)) []byte {
+		g := newFixture(t)
+		g.files = f.files
+		if edit != nil {
+			edit(&g.m)
+		}
+		var hb bytes.Buffer
+		if err := bundle.WriteHead(bundle.NewWriter(&hb), g.manifest(t), nil); err != nil {
+			t.Fatal(err)
+		}
+		return hb.Bytes()
+	}
+	read := func(data []byte) (int, error) {
+		t.Helper()
+		b, err := bundle.Open(bytes.NewReader(data), t0, nil)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		_, got, err := readAll(t, b)
+		if err == io.EOF {
+			err = nil
+		}
+		return len(got), err
+	}
+	leftOut := func(m *bundle.Manifest) { // sorts first: adbc-registry < duckdb-core
+		m.Sources = append([]bundle.Source{{Kind: "adbc-registry", PackageType: "adbc_driver", Prefix: "https://drivers.example.org/adbc"}}, m.Sources...)
+	}
+	unknown := func(m *bundle.Manifest) {
+		c := m.Sources[1].Cells[0]
+		c.Name, c.Outcome, c.File = "zzz", "quarantined", stray
+		m.Sources[1].Cells = append(m.Sources[1].Cells, c)
+	}
+
+	// without a part left out, the stray file is over the cap
+	if _, err := read(cat(head(nil), src, entry(stray, '0', big), files, eoa)); !errors.Is(err, bundle.ErrMalformed) || !strings.Contains(err.Error(), "read through") {
+		t.Fatalf("a stray file over the cap: %v", err)
+	}
+	// a left-out source's entries, before the known source's and among the files: the two files come
+	if n, err := read(cat(head(leftOut), entry("sources/9/index.json", '0', []byte(`{}`)), src, entry(stray, '0', big), files, eoa)); err != nil || n != 2 {
+		t.Fatalf("a left-out source's entries: %d files, %v", n, err)
+	}
+	// the cap still holds for what is no source's: a name outside sources/ and files/, a second copy
+	if _, err := read(cat(head(leftOut), src, entry("junk", '0', big), files, eoa)); !errors.Is(err, bundle.ErrMalformed) {
+		t.Fatalf("junk beside a left-out source: %v", err)
+	}
+	half := entry(stray, '0', big[:len(big)/2+1])
+	if _, err := read(cat(head(leftOut), src, half, half, half, files, eoa)); !errors.Is(err, bundle.ErrMalformed) {
+		t.Fatalf("copies of a left-out source's entry: %v", err)
+	}
+	// the file of a cell in an outcome this binary does not know
+	if n, err := read(cat(head(unknown), src, entry(stray, '0', big), files, eoa)); err != nil || n != 2 {
+		t.Fatalf("an unknown outcome's file: %d files, %v", n, err)
+	}
+}
+
+// Spec 0046: a cell in an outcome this binary does not know never fails the manifest for what its
+// other members hold, nor a licence of its name for want of files.
+func TestUnknownOutcomeCell(t *testing.T) {
+	g := newFixture(t)
+	g.m.Plan.Licenses = true
+	src := &g.m.Sources[1]
+	c := src.Cells[0]
+	c.Name, c.Outcome, c.FetchedAt, c.Detail, c.ETag = "zzz", "staged", t0.Add(time.Hour), strings.Repeat("d", bundle.MaxDetail+1), "\x01"
+	src.Cells = append(src.Cells, c)
+	src.Licenses = []bundle.License{{Name: "zzz", Token: "a.b.c"}}
+	if err := g.m.Validate(t0); err != nil {
+		t.Fatalf("a cell in an unknown outcome: %v", err)
+	}
+	core := &g.m.Sources[0]
+	core.Cells[1].Outcome, core.Cells[1].Authenticated = "staged", true
+	if err := g.m.Validate(t0); err != nil {
+		t.Fatalf("an unknown outcome's other members: %v", err)
+	}
+	// the same members on a cell this binary reads are refused as before
+	core.Cells[1].Outcome = bundle.Rejected
+	if err := g.m.Validate(t0); !errors.Is(err, bundle.ErrInvalid) {
+		t.Fatalf("a rejected cell that is authenticated: %v", err)
+	}
+	src.Licenses[0].Name = "nope"
+	core.Cells[1].Authenticated = false
+	if err := g.m.Validate(t0); !errors.Is(err, bundle.ErrInvalid) {
+		t.Fatalf("a licence of a name no cell names: %v", err)
 	}
 }

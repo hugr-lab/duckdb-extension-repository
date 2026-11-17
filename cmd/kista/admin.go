@@ -2542,8 +2542,10 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		fmt.Fprintf(a.out, "%s %s\nmode %s, export %v\nstate %s, status %s %s\nlast success %s\ncredential %s\nkeys %s\nkinds %s, readers %v, offer %s\nlast run %s\n",
 			fd.Name, fd.URL, fd.Mode, fd.Export, fd.State, fd.Status, fd.LastError, last, fd.Credential, strings.Join(fd.Keys, ","),
 			strings.Join(fd.Kinds, ","), fd.Readers, fd.Offer, fd.LastRun)
-		if line := attachment.OlderThanSource(fd.Waiting); line != "" { // spec 0046
-			fmt.Fprintln(a.out, line)
+		for _, line := range []string{attachment.OlderThanSource(fd.Waiting), attachment.ExporterOlderThanSource(fd.WaitingSource)} { // spec 0046
+			if line != "" {
+				fmt.Fprintln(a.out, line)
+			}
 		}
 		if !fd.KeysFileAt.IsZero() {
 			fmt.Fprintf(a.out, "keys file kept %s\n", ts(fd.KeysFileAt))

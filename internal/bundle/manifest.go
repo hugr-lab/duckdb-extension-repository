@@ -278,11 +278,11 @@ func Decode(data []byte, v any) error {
 	}
 	switch v.(type) {
 	case *Plan:
-		if err := newerFormat(data, PlanFormat, "the exporting kista"); err != nil {
+		if err := newerFormat(data, PlanFormat, "the plan's writer"); err != nil {
 			return err
 		}
 	case *Manifest:
-		if err := newerFormat(data, ManifestFormatV2, "the importing kista"); err != nil {
+		if err := newerFormat(data, ManifestFormatV2, "the bundle's writer"); err != nil {
 			return err
 		}
 	}
@@ -298,9 +298,10 @@ func Decode(data []byte, v any) error {
 
 var formatRE = regexp.MustCompile(`^([a-z-]+)/v([1-9][0-9]{0,8})$`)
 
-// newerFormat reports a document whose format is of highest's family and above it: the side named
-// reads no such format yet.
-func newerFormat(data []byte, highest, upgrade string) error {
+// newerFormat reports a document whose format is of highest's family and above it. The side to
+// upgrade is the one reading (an importer, an exporter, kista bundle sign or inspect), whichever it
+// is: the message names it as "this kista".
+func newerFormat(data []byte, highest, writer string) error {
 	var head struct {
 		Format string `json:"format"`
 	}
@@ -315,7 +316,8 @@ func newerFormat(data []byte, highest, upgrade string) error {
 	if m, _ := strconv.Atoi(top[2]); n <= m {
 		return nil
 	}
-	return fmt.Errorf("%w: %w: format %s, and this kista reads up to %s: upgrade %s", ErrInvalid, ErrNewer, head.Format, highest, upgrade)
+	return fmt.Errorf("%w: %w: format %s, and this kista reads up to %s: this kista is older than %s; upgrade this kista",
+		ErrInvalid, ErrNewer, head.Format, highest, writer)
 }
 
 // Text strips control and format characters and bounds s to n bytes: export reasons and the
@@ -586,6 +588,9 @@ func (m *Manifest) Validate(now time.Time) error {
 			if err := c.validate(); err != nil {
 				return fmt.Errorf("%w: cell %v: %w", ErrInvalid, ck, err)
 			}
+			if !KnownOutcome(c.Outcome) {
+				continue
+			}
 			// fetched_at guards a cell against older builds at the site: never after the bundle itself
 			if c.FetchedAt.After(m.CreatedAt) {
 				return fmt.Errorf("%w: cell %v: fetched_at is after the manifest's created_at", ErrInvalid, ck)
@@ -690,7 +695,8 @@ func (s Source) validateLicenses(asked bool) error {
 	}
 	held := map[string]bool{}
 	for _, c := range s.Cells {
-		if c.Outcome == Fetched || c.Outcome == Unchanged {
+		// a cell in an outcome this binary does not know may be one that carries the name's files
+		if c.Outcome == Fetched || c.Outcome == Unchanged || !KnownOutcome(c.Outcome) {
 			held[c.Name] = true
 		}
 	}
@@ -712,6 +718,15 @@ func (s Source) validateLicenses(asked bool) error {
 }
 
 func (c Cell) validate() error {
+	if !KnownOutcome(c.Outcome) {
+		// an outcome this binary does not know is this cell's problem at the import, not the
+		// manifest's (spec 0046): nothing more of the cell is read, whatever its other members
+		// became there
+		if c.Outcome == "" || len(c.Outcome) > 64 || Text(c.Outcome, 64) != c.Outcome {
+			return errors.New("its outcome is 1 to 64 bytes of printable text")
+		}
+		return nil
+	}
 	if len(c.ETag) > MaxETag || Text(c.ETag, MaxETag) != c.ETag || len(c.Detail) > MaxDetail || Text(c.Detail, MaxDetail) != c.Detail {
 		return errors.New("etag or detail")
 	}
@@ -737,12 +752,6 @@ func (c Cell) validate() error {
 	case Missing, Rejected:
 		if hasFile || c.BodyHash != "" || c.Authenticated {
 			return errors.New("a missing or rejected cell carries no file")
-		}
-	default:
-		// an outcome this binary does not know is this cell's problem at the import, not the
-		// manifest's (spec 0046): nothing more of the cell is read
-		if c.Outcome == "" || len(c.Outcome) > 64 || Text(c.Outcome, 64) != c.Outcome {
-			return errors.New("its outcome is 1 to 64 bytes of printable text")
 		}
 	}
 	return nil

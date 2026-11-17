@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/credential"
@@ -46,19 +46,34 @@ var errNewerAPI = errors.New("the source's routes answer an api newer than this 
 // unknownStateRE is a revocation state's word as it may be shown: a later release's state.
 var unknownStateRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,15}$`)
 
-// OlderThanSource says, from an upstream's last run, that this kista is older than its source
-// (spec 0046), or nothing: for the administrators' view.
-func OlderThanSource(lastRun string) string {
+// SourceAhead is what an upstream's last run met of a source newer than this kista (spec 0046), for
+// the administrators' view: its dash routes answered an api this kista does not read, or it listed
+// revocations in a state this kista does not know (taken as yanks).
+type SourceAhead struct {
+	API                bool `json:"api,omitempty"`
+	RevocationsUnknown int  `json:"revocations_unknown,omitempty"`
+}
+
+// AheadOf reads SourceAhead from an upstream's last run; ok is false when the run met neither.
+func AheadOf(lastRun string) (SourceAhead, bool) {
 	var r Result
 	if lastRun == "" || json.Unmarshal([]byte(lastRun), &r) != nil {
-		return ""
+		return SourceAhead{}, false
 	}
+	a := SourceAhead{API: r.NewerAPI, RevocationsUnknown: r.Counts[countUnknownState]}
+	return a, a.API || a.RevocationsUnknown > 0
+}
+
+// OlderThanSource says, from an upstream's last run, that this kista is older than its source
+// (spec 0046), or nothing.
+func OlderThanSource(lastRun string) string {
+	a, _ := AheadOf(lastRun)
 	switch {
-	case strings.Contains(r.Error, errNewerAPI.Error()):
+	case a.API:
 		return "This kista is older than its source: its revocations and names are not read until an upgrade."
-	case r.Counts[countUnknownState] > 0:
+	case a.RevocationsUnknown > 0:
 		return fmt.Sprintf("This kista is older than its source: %d revocations in a state it does not know are taken as yanks.",
-			r.Counts[countUnknownState])
+			a.RevocationsUnknown)
 	}
 	return ""
 }
@@ -286,21 +301,19 @@ func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds
 				continue // nothing revoked ahead of time; a row listed twice taken once
 			}
 			listed[id] = true
-			state, reason := row.State, row.Reason
+			state, reason := row.State, store.CleanReason(row.Reason)
 			if store.RevocationRank(state) == 0 {
 				unknown++
-				word := "unknown"
-				if unknownStateRE.MatchString(row.State) {
-					word = row.State
-				}
-				state, reason = store.RevokeYanked, strings.TrimSuffix(word+": "+row.Reason, ": ")
-				if cur, ok := held[id]; ok && store.RevocationRank(cur.State) > store.RevocationRank(state) {
-					state, reason = cur.State, cur.Reason // listed still, and no weaker than it was
+				state, reason = store.RevokeYanked, unknownReason(row.State, reason)
+				// a stored stronger state is kept while the source still listed the row; one it had
+				// dropped is not brought back by a state this kista cannot read
+				if cur, ok := held[id]; ok && cur.UnlistedAt.IsZero() && store.RevocationRank(cur.State) > store.RevocationRank(state) {
+					state, reason = cur.State, cur.Reason
 				}
 			}
 			if err := tx.PutUpstreamRevocation(ctx, store.UpstreamRevocation{UpstreamID: u.ID, BuildID: id, TenantID: u.TenantID,
 				BodyHash: row.BodyHash, Name: row.Name, PackageVersion: row.Version, Platform: row.Platform, State: state,
-				Reason: store.CleanReason(reason)}); err != nil {
+				Reason: reason}); err != nil {
 				return err
 			}
 		}
@@ -326,6 +339,25 @@ func (s *Service) storeRevocations(ctx context.Context, u store.Upstream, builds
 		res.Counts[countUnknownState] = unknown
 	}
 	return err
+}
+
+// unknownReason is the reason stored for a row in a state this kista does not know: the source's
+// word (or the fixed label unknown) before the source's cleaned reason, which is cut so that the
+// word is never lost to the reason's bound.
+func unknownReason(state, cleaned string) string {
+	word := "unknown"
+	if unknownStateRE.MatchString(state) {
+		word = state
+	}
+	if cleaned == "" {
+		return word
+	}
+	room := store.MaxRevocationReason - len(word) - len(": ")
+	for len(cleaned) > room {
+		_, size := utf8.DecodeLastRuneInString(cleaned)
+		cleaned = cleaned[:len(cleaned)-size]
+	}
+	return word + ": " + cleaned
 }
 
 var bodyHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)

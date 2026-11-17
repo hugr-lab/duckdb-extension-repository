@@ -7,12 +7,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/authz"
@@ -260,8 +262,8 @@ func TestWaitingThroughExport(t *testing.T) {
 					if err := tx.SetFeedCursor(ctx, gw.ID, body, 4); err != nil {
 						return err
 					}
-					// the gateway's own waiting state, as its run left it: from 2, at its (older) level
-					return tx.AddFeedWait(ctx, gw.ID, store.FeedWait{BodyHash: body, From: 2, Count: 2, Why: attachment.WaitKind, Level: 0})
+					// the gateway's own waiting state, as its run left it: from 2, at its binary's level
+					return tx.AddFeedWait(ctx, gw.ID, store.FeedWait{BodyHash: body, From: 2, Count: 2, Why: attachment.WaitKind, Level: attachment.ReaderLevel})
 				})
 			})
 			held("d1", 1, b1, sig1, st1, doc("one"))
@@ -340,25 +342,64 @@ func TestWaitingThroughExport(t *testing.T) {
 			if cur, _ := g.st.FeedCursors(ctx, site.ID); cur[body] != 4 {
 				t.Fatalf("the site's cursor: %v", cur)
 			}
-			var shown store.Feed
-			if shown, err = feeds.Get(ctx, admin, "site", "enterest"); err != nil || shown.Waiting[attachment.WaitKind] != 2 || shown.Status != store.FeedOK {
-				t.Fatalf("the site's feed: %+v %v", shown.Waiting, err)
+			// the site reads these statements, or would: it is the exporting kista that is older
+			// than its source, and the site's view says so, apart from what the site itself cannot read
+			const line = "The exporting kista is older than its source: 2 statements arrived without content (`unknown kind`)."
+			shownLine := func(when string) {
+				t.Helper()
+				shown, err := feeds.Get(ctx, admin, "site", "enterest")
+				if err != nil || len(shown.Waiting) != 0 || shown.WaitingSource[attachment.WaitKind] != 2 || shown.Status != store.FeedOK ||
+					attachment.OlderThanSource(shown.Waiting) != "" || attachment.ExporterOlderThanSource(shown.WaitingSource) != line {
+					t.Fatalf("the site's feed %s: %v %v %q %v", when, shown.Waiting, shown.WaitingSource, attachment.ExporterOlderThanSource(shown.WaitingSource), err)
+				}
+			}
+			shownLine("after the import")
+
+			// a plan that fails rewinds nothing: a second feed of the URL pins so many keys that the
+			// plan's feed is over the format's bound, found after the first feed was read
+			defer func(n int) { store.MaxFeedKeys = n }(store.MaxFeedKeys)
+			store.MaxFeedKeys = bundle.MaxPlanFeedKeys + 10
+			var many []string
+			for i := range bundle.MaxPlanFeedKeys {
+				many = append(many, fmt.Sprintf("sha256:%064x", i+1))
+			}
+			if _, err := feeds.Add(ctx, admin, "site", attachment.FeedSpec{Name: "more", URL: feedURL, Keys: many, Mode: store.FeedBundle}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := g.up.Plan(ctx, admin, "site", upstream.PlanTargets{}, []string{g.fp}); err == nil || !strings.Contains(err.Error(), "pin") {
+				t.Fatalf("a plan over the format's keys: %v", err)
+			}
+			if cur, _ := g.st.FeedCursors(ctx, site.ID); cur[body] != 4 {
+				t.Fatalf("a failed plan took the cursor back: %v", cur)
+			}
+			if err := feeds.Remove(ctx, admin, "site", "more", false, 0); err != nil {
+				t.Fatal(err)
 			}
 
-			// a plan after that: the cursor is back just below what waits, with no reset
+			// a plan after that: the cursor is back just below what waits, with no reset; the line
+			// stays until the range is judged again
 			plan = g.plan(t)
 			if seq := planSeq(plan); seq != 1 {
 				t.Fatalf("the plan asks from %d", seq)
 			}
-			if w, _ := g.st.FeedWaits(ctx, site.ID); len(w) != 0 {
-				t.Fatalf("the retake left waiting state: %+v", w)
+			if cur, _ := g.st.FeedCursors(ctx, site.ID); cur[body] != 1 {
+				t.Fatalf("the cursor after the plan: %v", cur)
 			}
-			// the gateway is as it was: the same bundle again, the same waits, nothing stored twice
+			shownLine("after the plan")
+			if again := g.plan(t); planSeq(again) != 1 { // every plan asks again, from the same place
+				t.Fatalf("the next plan asks from %d", planSeq(again))
+			}
+			// the gateway is as it was: the same bundle again, the same waits, counted once, nothing
+			// stored twice
 			_, data = g.export(t, plan, upstream.ExportOptions{})
 			run = feedRun(g.importSite(t, data))
 			if run.Counts["received"] != 0 || run.Counts["waiting"] != 2 || len(siteDocs()) != 1 {
 				t.Fatalf("the same bundle again: %+v", run)
 			}
+			if w, _ := g.st.FeedWaits(ctx, site.ID); w[body].From != 2 || w[body].Count != 2 || w[body].Level != 0 {
+				t.Fatalf("the site's waiting state after the same bundle: %+v", w)
+			}
+			shownLine("after the same bundle")
 
 			// the gateway is upgraded: its retake rewinds its cursor and deletes its kept rows from
 			// what waited on; its run then stores d2, refuses d3 again, and the source no longer
@@ -367,7 +408,7 @@ func TestWaitingThroughExport(t *testing.T) {
 			must(t, func() error {
 				return g.st.InTx(ctx, store.FeedLock(gwT.ID), func(tx *store.Tx) error {
 					var err error
-					rewound, err = tx.RetakeFeedCursors(ctx, gw.ID, attachment.ReaderLevel)
+					rewound, err = tx.RetakeFeedCursors(ctx, gw.ID, attachment.ReaderLevel+1)
 					return err
 				})
 			})
@@ -596,4 +637,74 @@ func TestExportNewerPlan(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Spec 0046 (review): a state this kista does not know keeps a stored stronger state only while
+// the source still lists the row; one the source had dropped is not brought back. The source's
+// word goes before its cleaned reason, which is cut to leave the word room, and a reason's own
+// ending is kept.
+func TestRevocationUnknownStateAfterDrop(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		k := en.kista()
+		en.repo.put("v2.0.0", "linux_amd64", "tresor", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "tresor_duckdb_cpp_init"))
+		sp := en.spec(store.UpstreamEntry{Name: "tresor"})
+		sp.Revocations = true
+		if _, err := en.up.Add(ctx, admin, "acme", sp); err != nil {
+			t.Fatal(err)
+		}
+		en.sync(t, false)
+		c := en.releases(t, "tresor")[0]
+		k.set(row(c, store.RevokeBlocked, "bad"))
+		if r := en.sync(t, false); r.Counts["revoked"] != 1 {
+			t.Fatalf("the block: %+v", r)
+		}
+		k.set() // the source drops it: kept, unlisted, since it was applied
+		en.sync(t, false)
+		if s := en.stored(t)["1.0"]; s.State != store.RevokeBlocked || s.UnlistedAt.IsZero() {
+			t.Fatalf("after the source dropped it: %+v", s)
+		}
+		k.set(row(c, "recalled", "see advisory: "))
+		if r := en.sync(t, false); r.Counts["revocations_unknown"] != 1 {
+			t.Fatalf("an unknown state after the drop: %+v", r)
+		}
+		if s := en.stored(t)["1.0"]; s.State != store.RevokeYanked || s.Reason != "recalled: see advisory: " || !s.UnlistedAt.IsZero() {
+			t.Fatalf("a dropped block came back: %+v", s)
+		}
+		// a long reason: the word stays, the whole within the reason's bound, cut at a rune
+		k.set(row(c, "recalled", strings.Repeat("é", store.MaxRevocationReason)))
+		en.sync(t, false)
+		s := en.stored(t)["1.0"]
+		if !strings.HasPrefix(s.Reason, "recalled: é") || len(s.Reason) > store.MaxRevocationReason || len(s.Reason) < store.MaxRevocationReason-2 ||
+			!utf8.ValidString(s.Reason) {
+			t.Fatalf("a long reason: %d bytes, %q…", len(s.Reason), s.Reason[:20])
+		}
+	})
+}
+
+// Spec 0046: the probe that tells whether a source is a kista checks api too. A source answering a
+// higher one is not taken as a kista of this wire major: the switch and "*" are refused, saying why.
+func TestProbeNewerAPI(t *testing.T) {
+	each(t, func(t *testing.T, en *env) {
+		k := en.kista()
+		k.api = 2
+		en.repo.put("v2.0.0", "linux_amd64", "tresor", signed(t, en.key, cpp("1.0", "v2.0.0"), 1, "tresor_duckdb_cpp_init"))
+		sp := en.spec(store.UpstreamEntry{Name: "tresor"})
+		sp.Revocations = true
+		if _, err := en.up.Add(ctx, admin, "acme", sp); err == nil || !strings.Contains(err.Error(), "an api newer than this kista reads") {
+			t.Fatalf("an upstream of a newer source with revocations on: %v", err)
+		}
+		if _, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "*"})); err == nil ||
+			!strings.Contains(err.Error(), "an api newer than this kista reads") {
+			t.Fatalf("a * mirror of a newer source: %v", err)
+		}
+		// without either it is added, not known as a kista; the switch is refused later all the same
+		u, err := en.up.Add(ctx, admin, "acme", en.spec(store.UpstreamEntry{Name: "tresor"}))
+		if err != nil || u.RemoteKista {
+			t.Fatalf("a plain mirror of a newer source: %+v %v", u, err)
+		}
+		if _, err := en.up.SetRevocations(ctx, admin, "acme", "acme-repo", true, 0); err == nil ||
+			!strings.Contains(err.Error(), "an api newer than this kista reads") {
+			t.Fatalf("the switch on a newer source: %v", err)
+		}
+	})
 }
