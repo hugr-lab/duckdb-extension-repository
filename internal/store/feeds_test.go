@@ -64,9 +64,13 @@ func TestFeedRecords(t *testing.T) {
 		}
 
 		// a body released in prod, offered: statements about it, the latest only while feedable
+		mirror := store.Upstream{TenantID: tn.ID, Name: "repo", Kind: store.UpstreamRepo, Prefix: "https://r.example", ChannelID: ch.ID,
+			Mode: store.ModeMirror, Visibility: store.Public, State: store.UpstreamActive, CreatedBy: "os:1:t", FetchMode: store.FetchEager}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertUpstream(ctx, &mirror) })
 		b := cppBuild(tn, "tresor", "1.0", "a")
+		b.Source = store.UpstreamSource(mirror.ID)
 		inTx(t, s, func(tx *store.Tx) error { return tx.FindOrInsertBuild(ctx, &b) })
-		r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Name: b.Name, PackageVersion: b.PackageVersion, Platform: b.Platform,
+		r := store.Release{TenantID: tn.ID, ChannelID: ch.ID, BuildID: b.ID, Source: b.Source, Name: b.Name, PackageVersion: b.PackageVersion, Platform: b.Platform,
 			Slot: b.Slot(), State: store.ReleaseActive, Visibility: store.Public, Seq: 1, Origin: store.OriginUpstream}
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertRelease(ctx, &r, "system:upstream") })
 		doc := store.Attachment{TenantID: tn.ID, BodyHash: b.BodyHash, Kind: store.KindReview, MediaType: "application/vnd.kista.review.v1+json",

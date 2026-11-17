@@ -59,7 +59,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, '2026-11-01T00:00:00.000000Z',
 			return err
 		}
 		f.TenantID, doc.TenantID, report.TenantID = tn.ID, tn.ID, tn.ID
-		if err := tx.InsertFeed(ctx, &f); err != nil {
+		// the feed as schema 53 has it (no via)
+		f.ID = NewID()
+		if _, err := tx.exec(ctx, `INSERT INTO feeds (id, tenant_id, name, url, credential, kinds, readers, offer, state, version, status,
+created_at, created_by, mode, export) VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, 1, ?, '2026-11-01T00:00:00.000000Z', ?, ?, ?)`, f.ID, f.TenantID, f.Name, f.URL,
+			f.Credential, false, f.Offer, FeedActive, FeedNew, f.CreatedBy, FeedOnline, false); err != nil {
 			return err
 		}
 		_, err := tx.exec(ctx, "INSERT INTO feed_cursors (feed_id, body_hash, seq) VALUES (?, ?, 4)", f.ID, body)
@@ -75,10 +79,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, '2026-11-01T00:00:00.000000Z',
 	}
 	report.ID = ""
 
-	upTo(len(ms))
-	if cur, minReader, err := s.schemaState(ctx, s.db); err != nil || cur != len(ms) || minReader != 53 {
+	upTo(54)
+	if cur, minReader, err := s.schemaState(ctx, s.db); err != nil || cur != 54 || minReader != 53 {
 		t.Fatalf("after 0054: schema %d, min_reader %d, %v", cur, minReader, err)
 	}
+	upTo(len(ms)) // the rest, for this binary's reads and writes below
 	after, err := s.GetAttachment(ctx, tn.ID, doc.ID)
 	if err != nil || after.Kind != doc.Kind || after.Title != "R" || after.Size != 7 || after.Summary != doc.Summary || after.Seq != 4 ||
 		after.Statement != doc.Statement || after.Signature != doc.Signature || after.Issuer != doc.Issuer || after.IssuerID != "d1" ||

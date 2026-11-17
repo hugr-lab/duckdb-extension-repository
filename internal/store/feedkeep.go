@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -18,9 +19,12 @@ var MaxFeedKept = 100000
 // ErrQuota is MaxFeedKept reached; it wraps into ErrInvalid.
 var ErrQuota = errors.New("store: what export feeds keep is at its cap")
 
-// FeedRefusal is a statement an export feed refused for good, with its bytes and signature.
+// FeedRefusal is a statement an export feed refused for good, or left waiting (spec 0046), with its
+// bytes and signature. IssuerID is its document's id at the issuer (spec 0045; "" on a row kept
+// before, or when the statement's own cannot be read).
 type FeedRefusal struct {
 	FeedID, BodyHash string
+	IssuerID         string
 	Seq              int64
 	Reason           string
 	Statement        string
@@ -94,13 +98,20 @@ func (t *Tx) ResetFeedCursors(ctx context.Context, feedID string) error {
 	return err
 }
 
-// KeepFeedRefusal keeps a statement an export feed refused for good. The caller holds the tenant's
-// attachment lock: the quota is counted here.
+// KeepFeedRefusal keeps a statement an export feed refused for good. It replaces the earlier rows
+// the feed kept of the same document (spec 0045: by issuer_id; a row kept before the column has
+// none and is replaced by none), so a document re-stated daily keeps one row. The caller holds the
+// tenant's attachment lock: the quota is counted here, after the rows replaced went.
 func (t *Tx) KeepFeedRefusal(ctx context.Context, tenantID string, r FeedRefusal) error {
 	var have int
 	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM feed_refusals WHERE feed_id = ? AND body_hash = ? AND seq = ?",
 		r.FeedID, r.BodyHash, r.Seq).Scan(&have); err != nil || have > 0 {
 		return err
+	}
+	if r.IssuerID != "" {
+		if _, err := t.exec(ctx, "DELETE FROM feed_refusals WHERE feed_id = ? AND issuer_id = ? AND seq < ?", r.FeedID, r.IssuerID, r.Seq); err != nil {
+			return err
+		}
 	}
 	n, err := t.feedKept(ctx, tenantID)
 	if err != nil {
@@ -109,20 +120,22 @@ func (t *Tx) KeepFeedRefusal(ctx context.Context, tenantID string, r FeedRefusal
 	if n >= MaxFeedKept {
 		return quotaErr()
 	}
-	_, err = t.exec(ctx, "INSERT INTO feed_refusals (feed_id, body_hash, seq, reason, statement, signature, refused_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		r.FeedID, r.BodyHash, r.Seq, r.Reason, r.Statement, r.Signature, t.s.d.timeArg(t.Now()))
+	_, err = t.exec(ctx, "INSERT INTO feed_refusals (feed_id, body_hash, seq, reason, statement, signature, refused_at, issuer_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		r.FeedID, r.BodyHash, r.Seq, r.Reason, r.Statement, r.Signature, t.s.d.timeArg(t.Now()), nullable(r.IssuerID))
 	return t.s.mapErr(err, "feed refusal")
 }
 
 // FeedRefusals lists a feed's refusals for a body with seq in (after, upTo], in seq order.
 func (s *Store) FeedRefusals(ctx context.Context, feedID, bodyHash string, after, upTo int64) ([]FeedRefusal, error) {
 	var out []FeedRefusal
-	err := s.eachRow(ctx, `SELECT feed_id, body_hash, seq, reason, statement, signature, refused_at FROM feed_refusals
+	err := s.eachRow(ctx, `SELECT feed_id, body_hash, seq, reason, statement, signature, refused_at, issuer_id FROM feed_refusals
 WHERE feed_id = ? AND body_hash = ? AND seq > ? AND seq <= ? ORDER BY seq`, []any{feedID, bodyHash, after, upTo}, func(sc func(...any) error) error {
 		var r FeedRefusal
-		if err := sc(&r.FeedID, &r.BodyHash, &r.Seq, &r.Reason, &r.Statement, &r.Signature, scanTime{&r.RefusedAt}); err != nil {
+		var id sql.NullString
+		if err := sc(&r.FeedID, &r.BodyHash, &r.Seq, &r.Reason, &r.Statement, &r.Signature, scanTime{&r.RefusedAt}, &id); err != nil {
 			return err
 		}
+		r.IssuerID = id.String
 		out = append(out, r)
 		return nil
 	})

@@ -35,6 +35,11 @@ var (
 	MaxTenantAttachments = 100000
 )
 
+// ErrAttachmentQuota is the tenant's document quota reached (limits.ceilings.attachments): it wraps
+// into ErrInvalid. A feed's run holds the body's cursor on it instead of refusing the document for
+// good (spec 0045): the document is taken once there is room.
+var ErrAttachmentQuota = errors.New("store: the tenant's document quota is reached")
+
 // Attachment is a document's record. Its content is the object attachments/<ID> in the tenant's
 // storage domain, checked against ContentHash on every read.
 type Attachment struct {
@@ -110,7 +115,7 @@ func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
 		return err
 	}
 	if total >= MaxTenantAttachments {
-		return fmt.Errorf("%w: a tenant holds at most %d attachments (and as many from feeds)", ErrInvalid, MaxTenantAttachments)
+		return fmt.Errorf("%w: %w: a tenant holds at most %d attachments (and as many from feeds)", ErrInvalid, ErrAttachmentQuota, MaxTenantAttachments)
 	}
 	unresolved := false
 	if a.Supersedes != "" {
@@ -192,6 +197,22 @@ func (s *Store) ExtensionAttachments(ctx context.Context, tenantID, packageType,
 	return s.listAttachments(ctx, `SELECT `+prefixed("a.", attachmentCols)+` FROM attachments a WHERE a.tenant_id = ? AND a.removed_at IS NULL
 AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = a.tenant_id AND b.package_type = ? AND b.name = ? AND b.body_hash = a.body_hash)
 ORDER BY a.body_hash, a.kind, a.created_at, a.id`, tenantID, packageType, name)
+}
+
+// ExtensionAttachmentsOf is ExtensionAttachments narrowed to the bodies of the package's builds of
+// one source (its id; "": any) and one package version ("": any): the documents about a version
+// that waits for a decision (spec 0045).
+func (s *Store) ExtensionAttachmentsOf(ctx context.Context, tenantID, packageType, name, source, version string) ([]Attachment, error) {
+	cond, args := "", []any{tenantID, packageType, name}
+	if source != "" {
+		cond, args = cond+" AND b.source = ?", append(args, source)
+	}
+	if version != "" {
+		cond, args = cond+" AND b.package_version = ?", append(args, version)
+	}
+	return s.listAttachments(ctx, `SELECT `+prefixed("a.", attachmentCols)+` FROM attachments a WHERE a.tenant_id = ? AND a.removed_at IS NULL
+AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = a.tenant_id AND b.package_type = ? AND b.name = ? AND b.body_hash = a.body_hash`+cond+`)
+ORDER BY a.body_hash, a.kind, a.created_at, a.id`, args...)
 }
 
 // BodyAttachments lists the documents (not removed) of one body in the tenant.

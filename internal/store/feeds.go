@@ -197,7 +197,7 @@ const (
 	FeedActive = "active"
 	FeedPaused = "paused"
 
-	OfferUpstreams = "upstreams" // the bodies whose Builds came from upstreams (the default)
+	OfferUpstreams = "upstreams" // the bodies of the catalogue builds that came from outside (the default; spec 0045)
 	OfferChannels  = "channels"  // the bodies released in named channels
 
 	FeedOnline = "online" // the feed's mode: run against its source (the default)
@@ -225,6 +225,9 @@ type Feed struct {
 	Readers                             bool     // statements whose audience is readers may be shown to readers
 	Offer, State                        string
 	Mode                                string // FeedOnline or FeedBundle; set at creation
+	// Via is the relaying tenant's URL (spec 0045), set at creation and never changed: a run asks
+	// it for the statements of the issuer URL names, which is then never contacted. "": none
+	Via string
 	// Export keeps what a bundle needs to answer a site's plan (spec 0014): the keys file, permanent
 	// refusals, statements about documents not held
 	Export                            bool
@@ -253,17 +256,17 @@ func FeedLock(tenantID string) string { return "kista/feeds/" + tenantID }
 
 const feedCols = `id, tenant_id, name, url, credential, kinds, readers, offer, state, version, requested_at, next_run_at,
 last_run_at, last_run, status, last_success_at, last_error, created_at, created_by, mode, export, bundle_id, bundle_created_at,
-bundle_manifest_sha256, attestation_keys_at, export_epoch`
+bundle_manifest_sha256, attestation_keys_at, export_epoch, via`
 
 func scanFeed(scan func(...any) error) (Feed, error) {
 	var f Feed
-	var cred, lastRun, lastErr, bundleID, bundleSHA sql.NullString
+	var cred, lastRun, lastErr, bundleID, bundleSHA, via sql.NullString
 	var kinds string
 	err := scan(&f.ID, &f.TenantID, &f.Name, &f.URL, &cred, &kinds, &f.Readers, &f.Offer, &f.State, &f.Version,
 		scanTime{&f.RequestedAt}, scanTime{&f.NextRunAt}, scanTime{&f.LastRunAt}, &lastRun, &f.Status, scanTime{&f.LastSuccessAt},
 		&lastErr, scanTime{&f.CreatedAt}, &f.CreatedBy, &f.Mode, &f.Export, &bundleID, scanTime{&f.BundleCreatedAt}, &bundleSHA,
-		scanTime{&f.KeysFileAt}, &f.ExportEpoch)
-	f.Credential, f.LastRun, f.LastError = cred.String, lastRun.String, lastErr.String
+		scanTime{&f.KeysFileAt}, &f.ExportEpoch, &via)
+	f.Credential, f.LastRun, f.LastError, f.Via = cred.String, lastRun.String, lastErr.String, via.String
 	f.BundleID, f.BundleManifestSHA256 = bundleID.String, bundleSHA.String
 	if kinds != "" {
 		f.Kinds = strings.Split(kinds, ",")
@@ -294,12 +297,13 @@ func (t *Tx) InsertFeed(ctx context.Context, f *Feed) error {
 	if f.Mode == "" {
 		f.Mode = FeedOnline
 	}
-	if f.Mode != FeedOnline && f.Mode != FeedBundle || f.Mode == FeedBundle && (f.Credential != "" || f.Export) {
-		return fmt.Errorf("%w: a feed's mode is online, or bundle without a credential or export", ErrInvalid)
+	if f.Mode != FeedOnline && f.Mode != FeedBundle || f.Mode == FeedBundle && (f.Credential != "" || f.Export || f.Via != "") {
+		return fmt.Errorf("%w: a feed's mode is online, or bundle without a credential, export or via", ErrInvalid)
 	}
 	_, err := t.exec(ctx, `INSERT INTO feeds (id, tenant_id, name, url, credential, kinds, readers, offer, state, version, status,
-created_at, created_by, mode, export) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.ID, f.TenantID, f.Name, f.URL, nullable(f.Credential),
-		strings.Join(f.Kinds, ","), f.Readers, f.Offer, f.State, f.Version, f.Status, t.s.d.timeArg(f.CreatedAt), f.CreatedBy, f.Mode, f.Export)
+created_at, created_by, mode, export, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.ID, f.TenantID, f.Name, f.URL, nullable(f.Credential),
+		strings.Join(f.Kinds, ","), f.Readers, f.Offer, f.State, f.Version, f.Status, t.s.d.timeArg(f.CreatedAt), f.CreatedBy, f.Mode, f.Export,
+		nullable(f.Via))
 	if err != nil {
 		return t.s.mapErr(err, "feed")
 	}
@@ -371,7 +375,8 @@ func (t *Tx) ListFeeds(ctx context.Context, tenantID string) ([]Feed, error) {
 }
 
 // SetFeed changes a feed's settings (compare-and-set on its version; expected 0 takes the record's):
-// its state, credential, accepted kinds, readers, export and pinned keys. Its mode never changes.
+// its state, credential, accepted kinds, readers, export and pinned keys. Its mode and its via never
+// change.
 func (t *Tx) SetFeed(ctx context.Context, f *Feed, expected int64) error {
 	if expected == 0 {
 		expected = f.Version
@@ -481,9 +486,25 @@ func (t *Tx) FinishFeedRun(ctx context.Context, id, result, status, lastError st
 	return err
 }
 
-// OfferedBodies lists the bodies a feed offers its source, in order: by default those released from
-// upstreams and never by the tenant itself (a publication or an administrator's release), or those
-// released in its channels.
+// fromDistributor is the condition of a build x of a distributor's publisher, live or removed (spec
+// 0033 phase B: a removed one's record is kept).
+func (s *Store) fromDistributor(x string) string {
+	id := "substr(" + x + ".source, 11)"
+	if s.d.Name == "sqlserver" {
+		id = "SUBSTRING(" + x + ".source, 11, 64)"
+	}
+	return `(` + x + `.source LIKE 'publisher:%' AND (
+	EXISTS (SELECT 1 FROM publishers p WHERE p.id = ` + id + ` AND p.distributor IS NOT NULL)
+	OR EXISTS (SELECT 1 FROM removed_distributor_publishers rd WHERE rd.tenant_id = ` + x + `.tenant_id AND rd.publisher_id = ` + id + `)))`
+}
+
+// OfferedBodies lists the bodies a feed offers its source, in order. By default (spec 0045) those
+// of the tenant's catalogue builds that came from outside: of an upstream, or of a distributor's
+// publisher (live or removed), not withdrawn, released or not (a build the catalogue keeps: landed,
+// or released); and never a body that a build of the tenant's own has (the tenant's, or a publisher's
+// that is not a distributor's, a removed one included). A revoked entry that remains is one a
+// channel still serves: it is offered. With the channels offer: the bodies released in its channels.
+// A bundle's plan takes its feeds' bodies from here too (spec 0014).
 func (s *Store) OfferedBodies(ctx context.Context, f Feed) ([]string, error) {
 	var q string
 	args := []any{f.TenantID}
@@ -492,10 +513,13 @@ func (s *Store) OfferedBodies(ctx context.Context, f Feed) ([]string, error) {
 WHERE r.tenant_id = ? AND c.feed_id = ? AND r.state IN (?, ?) AND b.withdrawn_at IS NULL ORDER BY b.body_hash`
 		args = append(args, f.ID, ReleaseActive, ReleaseDeprecated)
 	} else {
-		q = `SELECT DISTINCT b.body_hash FROM releases r JOIN builds b ON b.id = r.build_id WHERE r.tenant_id = ? AND r.origin = ?
-AND NOT EXISTS (SELECT 1 FROM releases p JOIN builds pb ON pb.id = p.build_id WHERE pb.tenant_id = b.tenant_id AND pb.body_hash = b.body_hash
-AND p.origin IN (?, ?)) ORDER BY b.body_hash`
-		args = append(args, OriginUpstream, OriginPublication, OriginAdmin)
+		q = `SELECT DISTINCT b.body_hash FROM builds b WHERE b.tenant_id = ? AND b.withdrawn_at IS NULL
+AND (b.landed = ? OR EXISTS (SELECT 1 FROM releases r WHERE r.build_id = b.id))
+AND (b.source LIKE 'upstream:%' OR ` + s.fromDistributor("b") + `)
+AND NOT EXISTS (SELECT 1 FROM builds o WHERE o.tenant_id = b.tenant_id AND o.body_hash = b.body_hash
+	AND (o.source = ? OR o.source LIKE 'publisher:%' AND NOT ` + s.fromDistributor("o") + `))
+ORDER BY b.body_hash`
+		args = append(args, true, SourceTenant)
 	}
 	var out []string
 	err := s.eachRow(ctx, q, args, func(sc func(...any) error) error {
