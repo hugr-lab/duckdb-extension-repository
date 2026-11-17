@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { feedBody, feedBundleLine, feedCounts, feedOlder, feedStatus, type Feed, feedKinds } from './Feeds'
+import { feedBody, feedBundleLine, feedCounts, feedExporterOlder, feedOlder, feedStatus, type Feed, feedKinds } from './Feeds'
 import { upstreamOlder } from './Upstreams'
 import { originText } from './Reports'
 
@@ -35,11 +35,13 @@ describe('feeds', () => {
     expect(feedOlder({ waiting: { 'unknown kind': 0 } })).toBe('')
     expect(feedOlder({ waiting: { 'unknown kind': 2, newer: 1 } })).toBe(
       'This kista is older than its source: documents wait for an upgrade (newer, unknown kind).')
-    expect(upstreamOlder(undefined)).toBe('')
-    expect(upstreamOlder({ started: '', ended: '', counts: { released: 3 } })).toBe('')
-    expect(upstreamOlder({ started: '', ended: '', counts: { revocations_unknown: 2 } })).toMatch(/2 revocations in a state it does not know/)
-    expect(upstreamOlder({ started: '', ended: '', counts: {}, error: "the run failed: the source's routes answer an api newer than this kista reads (1): upgrade this kista" }))
-      .toMatch(/not read until an upgrade/)
+    expect(feedExporterOlder({})).toBe('')
+    expect(feedExporterOlder({ waiting_without_content: { 'unknown kind': 2, 'media type': 1 } })).toBe(
+      'The exporting kista is older than its source: 3 statements arrived without content (media type, unknown kind).')
+    // the upstream's line comes from the record's member, never from the run's error text
+    expect(upstreamOlder({})).toBe('')
+    expect(upstreamOlder({ older_than_source: { revocations_unknown: 2 } })).toMatch(/2 revocations in a state it does not know/)
+    expect(upstreamOlder({ older_than_source: { api: true } })).toMatch(/not read until an upgrade/)
   })
   it('names a feed document by its verified source', () => {
     expect(originText({ origin: 'feed', issuer: 'https://enterest.example/api/v1/tenants/acme', source_origin: 'tenant', attached_by: 'f-1' })).toBe(

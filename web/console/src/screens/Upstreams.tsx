@@ -45,6 +45,8 @@ export interface Upstream {
   extensions: Entry[]
   last_run_at?: string
   last_run?: RunResult
+  /** What the last run met of a source newer than this kista (spec 0046). */
+  older_than_source?: { api?: boolean; revocations_unknown?: number }
   created_at: string
   created_by: string
   credential?: string
@@ -96,14 +98,16 @@ export function counts(r?: RunResult): [string, number][] {
   return Object.entries(r?.counts ?? {}).filter(([, n]) => n > 0)
 }
 
-/** A run's counts in a line: released 12 · unchanged 340 · missing 3. */
-/** Spec 0046: an upstream whose source is newer than this kista, in a line; '' otherwise. */
-export function upstreamOlder(r?: RunResult) {
-  if (r?.error?.includes('an api newer than this kista reads')) return 'This kista is older than its source: its revocations and names are not read until an upgrade.'
-  const n = r?.counts?.revocations_unknown ?? 0
+/** Spec 0046: an upstream whose source is newer than this kista, in a line, from the record's own
+ * member; '' otherwise. */
+export function upstreamOlder(u: Pick<Upstream, 'older_than_source'>) {
+  const a = u.older_than_source
+  if (a?.api) return 'This kista is older than its source: its revocations and names are not read until an upgrade.'
+  const n = a?.revocations_unknown ?? 0
   return n > 0 ? `This kista is older than its source: ${n} revocations in a state it does not know are taken as yanks.` : ''
 }
 
+/** A run's counts in a line: released 12 · unchanged 340 · missing 3. */
 export function countsLine(r?: RunResult) {
   if (!r) return ''
   return counts(r).map(([k, n]) => `${k} ${n}`).join(' · ') || 'nothing to do'
@@ -414,7 +418,7 @@ function LastRun({ u, onRefresh }: { u: Upstream; onRefresh: () => void }) {
         <div className="flex flex-col gap-3">
           <p className="m-0">{when(r.started)} – {when(r.ended)}{r.dry_run && <span className="chip ml-2 bg-surface-soft text-ink">dry run</span>}</p>
           {r.error && <ErrorBox error={r.error} />}
-          {upstreamOlder(r) && <Note>{upstreamOlder(r)}</Note>}
+          {upstreamOlder(u) && <Note>{upstreamOlder(u)}</Note>}
           <div className="flex flex-wrap gap-1.5">
             {counts(r).length === 0 ? <span className="text-ink-muted">nothing to do</span> : counts(r).map(([k, n]) => <span key={k} className="chip bg-surface-soft text-ink">{k} {n}</span>)}
           </div>
