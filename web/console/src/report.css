@@ -1,0 +1,144 @@
+/* kista's report stylesheet (spec 0045): the one stylesheet an issuer's report page is shown under,
+   in the console's isolated frame and, inlined, in the page's download. The page is semantic HTML
+   with no style of its own, so everything it looks like is here. The colours are the console's
+   tokens. In the frame the theme is the console's, named on the root element by the frame's fixed
+   prefix (data-kista-theme, as the console's own root has it); a downloaded file has none and
+   follows its reader's system. It names no other resource (no import, no image, no font file): the
+   frame loads nothing but this file. */
+:root {
+  color-scheme: light;
+  --surface: #ffffff;
+  --surface-soft: #f2f7f7;
+  --ink: #0b1f2a;
+  --ink-muted: #4a5b64;
+  --border: #d3e1e2;
+  --brand: #2a7470;
+  --row: #f7fafa;
+}
+
+:root[data-kista-theme='dark'] {
+  color-scheme: dark;
+  --surface: #061c28;
+  --surface-soft: #0a3146;
+  --ink: #e8f1f2;
+  --ink-muted: #9cb1ba;
+  --border: #1e4a60;
+  --brand: #5cbdb6;
+  --row: #0b2737;
+}
+
+@media screen and (prefers-color-scheme: dark) {
+  :root:not([data-kista-theme]) {
+    color-scheme: dark;
+    --surface: #061c28;
+    --surface-soft: #0a3146;
+    --ink: #e8f1f2;
+    --ink-muted: #9cb1ba;
+    --border: #1e4a60;
+    --brand: #5cbdb6;
+    --row: #0b2737;
+  }
+}
+
+html {
+  background: var(--surface);
+  color: var(--ink);
+  font: 15px/1.55 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  padding: 16px 20px 32px;
+  max-width: 980px;
+  overflow-wrap: anywhere;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  margin: 1.4em 0 0.5em;
+  line-height: 1.25;
+  font-weight: 650;
+}
+
+h1 { font-size: 1.6rem; margin-top: 0.2em; }
+h2 { font-size: 1.3rem; padding-bottom: 0.25em; border-bottom: 1px solid var(--border); }
+h3 { font-size: 1.1rem; }
+h4, h5, h6 { font-size: 1rem; color: var(--ink-muted); }
+
+p, ul, ol, dl, table, pre, blockquote, details, figure { margin: 0 0 0.9em; }
+
+ul, ol { padding-left: 1.5em; }
+li { margin: 0.15em 0; }
+dt { font-weight: 600; }
+dd { margin: 0 0 0.5em 1.5em; }
+
+a { color: var(--brand); text-decoration: underline; }
+
+small, figcaption, caption { color: var(--ink-muted); font-size: 0.87rem; }
+
+hr { border: 0; border-top: 1px solid var(--border); margin: 1.4em 0; }
+
+blockquote {
+  padding: 0.1em 1em;
+  border-left: 3px solid var(--border);
+  color: var(--ink-muted);
+}
+
+code, kbd, samp, pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+code, kbd, samp {
+  padding: 0.1em 0.3em;
+  border-radius: 4px;
+  background: var(--surface-soft);
+}
+
+pre {
+  padding: 0.8em 1em;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+pre code { padding: 0; background: none; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.93rem;
+}
+
+caption { text-align: left; padding-bottom: 0.4em; }
+
+th, td {
+  padding: 0.45em 0.7em;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+th { background: var(--surface-soft); font-weight: 600; }
+tbody tr:nth-child(even) td { background: var(--row); }
+
+details {
+  padding: 0.5em 0.8em;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+details > summary { cursor: pointer; font-weight: 600; }
+details[open] > summary { margin-bottom: 0.5em; }
+
+img { max-width: 100%; height: auto; }
+
+mark { background: var(--surface-soft); color: inherit; padding: 0 0.2em; }
+
+@media print {
+  html { font-size: 11pt; }
+  body { max-width: none; padding: 0; }
+  details { break-inside: avoid; }
+  pre { white-space: pre-wrap; }
+}

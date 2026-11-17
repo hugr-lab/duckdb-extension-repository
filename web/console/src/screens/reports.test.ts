@@ -24,6 +24,6 @@ describe('reports', () => {
     expect(stale({ ...a, kind: 'sbom' }, Date.parse('2027-01-01T00:00:00Z'))).toBe(false)
   })
   it('offers the media types the API takes', () => {
-    expect(Object.keys(mediaTypes)).toEqual(['sbom', 'vulnerabilities', 'review', 'provenance', 'notes'])
+    expect(Object.keys(mediaTypes)).toEqual(['sbom', 'vulnerabilities', 'review', 'provenance', 'notes', 'report'])
   })
 })

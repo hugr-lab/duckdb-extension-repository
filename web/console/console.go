@@ -188,6 +188,9 @@ func (h *Handler) policy(idp []string) string {
 		"font-src 'self'",
 		join("connect-src 'self'", idp, h.o.ConnectSrc),
 		"object-src 'none'",
+		// spec 0045: the console frames one thing, a report's page, as a srcdoc document in an empty
+		// sandbox; no frame of it is ever navigated to a URL, so a link in an issuer's page goes nowhere
+		"frame-src 'none'",
 		"base-uri 'self'",
 		join("form-action 'self'", idp),
 		"frame-ancestors " + frame,

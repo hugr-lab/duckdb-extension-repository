@@ -8,7 +8,9 @@ import { ApiError, seg } from '../lib/http'
 import { previousOf } from '../lib/order'
 import { type Decision, type HomeReads, type Item, decisionBody, groups, itemKey, promoteFrom } from '../lib/queue'
 import { type CatalogueBuild, PlaceDialog, RuleDialog, SourceLicence, compareVersions, entryPath, modeWords, placeBody, purgeable } from './Catalogue'
+import { type Feed } from './Feeds'
 import { promoteBody } from './Promote'
+import { ReportLines } from './ReportPage'
 import { Reports } from './Reports'
 
 // Needs a decision (spec 0041): what kista leaves to a tenant administrator, computed from the home's
@@ -44,9 +46,15 @@ function itemWords(i: Item) {
 
 const itemChannel = (i: Item) => ('channel' in i ? i.channel ?? '' : '')
 
+/** The version an item is about, when it names one: what the row's report lines are read for. */
+const itemVersion = (i: Item) => (i.group === 'manual' ? i.waiting : i.group === 'holds' ? i.version ?? '' : '')
+
 export function Decisions() {
-  const { client, api } = useTenant()
+  const { client, api, perms } = useTenant()
   const home = useHome()
+  // when the feeds last succeeded, for "No report held" (the tenant administrators' read)
+  const feeds = useLoad(() => (home && perms.tenantAdmin ? client.get<{ feeds: Feed[] }>(`${api}/feeds`).then((r) => r.data.feeds) : Promise.resolve(undefined)),
+    [api, perms.tenantAdmin, home != null])
   const [channel, setChannel] = useState('')
   const [written, setWritten] = useState<Written[]>([])
   const [telling, setTelling] = useState(false)
@@ -109,7 +117,12 @@ export function Decisions() {
               actions={g === 'manual' ? <Button tone="plain" onClick={() => setTelling(true)}>Tell me of these…</Button> : undefined}>
               <Table rows={rows} rowKey={itemKey} columns={[
                 ['Extension', (i) => <span className="flex flex-col"><Mono>{i.name}</Mono><span className="text-[12px] text-ink-muted"><Mono>{i.source}</Mono></span></span>],
-                ['What', (i) => <span className="text-[13px]">{itemWords(i)}</span>],
+                ['What', (i) => (
+                  <span className="text-[13px]">
+                    {itemWords(i)}
+                    {itemVersion(i) && <ReportLines name={i.name} source={i.source} version={itemVersion(i)} feeds={feeds.data} />}
+                  </span>
+                )],
                 ['', (i) => (
                   <span role="group" aria-label={`${i.name} ${itemChannel(i)} actions`.replace(/ +/g, ' ')} className="flex flex-wrap gap-1.5">
                     <ItemActions item={i} reads={reads} busy={busy} onDecide={() => decide(i)} onChanged={home.reload} />

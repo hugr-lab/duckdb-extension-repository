@@ -8,11 +8,14 @@ import { entryNames } from '../lib/names'
 // Feeds (spec 0011 phase 1b): the other repositories whose signed statements about the bodies the
 // tenant holds it subscribes to: an organisation's kista taking Enterest's reviews, or a public
 // kista's. A bundle-mode feed (spec 0014) takes them from bundles, at an air-gapped site; an export
-// feed keeps what a bundle needs, on a gateway.
+// feed hands its source's documents on (spec 0045): to bundles, and online to the kistas that take
+// this tenant's feed. A feed with via takes its issuer's statements through a relaying tenant.
 
 export interface Feed {
   name: string
   url: string
+  /** the relaying tenant's URL (spec 0045): its runs contact it, never url; set at creation only */
+  via?: string
   credential: string
   keys: string[]
   kinds: string[]
@@ -38,7 +41,7 @@ export interface Feed {
   etag: string
 }
 
-export const feedKinds = ['sbom', 'vulnerabilities', 'review', 'provenance', 'notes']
+export const feedKinds = ['sbom', 'vulnerabilities', 'review', 'provenance', 'notes', 'report']
 
 export interface FeedForm {
   name: string
@@ -51,16 +54,18 @@ export interface FeedForm {
   channels: string[]
   mode: 'online' | 'bundle'
   export: boolean
+  via: string
 }
 
 /** The body of POST …/feeds: every kind is none named; channels only for the channels offer; a
- * bundle-mode feed has no credential and no export. */
+ * bundle-mode feed has no credential, no export and no via. */
 export function feedBody(f: FeedForm) {
   const body: Record<string, unknown> = { name: f.name, url: f.url, keys: entryNames(f.keys), readers: f.readers, offer: f.offer }
   if (f.mode === 'bundle') body.mode = 'bundle'
   else {
     body.credential = f.credential
     if (f.export) body.export = true
+    if (f.via.trim()) body.via = f.via.trim()
   }
   if (f.kinds.length > 0 && f.kinds.length < feedKinds.length) body.kinds = f.kinds
   if (f.offer === 'channels') body.channels = f.channels
@@ -72,8 +77,18 @@ const statusWords: Record<Feed['status'], string> = { new: 'not run yet', ok: 'o
 /** A bundle-mode feed's last bundle, or an export feed's keys file, in a line. */
 export function feedBundleLine(f: Feed) {
   if (f.mode === 'bundle') return f.bundle_id ? `last bundle ${f.bundle_id}` : 'no bundle imported yet'
-  if (f.export) return f.keys_file_at ? `kept for export, keys file of ${when(f.keys_file_at)}` : 'kept for export from its next run'
+  if (f.export) return f.keys_file_at ? `handed on, keys file of ${when(f.keys_file_at)}` : 'handed on from its next run'
   return ''
+}
+
+/** The control that hands a feed's documents on, and what setting it means (spec 0045). */
+export const handOn = 'Hand on: to bundles and to kistas that take this tenant\'s feed'
+
+/** What the confirmation says before a feed's documents are handed on: the source by name, and who
+ * receives them. */
+export function handOnWarning(f: Pick<Feed, 'name' | 'url'>) {
+  return `Every holder of feed on a channel of this tenant will receive the documents of ${f.url} (the feed ${f.name}) about the bodies ` +
+    'released in that channel: those who hold feed already included. Bundles for air-gapped sites carry them too.'
 }
 
 /** A feed's status in words: a bundle-mode feed never runs. */
@@ -123,13 +138,14 @@ export function Feeds() {
             ['Source', (f) => (
               <span className="text-[13px]">
                 <Mono>{f.url}</Mono>
+                {f.via && <div className="text-ink-muted">via <Mono>{f.via}</Mono>: the issuer is never contacted</div>}
                 <div className="text-ink-muted">{f.mode === 'bundle' ? 'from bundles' : 'online'}{feedBundleLine(f) ? ` · ${feedBundleLine(f)}` : ''}</div>
               </span>
             )],
             ['Takes', (f) => (
               <span className="text-[13px]">
                 {f.kinds.length === 0 ? 'every kind' : f.kinds.join(', ')}
-                <div className="text-ink-muted">{f.offer === 'channels' ? `bodies in ${(f.channels ?? []).join(', ')}` : 'mirrored bodies'}
+                <div className="text-ink-muted">{f.offer === 'channels' ? `bodies in ${(f.channels ?? []).join(', ')}` : 'catalogue builds from outside'}
                   {f.readers ? ' · readers may see' : ''}</div>
               </span>
             )],
@@ -137,7 +153,7 @@ export function Feeds() {
               <span className="text-[13px]">
                 {f.last_run_at ? when(f.last_run_at) : <span className="text-ink-muted">never</span>}
                 {f.last_success_at && f.last_success_at !== f.last_run_at && <div className="text-ink-muted">last success {when(f.last_success_at)}</div>}
-                <div className="text-ink-muted" title="held: statements waiting at the cap on what export feeds keep">{feedCounts(f)}</div>
+                <div className="text-ink-muted" title="held: statements waiting for room in the tenant's document quota, or at the cap on what export feeds keep">{feedCounts(f)}</div>
                 {f.last_error && <div className="text-danger break-words">{f.last_error}</div>}
                 {feedOlder(f) && <div className="text-warning">{feedOlder(f)}</div>}
                 {feedExporterOlder(f) && <div className="text-warning">{feedExporterOlder(f)}</div>}
@@ -150,7 +166,7 @@ export function Feeds() {
                 {f.mode !== 'bundle' && <Button disabled={busy || f.state !== 'active'} onClick={() => act(() => client.post(`${api}/feeds/${seg(f.name)}/sync`)).then(reload)}>Sync</Button>}
                 {f.mode !== 'bundle' && (
                   <Button tone="outline" disabled={busy} onClick={() => setExporting(f)}>
-                    {f.export ? 'Stop keeping for export' : 'Keep for export'}
+                    {f.export ? 'Stop handing on' : 'Hand on…'}
                   </Button>
                 )}
                 <Button tone="outline" disabled={busy} onClick={() => change(f, { state: f.state === 'active' ? 'paused' : 'active' })}>
@@ -162,8 +178,8 @@ export function Feeds() {
           ]} />
         )}
       </div>
-      <Confirm open={exporting !== null} title={exporting?.export ? `Stop keeping ${exporting.name} for export?` : `Keep ${exporting?.name ?? ''} for export?`}
-        confirm={exporting?.export ? 'Stop keeping' : 'Keep for export'} danger={exporting?.export}
+      <Confirm open={exporting !== null} title={exporting?.export ? `Stop handing ${exporting.name} on?` : `Hand ${exporting?.name ?? ''} on?`}
+        confirm={exporting?.export ? 'Stop handing on' : 'Hand on'} danger={exporting?.export}
         onConfirm={() => {
           const f = exporting!
           setExporting(null)
@@ -171,10 +187,16 @@ export function Feeds() {
         }}
         onClose={() => setExporting(null)}>
         {exporting?.export
-          ? <p>Deletes the refusals and the keys file this feed kept for bundles, and the statements kept about its source's documents
-            once no other feed of the source keeps them.</p>
-          : <p>Reads the source's whole history again, and keeps what bundles for air-gapped sites need: the keys file, its refusals,
-            statements about documents not held. What it keeps counts against a cap of its own (100,000).</p>}
+          ? <p>Its documents stop leaving this tenant, in bundles and online. Deletes the refusals and the keys file this feed kept, and
+            the statements kept about its source's documents once no other feed of the source keeps them.</p>
+          : (
+            <>
+              <p>{handOn}.</p>
+              <p><strong>{exporting ? handOnWarning(exporting) : ''}</strong></p>
+              <p>Reads the source's whole history again, and keeps what handing on needs: the keys file, its refusals, statements about
+                documents not held. What it keeps counts against a cap of its own.</p>
+            </>
+          )}
       </Confirm>
       <Confirm open={removing !== null} title={`Remove the feed ${removing?.name ?? ''}?`} confirm="Remove" danger
         onConfirm={() => {
@@ -197,10 +219,11 @@ function NewFeed({ onDone }: { onDone: () => void }) {
   const { client, api } = useTenant()
   const channels = useLoad(() => client.get<{ channels: { name: string }[] }>(`${api}/channels`), [api])
   const [f, setF] = useState<FeedForm>({ name: '', url: '', credential: '', keys: '', kinds: [...feedKinds], readers: false, offer: 'upstreams', channels: [],
-    mode: 'online', export: false })
+    mode: 'online', export: false, via: '' })
   const bundle = f.mode === 'bundle'
   const { busy, failure, act } = useAction()
-  const set = (k: 'name' | 'url' | 'credential' | 'keys') => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
+  const relayed = !bundle && f.via.trim() !== ''
+  const set = (k: 'name' | 'url' | 'credential' | 'keys' | 'via') => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value })
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (await act(() => client.post(`${api}/feeds`, { body: feedBody(f) }))) onDone()
@@ -214,16 +237,23 @@ function NewFeed({ onDone }: { onDone: () => void }) {
       </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field label="Name"><input className="field font-mono" required pattern="[a-z0-9][a-z0-9-]{0,62}" value={f.name} onChange={set('name')} /></Field>
-        <Field label="Source URL" hint={bundle ? 'https://<host>/api/v1/tenants/<tenant>: the identity its statements name; never contacted'
+        <Field label="Source URL" hint={bundle || relayed ? 'https://<host>/api/v1/tenants/<tenant>: the identity its statements name; never contacted'
           : 'https://<host>/api/v1/tenants/<tenant>: the source tenant, the identity its statements name'}>
           <input className="field font-mono" required type="url" value={f.url} onChange={set('url')} />
         </Field>
         {!bundle && (
-          <Field label="Credential" hint="a configured credential's name; its principal holds feed at the source">
+          <Field label="Via (optional)" hint="https://<host>/api/v1/tenants/<tenant>: a tenant that hands the source's documents on; this kista then contacts only it. Set now or never">
+            <input className="field font-mono" type="url" value={f.via} onChange={set('via')} />
+          </Field>
+        )}
+        {!bundle && (
+          <Field label="Credential" hint={relayed ? "a configured credential's name; its principal holds feed at the relaying tenant"
+            : "a configured credential's name; its principal holds feed at the source"}>
             <input className="field font-mono" required value={f.credential} onChange={set('credential')} />
           </Field>
         )}
-        <Field label="Pinned keys" hint="the source's attestation key fingerprints (sha256:…), separated by commas">
+        <Field label="Pinned keys" hint={relayed ? "the issuer's attestation key fingerprints (sha256:…), taken from the issuer itself, never from the relay; separated by commas"
+          : "the source's attestation key fingerprints (sha256:…), separated by commas"}>
           <input className="field font-mono" required value={f.keys} onChange={set('keys')} />
         </Field>
       </div>
@@ -233,13 +263,14 @@ function NewFeed({ onDone }: { onDone: () => void }) {
       </div>
       <div className="flex flex-col gap-1">
         <span className="text-[13px] font-semibold text-ink">Bodies offered to the source</span>
-        <Chips label="offer" value={f.offer} options={[['upstreams', 'Mirrored from upstreams'], ['channels', 'Released in channels']]}
+        <Chips label="offer" value={f.offer} options={[['upstreams', 'Catalogue builds from outside'], ['channels', 'Released in channels']]}
           onChange={(offer) => setF({ ...f, offer })} />
         {f.offer === 'channels' && (
           <Checks label="channels" options={(channels.data?.data.channels ?? []).map((c) => c.name)} value={f.channels}
             onChange={(chs) => setF({ ...f, channels: chs })} />
         )}
-        <Note>The source learns which of these bodies this tenant holds. Mirrored bodies keep the tenant's own builds out of it.</Note>
+        <Note>The source learns which of these bodies this tenant holds. Builds from outside are those of its upstreams and its
+          distributors' publishers, released or not (a version that waits for a decision too); the tenant's own builds stay out of it.</Note>
       </div>
       <label className="flex items-center gap-2 text-[13px]">
         <input type="checkbox" checked={f.readers} onChange={(e) => setF({ ...f, readers: e.target.checked })} />
@@ -248,7 +279,7 @@ function NewFeed({ onDone }: { onDone: () => void }) {
       {!bundle && (
         <label className="flex items-center gap-2 text-[13px]">
           <input type="checkbox" checked={f.export} onChange={(e) => setF({ ...f, export: e.target.checked })} />
-          Keep for export: this kista exports bundles of these statements for air-gapped sites
+          {handOn}. Every holder of feed on a channel of this tenant then receives this source's documents
         </label>
       )}
       {failure != null && <ErrorBox error={failure} />}

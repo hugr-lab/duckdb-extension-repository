@@ -116,6 +116,13 @@ func TestServing(t *testing.T) {
 		!strings.Contains(landing, "script-src 'self';") {
 		t.Errorf("policies: %s | %s", server, landing)
 	}
+	// spec 0045: a report's page is a srcdoc frame; no frame is ever navigated to a URL, in any scope,
+	// and the page's own styles stay blocked (no 'unsafe-inline' for styles)
+	for name, c := range map[string]string{"landing": landing, "server": server, "acme": acme} {
+		if !strings.Contains(c, "; frame-src 'none';") || !strings.Contains(c, "; style-src 'self';") || strings.Contains(c, "unsafe-inline") {
+			t.Errorf("%s's policy: %s", name, c)
+		}
+	}
 	// spec 0036: an entry's icon is shown from a blob: URL, never loaded from the API by <img src>
 	if !strings.Contains(acme, "img-src 'self' data: blob:;") {
 		t.Errorf("acme's policy's images: %s", acme)
