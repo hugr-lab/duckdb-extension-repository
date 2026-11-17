@@ -406,7 +406,12 @@ func wireProduce(t *testing.T) wireWorld {
 	notes := offer(bodyOf("1.1"), store.KindNotes, attachment.Markdown, "Notes", "# Notes\n", nil)
 	_, err = src.att.SetFlags(ctx, admin, "acme", pkgtype.Of("wire"), notes.ID, nil, &no, 0)
 	fail("withdrawing the notes", err)
-	clear(net.sent) // the fixtures are this run's request and answer: a body with a cursor, a new one
+	clear(net.sent)          // the fixtures are this run's request and answer: a body with a cursor, a new one
+	for k := range net.got { // and this run's one document: the first run's are forgotten
+		if strings.HasPrefix(k, "GET "+wireAPI+"/feed/documents/") {
+			delete(net.got, k)
+		}
+	}
 	if res := gw.feedRun("gw"); res.Counts["received"] != 1 || res.Counts["kept"] != 1 || res.Error != "" {
 		t.Fatalf("the gateway's second feed run: %+v", res)
 	}
