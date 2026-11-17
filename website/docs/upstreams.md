@@ -565,7 +565,8 @@ reads):
 3. It stores them with the remote's state and reason (cleaned: printable, at most 400 bytes). A row
    in a state this kista does not know (a newer source's) is stored as a yank, the source's word
    before its reason (`recalled: …`; `unknown` when it is not a short lower-case word): it never
-   lowers a stored stronger state, it counts as listed, and the run counts it
+   lowers a stronger state stored for a row the source still listed (one it had dropped is not
+   brought back), it counts as listed, and the run counts it
    (`revocations_unknown`) and says on the upstream's page and in `upstream show` that this kista is
    older than its source. Such a read keeps no ETag, so an upgraded kista reads the row's real state
    and applies it by the usual precedence. A
@@ -582,7 +583,10 @@ problem), and runs under the run's lease and pause check.
 
 `"api": 1` is frozen on `-/revocations` and `-/names` for their first wire major, and a next major is
 a new route. The value is still checked: a source answering a higher one **fails the run** with its
-reason, and nothing is read, stored or forgotten ([Compatibility](compatibility.md)).
+reason, and nothing is read, stored or forgotten ([Compatibility](compatibility.md)). Such a source
+is not taken as a kista of this wire major either: switching the upstream's revocations on, or
+adding `*` to it, is refused (`400`) with the same reason. The upstream's record says so
+(`older_than_source`: `api`, or `revocations_unknown` with the count).
 
 A remote that answers no revocations (an older kista, another server, a suspended or deleted
 tenant; a `401` or `403` to an upstream switched off that knows no kista there) is not a kista: the switch cannot be turned on (`400`), and for an upstream switched on
@@ -1083,7 +1087,11 @@ bundle-mode feeds whose URL is a feed of the bundle, or the `-feed` ones (with o
   command exits `1`. Write a new plan.
 - A dry run checks each statement's signature, issuer, kind, title, size, media type and content,
   the bodies the bundle brings counted as held, and stores nothing (`would_store`,
-  `would_withdraw`, refusals). Quotas and `supersedes` are judged by a real import only.
+  `would_withdraw`, `would_wait` for a statement the import would leave waiting, refusals). Quotas
+  and `supersedes` are judged by a real import only.
+- **A plan written during the import** may take a feed's cursor back to a statement that waits
+  ([Compatibility](compatibility.md#waiting-and-taking-again)); the import then fails that feed's
+  target and moves nothing. Import a bundle of the new plan.
 - **A statement out of seq order** within its body holds the body too.
 - `bundle reset <tenant> -feed <name>` clears a feed's last-bundle mark and resets its cursors.
   Write a new plan after it: the bundle answering it takes the feed's history again (statements

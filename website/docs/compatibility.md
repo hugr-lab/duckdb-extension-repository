@@ -40,23 +40,25 @@ list, to administrators.
 | It receives | What it does |
 | --- | --- |
 | A [statement](attachments.md#signed-statements) with a member it does not know | reads it as before; the member is ignored |
-| A statement of a higher `v` | leaves it **waiting** (`newer`). A withdrawal is applied: it can only remove. One about a document it holds, newer than what it holds, of the same body and not for `readers`, narrows the document to administrators first |
+| A statement of a higher `v` | leaves it **waiting** (`newer`). A withdrawal is applied: it can only remove. One about a document it holds, newer than what it holds, of the same body and not for `readers`, narrows the document to administrators first (`narrowed` in the run): its audience is then administrators, and no administrator widens it, until a statement this kista reads says who may see it |
 | A statement of a kind it does not know | waiting (`unknown kind`), unless the feed's own `kinds` leave the kind out: then it is refused, as any kind the administrator left out |
-| A known kind with a media type it does not take | waiting (`media type`) |
-| A document in a version it does not read (CycloneDX other than 1.x, SPDX other than 2.x, SARIF other than 2.1.0) | waiting (`document version`) |
+| A known kind with a media type the kind does not take here | waiting (`media type`) |
+| A known kind with another spelling of a media type it takes (a parameter, another case) | refused for good (`media type`), as before: a statement names the canonical form |
+| A document in a version it does not read (CycloneDX other than 1.x, SPDX other than 2.x, SPDX 3 as JSON-LD too, SARIF other than 2.1.0, a review with a `verdict` it does not know) | waiting (`document version`) |
 | An `audience` other than `readers` | the document is stored for administrators |
 | An `origin` it does not know | stored and shown as text (printable, at most 80 bytes) |
 | A statement that does not verify, or breaks the member-name rule | the body is held, as before (`signature`) |
-| An authentic statement with a known member of the wrong type or out of its bounds | refused for good (`statement`) |
+| An authentic statement with a known member of the wrong type or out of its bounds, or `null` in a member it does not know | refused for good (`statement`): its body's cursor moves past it when its `issuer`, `body_hash` and `seq` can be read; when they cannot, no cursor can move, and it is refused again whenever the source sends it |
 | A `kista.review.v1` document with a member it does not know | read, at a feed and from a bundle; the attach route stays strict |
-| A [revocation](upstreams.md#revocations-from-a-kista) in a state it does not know | a yank, the source's word before its reason; it never lowers a stored stronger state and forgets nothing |
-| `-/names` or `-/revocations` answering an `api` above 1 | the upstream's run fails with its reason; nothing is read, stored or forgotten |
+| A [revocation](upstreams.md#revocations-from-a-kista) in a state it does not know | a yank, the source's word before its reason; it never lowers a stronger state stored for a row the source still listed, and forgets nothing |
+| `-/names` or `-/revocations` answering an `api` above 1 | the upstream's run fails with its reason; nothing is read, stored or forgotten. Switching the upstream's revocations on, or giving it `*`, is refused with the same reason |
 | A [licence](licensing.md) of a higher `v` | refused (`v`). In the relay, the licence stored for its name stays until its own expiry and grace; a name left out is still removed |
 | An SDK usage report with a `status` it does not know | counted under `other` |
 | A [bundle](upstreams.md#bundle-mode)'s plan, manifest or batch with a member it does not know | reads it as before; the member is ignored |
-| A plan or a manifest of a higher `format` | refused whole, saying which side to upgrade: the manifest binds every file |
-| A bundle's source of a package type it does not know | left out with a problem; the rest is taken |
-| A bundle's cell with an outcome it does not know | that cell's problem; what the cell holds stays |
+| A plan or a manifest of a higher `format` | refused whole, saying that the kista reading it is the one to upgrade ("this kista is older than the bundle's writer"): the manifest binds every file |
+| A bundle's source of a package type it does not know | left out with a problem, at an import and (a plan's) at an export; nothing of it is read, its entries are read through without counting toward the cap on entries read through, and the rest is taken |
+| A bundle's cell with an outcome it does not know | that cell's problem; what the cell holds stays, and nothing else of the cell is read |
+| A bundle's licence of a higher `v`, at `kista bundle sign` | skipped by itself, named in a line; the bundle is signed |
 | A request to `POST …/feed` with a member it does not know | answered as before; with `issuer` (a relay's selector) it answers no statements |
 
 `.well-known`, the attestation keys file, the feed's and the licence relay's answers, extension
@@ -85,12 +87,25 @@ is taken now if it passes now. What is stored stays as it is.
   still counted. It says that something waits, not how much will arrive.
 - A cursor reset (the feed's `export` switched on, `bundle reset -feed`) deletes the waiting state
   with the cursor.
+- A plan takes the cursors back only once it is whole. A bundle import that was running when a
+  plan took its feed's cursor back fails that feed's target: import a bundle of the new plan.
+- The reasons shown are each body's last one.
 
 An [export feed](attachments.md#feeds-for-air-gapped-sites) keeps a waiting statement as it keeps a
 refusal, and a bundle carries it without content, its note the waiting reason. A site that can read
 it leaves it waiting too, and asks for it again with every plan until the gateway is upgraded and
 carries the content. With any other note a statement without content is refused for good, as
 before.
+
+Here it is the exporting kista that is older, and the site says so apart, in `feed show`, the
+console and the feed's record (`waiting_without_content`):
+
+```text
+The exporting kista is older than its source: 2 statements arrived without content (`unknown kind`).
+```
+
+The cost is the gateway's to end: until it is upgraded, every plan asks each such body's range again
+from its first waiting statement, and every bundle carries that range again.
 
 ### The member-name rule
 
@@ -101,7 +116,8 @@ otherwise read `Kind` beside `kind` differently from another reader. A statement
 rule does not verify; a plan or a manifest that breaks it is refused.
 
 A statement's numbers are integers, in every member, known or not: a fraction or an exponent is not
-the canonical form, and the statement does not verify.
+the canonical form, and the statement does not verify. A member a reader does not know carries
+integers, strings, booleans, arrays and objects: never `null`.
 
 ### The frozen members of a statement
 
@@ -109,6 +125,10 @@ the canonical form, and the statement does not verify.
 anything else: not readers) keep their name, type and meaning in every major, with RFC 8785's
 canonical form and the signature's domain `kista-statement-v1` (which separates statements from
 kista's other signatures, and is not the format's version). `v` is absent in major 1.
+
+Within major 1, two more bounds are frozen: `kind` is `[a-z][a-z0-9-]{0,15}` and `media_type` is 1
+to 200 bytes. A `v0.2.0` reader refuses a statement outside them for good, so a later kind or media
+type stays within them.
 
 ## What a later release may change
 

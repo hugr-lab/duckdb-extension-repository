@@ -115,7 +115,10 @@ bytes are their own canonical form. A failure is `signature` and holds the body,
 - A fraction or an exponent in any member, known or not, is not canonical here: `signature`. An
   unknown member carries integers, strings, booleans, arrays and objects only.
 - A verified statement whose frozen or known member has the wrong type or is out of its bound is
-  refused for good (`statement`), not held: it is authentic and will not get better.
+  refused for good (`statement`), not held: it is authentic and will not get better. Its body's
+  cursor moves past it when its `issuer`, `body_hash` and `seq` can be read (its `issuer_id` need
+  not); when they cannot, no cursor can move, and it is refused again whenever the source sends it.
+- `null` in a member the reader does not know is refused the same way (`statement`).
 
 **A verified statement**, after the feed's own kind filter (a kind the administrator left out is
 refused `kind`, as today):
@@ -126,8 +129,9 @@ refused `kind`, as today):
 | `v` above 1, `withdrawn: true` | applied as a withdrawal: it can only remove |
 | `v` above 1, otherwise | waits (`newer`) |
 | a kind the binary does not know | waits (`unknown kind`) |
-| known kind, unknown `media_type` | waits (`media type`) |
-| a document version the binary does not read (item 3) | waits (`document version`) |
+| known kind, a `media_type` the kind does not take here | waits (`media type`) |
+| known kind, another spelling of a media type it takes (a parameter, another case) | refused for good (`media type`), as before: a statement names the canonical form |
+| a document version the binary does not read (item 3; also SPDX 3 as JSON-LD, a CycloneDX VDR other than `1.x`, a review's unknown `verdict`) | waits (`document version`) |
 | an `audience` other than `readers` | stored for `administrators` |
 | an `origin` that passes `ValidTitle`'s predicate, at most 80 bytes | stored and shown as text |
 
@@ -135,7 +139,11 @@ refused `kind`, as today):
   delivers they may already read. Widening stays their act.
 - **A higher-major statement about a document already held** waits. When its `audience` is not
   `readers`, its `seq` is higher and its `body_hash` is the document's, the document is narrowed
-  to `administrators` first. It is not widened back.
+  to `administrators` first, and marked (`attachments.narrowed`): its audience is administrators
+  whatever its stored statement says, in the API's record too, and an administrator cannot widen
+  it, as with any document its source keeps to administrators. The mark goes when a statement this
+  kista reads, with a higher `seq`, is stored for the document: that one says who may see it. A
+  run counts `narrowed`.
 - **A kind may declare a floor for its document.** Spec 0045's `report` does: its identity and
   summary members and the issuer's HTML page are read, the rest is never interpreted, so a report
   of any `envelope` is stored and shown. Every other kind waits on a version it does not read.
@@ -161,6 +169,13 @@ count), `waiting_why` (the last reason, for display) and `reader_level`.
   whose `reader_level` is below the binary's goes back to `waiting_from - 1` and its waiting state
   is cleared. This is a new store operation: `SetFeedCursor` only moves forward. An older replica
   in a rolling upgrade retakes nothing.
+- **A plan's retake** happens once the plan is known to be whole: a plan that fails rewinds
+  nothing. A bundle import that started before it and finds a cursor below where it began fails
+  its feed target (import a bundle of the new plan): it must not move the cursor past what the
+  plan asks for.
+- **A level-0 state** (below) is not cleared by the retake: the cursor goes back, and the state
+  stays for display until the range is judged again (the cursor reaching `waiting_from` clears it,
+  and what still waits is recorded anew). Until then every plan asks from the same place.
 - **A replay judges the rewound range again**, earlier refusals included: a document refused for
   `size`, `title` or `limits` then is taken now if it passes now. What is stored stays as it is: a
   statement not newer than the stored one is a no-op, a removed document stays removed.
@@ -179,7 +194,9 @@ statements of the body flow.
 
 The receiver verifies it as any statement. One it cannot read waits by its own rules. One it can
 read waits too, but only when the note is one of those words, and at `reader_level` 0, so it is
-asked for again until the exporter is upgraded and carries the content. With any other note (a
+asked for again until the exporter is upgraded and carries the content: every plan asks the body's
+range from the waiting statement on, and every bundle carries it again, which is the cost of an
+older gateway. With any other note (a
 document removed or refused at the exporter, or of a kind its export feed does not take) it is
 refused `no content` for good, as today.
 
@@ -193,12 +210,17 @@ nothing on an existing row.
 
 - **`"api": 1` is frozen** on `-/names` and `-/revocations` for wire major 1; a next major is a new
   route. The value is still checked, as a guard: a higher one makes the upstream's run `failing`,
-  reads nothing and forgets nothing.
+  reads nothing and forgets nothing. The probe that tells whether a source is a kista (at an
+  upstream's add, and when its revocations or `*` are switched on) checks it too: a source
+  answering a higher one is not taken as a kista of this major, and the switch and `*` are refused
+  with that reason.
 - **A revocation with an unknown state is a yank.** At intake (`storeRevocations`, shared with the
   bundle import) a state other than the three is stored as `yanked`, with the source's word
-  prefixed to `reason` when it is `[a-z][a-z0-9_-]{0,15}`, else under the fixed label `unknown`. It
-  never lowers a stored stronger state, and it is listed, so it never forgets a stored row (rule
-  5). No rank changes. After an upgrade the same row arrives with its real state and applies by
+  prefixed to `reason` when it is `[a-z][a-z0-9_-]{0,15}`, else under the fixed label `unknown` (the word goes before
+  the source's cleaned reason, which is cut to leave it room). It never lowers a stronger state
+  stored for a row the source still listed (one the source had dropped is not brought back by a
+  state this kista cannot read), and it is listed, so it never forgets a stored row (rule 5). Such
+  a read keeps no ETag: once upgraded, a kista must read the row's real state. No rank changes. After an upgrade the same row arrives with its real state and applies by
   the existing precedence.
 - **Package type.** How a remote channel declares its type is its own release item. It will be
   declared in a way this release's reader already refuses or ignores safely; this spec adds no
@@ -231,6 +253,14 @@ nothing on an existing row.
 - **One unknown thing fails its own part**: a source of an unknown package type is left out with a
   problem; a cell with an unknown outcome is that cell's problem; an unknown revocation state is a
   yank; a licence of a higher `v` is refused by itself.
+  - Nothing of a left-out source is decoded, and none of a cell's members beside its key once its
+    outcome is unknown; such a cell counts as naming its extension for the source's licences.
+  - The tar entries of a part left out (a left-out source's, the file of a cell in an unknown
+    outcome) are read through without counting toward the cap on entries read through (64 MiB):
+    the bundle's size and the import's watchdog bound them.
+  - `kista bundle sign` skips a licence of a higher `v` by itself, naming it, and signs the bundle.
+  - The refusal of a higher `format` names the reader ("this kista is older than the bundle's
+    writer"): the reader may be an importer, an exporter reading a plan, `sign` or `inspect`.
 
 ### Surfaces that need nothing
 
@@ -239,11 +269,23 @@ bundle's tar, a licence's payload members, forwarded usage.
 
 ### What the operator sees
 
-- `waiting` in a feed run's counts (`feed.run` carries them already). No new event or member.
+- `waiting` in a feed run's counts (`feed.run` carries them already). No new event.
 - A line on the feed and on the upstream, to administrators only, in the console and
   `kista admin feed show` / `upstream show`: "This kista is older than its source: documents wait
-  for an upgrade (`unknown kind`)." A feed that only waits stays `ok`.
+  for an upgrade (`unknown kind`)." A feed that only waits stays `ok`. The reasons shown are each
+  body's last one.
+- Statements that arrived without content because the **exporting** kista could not read them
+  (level 0) are not this kista's to upgrade for, and are said apart: "The exporting kista is older
+  than its source: N statements arrived without content (`unknown kind`)."
 - A higher `api` is the upstream's `failing` state with its reason.
+- **What was added** (additive members and counts, by the compatibility rules):
+  - a feed's record: `waiting` and `waiting_without_content` (counts by each body's last reason);
+  - a feed run's counts: `waiting`, `narrowed`, and a dry run's `would_wait`;
+  - an upstream's record: `older_than_source` (`api`, `revocations_unknown`), from its last run's
+    `newer_api` and its count `revocations_unknown`;
+  - a licence relay run's count `newer`;
+  - an import's result: `left_out`, the sources of a package type this kista does not know. An
+    export leaves such a source of a plan out the same way, as that source's error.
 
 ### Data model
 
@@ -253,6 +295,7 @@ Migration `0054_forward_compat`, three dialects, `min_reader` unchanged.
 feed_cursors   + waiting_from bigint null, waiting int not null default 0,
                  waiting_why varchar(32) null, reader_level int not null default 0
 attachments    ck_attachments_kind dropped (SQLite: a table rebuild)
+               + narrowed boolean not null default false
 ```
 
 Kinds are validated in `internal/attachment` only. This release reads an attachment row of any
@@ -370,6 +413,9 @@ Each sentence below becomes false and is amended with the code.
 - **The lowest major** that carries what is said, for statements, licences and bundles.
 - **Frozen members**, integer-only RFC 8785, the digest's domain, member names
   `[a-z0-9_]{1,64}` at every depth; a withdrawal and a not-`readers` audience readable in any major.
+- **Frozen for major 1 of a statement**: `kind` is `[a-z][a-z0-9-]{0,15}` and `media_type` is 1 to
+  200 bytes. A statement outside them is refused for good by a `v0.2.0` reader (`statement`), so a
+  new kind or media type stays within them; no member an unknown reader meets is `null`.
 - **0045**: a new kind is code only (no `CHECK`), and raises the reader level; `report` declares
   its floor and its `envelope`; the relay answers only a request that names `issuer`, keeps the
   issuer's exact bytes, and carries a waiting statement without content, with a note. A statement

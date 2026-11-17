@@ -261,7 +261,7 @@ statement is at most 16 KiB.
 | `issuer_id` | the document's id at the source |
 | `seq` | the statement's number, increasing per issuer |
 | `body_hash` | the binary the document is about |
-| `kind`, `media_type`, `content_hash`, `size`, `title`, `summary` | the document |
+| `kind`, `media_type`, `content_hash`, `size`, `title`, `summary` | the document; `kind` is `[a-z][a-z0-9-]{0,15}` and `media_type` 1 to 200 bytes, in the canonical form of [Kinds and media types](#kinds-and-media-types) |
 | `issued_at`, `valid_until` | RFC 3339 |
 | `supersedes` | the `issuer_id` of an earlier document of the same issuer, body and kind |
 | `origin` | who stands behind it at the source: `tenant` or `publisher:<name>`; a subscriber stores and shows any printable text of at most 80 bytes |
@@ -437,7 +437,9 @@ success, the next run, whether a run is requested, and the last run's result: co
 (statements this kista is too old to read, left for an upgrade); for an export
 feed also `kept`, statements about documents not held, `held`, statements waiting at the cap, and
 `overtaken`, a run stopped by a change of `export`; for a bundle import `gap`, `not offered`,
-`would_store`, `would_withdraw`, and `held`, statements that did not verify or came out of order)
+`would_store`, `would_withdraw`, `would_wait` (a dry run's statements that an import would leave
+waiting), and `held`, statements that did not verify or came out of order; `narrowed`, documents a
+statement in a newer format narrowed to administrators)
 and up to 20 refusals with their reasons (from a bundle also `bundle: no content`, with the
 exporting side's note, and `bundle: outside its range`).
 
@@ -460,19 +462,23 @@ For each run:
 Cursors are per (feed, body):
 
 - **Stored, or refused for good**: the cursor moves past the statement, and a refusal is recorded
-  with its reason: `kind` (not accepted by the feed), `title`, `size`, `content` (does
+  with its reason: `kind` (not accepted by the feed), `media type` (another spelling of a type the
+  kind takes: a statement names the canonical form), `title`, `size`, `content` (does
   not match the statement), `document` (does not parse as its media type), `changed` (a held
   document's content or body differs), `body` (a withdrawal for another body), `not held`,
   `limits`, `unrequested` (a body the subscriber did not send), `statement` (authentic, with a field
-  of the wrong type or out of its bounds). A document another feed stored first
-  counts as `duplicate`, not as a refusal.
+  of the wrong type or out of its bounds; when its `issuer`, `body_hash` or `seq` cannot be read
+  no cursor can move, and it is refused again whenever the source sends it). A document another
+  feed stored first counts as `duplicate`, not as a refusal.
 - **Waiting for an upgrade**: the cursor moves past a statement this kista is too old to read, which
   is counted (`waiting`) and neither applied nor refused: `newer` (a higher `v`), `unknown kind`,
   `media type` (one the kind does not take here), `document version` (a version of the document
-  this kista does not read). The feed stays `ok`; its record counts them by reason (`waiting`) and
-  it shows administrators a line, "This kista is older than its source: documents wait for an
-  upgrade". An upgraded kista takes them again by
-  itself ([Compatibility](compatibility.md#waiting-and-taking-again)).
+  this kista does not read). The feed stays `ok`; its record counts them by each body's last reason
+  (`waiting`) and it shows administrators a line, "This kista is older than its source: documents
+  wait for an upgrade". An upgraded kista takes them again by
+  itself ([Compatibility](compatibility.md#waiting-and-taking-again)). A bundle-mode feed counts
+  apart (`waiting_without_content`) the statements that arrived without content because the
+  exporting kista could not read them, and says "The exporting kista is older than its source".
 - **A transient failure** (a fetch, egress, a document the source no longer serves): the cursor
   stays, and the body's later statements wait for the next run.
 - **Not verified** (`encoding`, `signature`: an unpinned key, bad bytes or a field name that breaks

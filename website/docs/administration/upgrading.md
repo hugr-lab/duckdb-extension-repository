@@ -185,9 +185,10 @@ so the operator declares it:
 
 - **Migration `0054_forward_compat`** adds four columns to `feed_cursors` (`waiting_from`,
   `waiting`, `waiting_why`, `reader_level`: what a feed passed over because this kista was too old
-  to read it) and drops the check on an attachment's kind (SQLite rebuilds the `attachments` table,
+  to read it), drops the check on an attachment's kind (SQLite rebuilds the `attachments` table,
   keeping its rows and index): kinds are validated in the code only, so a later release that adds
-  one needs no migration. It is additive: `min_reader` stays 53, and old and new replicas run side
+  one needs no migration; and adds `attachments.narrowed`, set when a statement in a newer format
+  says a held document is not for readers. It is additive: `min_reader` stays 53, and old and new replicas run side
   by side.
 - **What changes.** From this release a kista reads what a newer peer sends by the rules of
   [Compatibility](../compatibility.md): members it does not know are ignored in statements, plans,
@@ -203,8 +204,6 @@ so the operator declares it:
 - **Rolling upgrade.** A replica of the previous release ignores the new columns. While both run,
   the older one still holds a body on a statement with an unknown field and refuses an unknown kind
   for good, as before.
-
-### Version retention in channels (spec 0042)
 
 ### Version retention in channels (spec 0042)
 

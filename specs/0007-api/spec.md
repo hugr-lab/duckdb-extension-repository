@@ -71,7 +71,8 @@ After spec 0006, kista serves DuckDB, but everything else goes through `kista ad
 - **Requests**: `GET`, `HEAD`, `POST`, `DELETE` (and `405` with `Allow` from the route's shape);
   bodies `application/json` exactly (`charset=utf-8` allowed; `415` otherwise), one object, at most
   64 KiB (`413`), read only after the decision, with a read deadline; unknown and duplicate JSON
-  keys refused; a request that takes no body (`GET`, `DELETE`, suspend and resume) refuses one. A
+  keys refused (the feed route another kista calls, `POST …/tenants/{t}/feed`, is the one route
+  that ignores unknown keys: spec 0046); a request that takes no body (`GET`, `DELETE`, suspend and resume) refuses one. A
   required `If-Match` is one strong ETag or `*` (any version of the existing resource). Spec 0008's
   publication route is the one exception: its body is the extension file, with its own limits.
 - **Responses**: `X-Content-Type-Options: nosniff`; management answers `Cache-Control: no-store`.
