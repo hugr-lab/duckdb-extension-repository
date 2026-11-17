@@ -171,10 +171,11 @@ func (s *Store) UpstreamPrefixes(ctx context.Context) ([][5]string, error) {
 	return textRows[[5]string](ctx, s, "SELECT tenant_id, name, kind, mode, prefix FROM upstreams ORDER BY tenant_id, name")
 }
 
-// FeedURLs lists every tenant's feeds as (tenant id, name, mode, URL): kista serve warns about hosts
-// off egress.hosts (spec 0044).
+// FeedURLs lists every tenant's feeds as (tenant id, name, mode, the URL its runs contact): kista
+// serve warns about hosts off egress.hosts (spec 0044). A feed taken through a relay (spec 0045)
+// contacts its via, never its own URL, which is its issuer's identity.
 func (s *Store) FeedURLs(ctx context.Context) ([][4]string, error) {
-	return textRows[[4]string](ctx, s, "SELECT tenant_id, name, mode, url FROM feeds ORDER BY tenant_id, name")
+	return textRows[[4]string](ctx, s, "SELECT tenant_id, name, mode, COALESCE(via, url) FROM feeds ORDER BY tenant_id, name")
 }
 
 // textRows reads a query's rows of text columns, as many as R holds (NULL as "").

@@ -2554,7 +2554,8 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		if fd.Via != "" { // spec 0045: the relaying tenant its runs contact; the URL above is the issuer's identity
 			fmt.Fprintf(a.out, "via %s (the issuer's URL is never contacted)\n", fd.Via)
 		}
-		for _, line := range []string{attachment.OlderThanSource(fd.Waiting), attachment.ExporterOlderThanSource(fd.WaitingSource)} { // spec 0046
+		for _, line := range []string{attachment.OlderThanSource(fd.Waiting), attachment.ExporterOlderThanSource(fd.WaitingSource), // spec 0046
+			attachment.RelayStopped(fd)} { // spec 0045
 			if line != "" {
 				fmt.Fprintln(a.out, line)
 			}

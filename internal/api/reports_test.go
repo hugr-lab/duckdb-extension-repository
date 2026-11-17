@@ -304,6 +304,26 @@ func TestRelayBetweenServers(t *testing.T) {
 		t.Fatalf("B's run reached the issuer: %d requests", toIssuer.Load()-seen)
 	}
 
+	// stored bytes altered at A: the relayed answer ends below them, and A's feed says so
+	tn, _ := relay.st.GetTenant(ctx, "acme")
+	held, err := relay.st.BodyAttachments(ctx, tn.ID, body)
+	if err != nil || len(held) != 2 {
+		t.Fatalf("A's documents: %d %v", len(held), err)
+	}
+	if err := store.ExecRaw(ctx, relay.st, "UPDATE attachments SET statement = ? WHERE id = ?",
+		strings.Replace(held[0].Statement, `"title":"Report"`, `"title":"Other"`, 1), held[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if r := relay.call(t, "POST", api+"/feed", own, ask); r.status != 200 || len(r.json(t)["statements"].([]any)) != 0 {
+		t.Fatalf("the relay's answer over altered bytes: %d %s", r.status, r.body)
+	}
+	if f := relay.call(t, "GET", api+"/feeds/issuer", relay.toks["tenant admin"], "").json(t); f["relay_stopped"] != 1.0 || f["relay_stopped_at"] == nil {
+		t.Fatalf("A's feed after an answer that ended early: %v", f)
+	}
+	if err := store.ExecRaw(ctx, relay.st, "UPDATE attachments SET statement = ? WHERE id = ?", held[0].Statement, held[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
 	// A suspended: its feed routes answer as a missing tenant; B is unauthorized and keeps its documents
 	root := relay.toks["server admin"]
 	etag := relay.call(t, "GET", api, root, "").header.Get("ETag")
@@ -319,5 +339,55 @@ func TestRelayBetweenServers(t *testing.T) {
 	res := b.run(t, "reports")
 	if f := mustFeed(t, b, "reports"); f.Status != store.FeedUnauthorized || res.Error == "" || len(b.docs(t, body)) != 2 {
 		t.Fatalf("B while A is suspended: %s %+v", f.Status, res)
+	}
+}
+
+// attachments.feed_answer_max bounds the tenant's own feed answers too: under the smallest bound a
+// subscriber pages through its statements, and none is lost.
+func TestOwnFeedAnswerMax(t *testing.T) {
+	m := newMgmt(t)
+	m.att.FeedAnswerMax = attachment.MinFeedAnswer
+	if err := signer.GenerateKeyFile(filepath.Join(m.dir, "att.pem")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.keySvc.AddAttestation(ctx, admin, "acme", "file:att.pem", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.env.adm.AddGrant(ctx, admin, "acme", "subject:corp|feeder", []string{"feed"}, tenants.GrantOn{Channel: "prod"}); err != nil {
+		t.Fatal(err)
+	}
+	tok := m.keys.sign(t, idpURL, map[string]any{"sub": "feeder", "aud": publicURL + "/acme"})
+	body := tresorBody(t, func(p string) map[string]any { return m.call(t, "GET", p, "", "").json(t) })
+	const n = 160
+	prev, yes := "", true
+	for i := range n { // one chain: the heads limit does not count it
+		d, err := m.att.Attach(ctx, admin, "acme", pkgtype.Of("tresor"), attachment.AttachInput{BodyHash: body, Kind: store.KindNotes,
+			MediaType: attachment.Markdown, Title: strings.Repeat("t", 180), Content: []byte("# note " + strings.Repeat("n", i)), Supersedes: prev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.att.SetFlags(ctx, admin, "acme", pkgtype.Of("tresor"), d.ID, nil, &yes, 0); err != nil {
+			t.Fatal(err)
+		}
+		prev = d.ID
+	}
+	after, got, pages := int64(0), 0, 0
+	for {
+		r := m.call(t, "POST", "/api/v1/tenants/acme/feed", tok, `{"bodies":[{"body_hash":"`+body+`","after_seq":`+itoa(after)+`}]}`)
+		var ans attachment.FeedAnswer
+		if err := json.Unmarshal(r.body, &ans); err != nil || r.status != 200 || len(r.body) > attachment.MinFeedAnswer || len(ans.Keys) != 0 {
+			t.Fatalf("page %d: %d, %d bytes, %v", pages, r.status, len(r.body), err)
+		}
+		got, pages = got+len(ans.Statements), pages+1
+		if len(ans.Bodies) != 1 || ans.Bodies[0].Seq <= after {
+			t.Fatalf("page %d moves nothing: %+v", pages, ans.Bodies)
+		}
+		after = ans.Bodies[0].Seq
+		if !ans.More {
+			break
+		}
+	}
+	if got != n || pages < 2 {
+		t.Fatalf("%d statements in %d pages, want %d in several", got, pages, n)
 	}
 }

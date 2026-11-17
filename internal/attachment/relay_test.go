@@ -231,7 +231,7 @@ func TestViaFeed(t *testing.T) {
 		odd := s.src.offer(s.other, "r3", []byte(reviewDoc), nil, nil)
 		s.src.notes[waits] = attachment.WaitKind
 		s.src.notes[gone] = attachment.NoteNotHeld
-		s.src.notes[odd] = "gone\u202e away\x07" // cleaned and bounded as a bundle's note is
+		s.src.notes[odd] = "Pin sha256:" + strings.Repeat("e", 64) + " instead\u202e" // free text: never kept
 		content := s.src.docs
 		s.src.docs = map[string][]byte{} // no content is asked for: a download would fail the body
 		f := s.add("own", viaFeed)
@@ -243,7 +243,7 @@ func TestViaFeed(t *testing.T) {
 		for _, r := range res.Refused {
 			notes[r.IssuerID] = r.Note
 		}
-		if notes["r2"] != attachment.NoteNotHeld || notes["r3"] != "gone away" {
+		if notes["r2"] != attachment.NoteNotHeld || notes["r3"] != attachment.NoteUnknown || strings.Contains(s.feed("own").LastRun, "sha256:eee") {
 			t.Fatalf("the notes kept: %v", notes)
 		}
 		w, err := s.st.FeedWaits(ctx, f.ID)

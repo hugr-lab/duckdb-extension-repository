@@ -99,7 +99,7 @@ func (t *Tx) ResetFeedCursors(ctx context.Context, feedID string) error {
 }
 
 // KeepFeedRefusal keeps a statement an export feed refused for good. It replaces the earlier rows
-// the feed kept of the same document (spec 0045: by issuer_id; a row kept before the column has
+// the feed kept of the same document about the same body (spec 0045: by issuer_id; a row kept before the column has
 // none and is replaced by none), so a document re-stated daily keeps one row. The caller holds the
 // tenant's attachment lock: the quota is counted here, after the rows replaced went.
 func (t *Tx) KeepFeedRefusal(ctx context.Context, tenantID string, r FeedRefusal) error {
@@ -109,7 +109,8 @@ func (t *Tx) KeepFeedRefusal(ctx context.Context, tenantID string, r FeedRefusal
 		return err
 	}
 	if r.IssuerID != "" {
-		if _, err := t.exec(ctx, "DELETE FROM feed_refusals WHERE feed_id = ? AND issuer_id = ? AND seq < ?", r.FeedID, r.IssuerID, r.Seq); err != nil {
+		if _, err := t.exec(ctx, "DELETE FROM feed_refusals WHERE feed_id = ? AND body_hash = ? AND issuer_id = ? AND seq < ?",
+			r.FeedID, r.BodyHash, r.IssuerID, r.Seq); err != nil {
 			return err
 		}
 	}

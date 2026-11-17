@@ -440,8 +440,20 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}?issuer=<url>   →  the cont
   or refused at the relay, or of a kind its export feed does not take) the fixed text
   `not held by the relay`.
 - Each statement is verified against the relaying feed's own pinned keys before it is sent: a
-  body's answer ends just below one that does not verify.
-- An answer holds at most `attachments.feed_answer_max` bytes, the keys file included, then `more`.
+  body's answer ends just below one that does not verify. The relaying feed's record then says so
+  (`relay_stopped`, the number of bodies its last such answer ended early, and `relay_stopped_at`;
+  a line in the console and in `feed show`), and the server logs it: its downstreams receive
+  nothing past that statement until the key that signed it is pinned. A change of the feed's keys
+  or of `export` clears the record.
+- With several feeds of the issuer that hand on, a body is answered from the one that read
+  furthest. A statement that feed refused for its `kinds` is not sent as "not held" while another
+  of them takes the kind and has not read that far (one that has not run yet, or is paused,
+  included): the body's answer ends just below it, until that feed has read it.
+- An answer holds at most `attachments.feed_answer_max` bytes as written, the keys file included,
+  then `more`. A keys file that leaves no room for a statement under that bound is not handed on
+  (the answer carries no `keys`), and the server logs it.
+- The answer is checked against a change made while it was read: a body whose feed's `export` or
+  cursor changed meanwhile is answered nothing, and the subscriber asks again.
 - A suspended tenant serves nothing on the feed routes: a downstream's feed turns `unauthorized`,
   keeps what it holds, and no withdrawal arrives meanwhile.
 
@@ -549,8 +561,9 @@ kista admin -config kista.yaml feed add acme reports \
   pins, verifies every statement as a direct feed does, and fetches content from `via`.
 - A statement that arrives with a `note` is verified, then **waits** when the note is a waiting
   reason (the relay is older than the issuer; it is asked for again at every run until the relay
-  carries the content) and is refused `no content` for good otherwise. The note is kept with the
-  refusal, cleaned and bounded.
+  carries the content) and is refused `no content` for good otherwise. A note is unsigned: only
+  kista's fixed words are kept with the refusal (`not held by the relay`); any other text a relay
+  writes there is recorded as `a note this kista does not know`.
 - A body's cursor moves no further than that body's own verified statements. The relay's unsigned
   `bodies` moves nothing.
 - The feed is `failing` when the answer's keys hold none of the pinned ones: "none of the pinned
@@ -598,7 +611,7 @@ pass to another feed of the same source if there is one, and otherwise are remov
 | `new` | never run; for a bundle-mode feed, no bundle imported yet |
 | `ok` | the last run completed |
 | `unauthorized` | the source answered the feed request with `404` (the credential's principal does not hold `feed`, or there is no such tenant), or refused the token twice; the next run is at the normal interval |
-| `failing` | the last run failed (network, egress, credential, none of the pinned keys published or served by the relay, the tenant's document quota or an export feed's cap reached, …); retried after 5 minutes (a host off `egress.hosts`: at the feed interval) |
+| `failing` | the last run failed (network, egress, credential, none of the pinned keys published or served by the relay, the tenant's document quota or an export feed's cap reached, …); retried after 5 minutes (a host off `egress.hosts`, and a quota or a cap reached: at the feed interval) |
 
 A feed's state is `active` or `paused`. `feed show` and the API give the last error, the last
 success, the next run, whether a run is requested, and the last run's result: counts (`offered`,
@@ -607,8 +620,8 @@ success, the next run, whether a run is requested, and the last run's result: co
 feed also `kept`, statements about documents not held, and
 `overtaken`, a run stopped by a change of `export`; `held`, statements waiting for room in the
 tenant's document quota or at an export feed's cap; for a bundle import `gap`, `not offered`,
-`would_store`, `would_withdraw`, `would_wait` (a dry run's statements that an import would leave
-waiting), and `held`, statements that did not verify or came out of order; `narrowed`, documents a
+`would_store`, `would_withdraw`, `would_hold` (at the document quota), `would_wait` (a dry run's
+statements that an import would leave waiting), and `held`, statements that did not verify or came out of order; `narrowed`, documents a
 statement in a newer format narrowed to administrators)
 and up to 20 refusals with their reasons (from a bundle also `bundle: no content`, with the
 exporting side's note, and `bundle: outside its range`; from a relay `no content`, with the relay's
@@ -656,8 +669,12 @@ Cursors are per (feed, body):
   stays, and the body's later statements wait for the next run.
 - **The document quota**: a document that does not fit the tenant's quota of feed documents holds
   its body's cursor (`held` in the run), the other bodies go on, and the run ends `failing`
-  (`limits`). Nothing is lost: the document is taken once there is room. The quota is one pool per
-  tenant, which a single source can fill; only the heads limit is per issuer.
+  (`limits`). Nothing is lost: the document is taken once there is room. At the quota a run fetches
+  no new document at all; of a held body's later statements, those that need no new record (a
+  withdrawal, a newer statement about a document held) are still applied, and the cursor stays. A
+  run that ended on a limit is tried again at the feed's interval, not after 5 minutes. A bundle
+  import holds the same way, and a dry run counts `would_hold` for what an import would hold. The
+  quota is one pool per tenant, which a single source can fill; only the heads limit is per issuer.
 - **Not verified** (`encoding`, `signature`: an unpinned key, bad bytes or a field name that breaks
   the member-name rule, `issuer`: another issuer): the body's cursor is held, so the statement is tried again at the next run and taken once
   its key is pinned.

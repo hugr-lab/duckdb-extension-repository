@@ -388,6 +388,24 @@ What the implementation found, where the text above says less or otherwise. None
 - **`attachments.feed_answer_max` bounds every answer of the feed route**, the tenant's own too.
 - **The offer's catalogue builds** are the builds the catalogue keeps (landed, or released), not
   withdrawn.
+- **After the reviews of the implementation** (relay and feeds):
+  - With several export feeds of one issuer, a statement the feed that read furthest refused for
+    its `kinds` is not answered "not held by the relay" while another export feed of the issuer
+    takes the kind and has not read that far: the body's answer ends just below it.
+  - At the document quota a run fetches no new document; a held body's later statements that need
+    no new record (a withdrawal, a newer statement about a document held) are applied without
+    moving the cursor; a run that ended `limits` is tried again at the feed's interval; a bundle's
+    dry run counts `would_hold`.
+  - Of a relay's note only the fixed words are kept (the waiting reasons, "not held by the relay");
+    any other text is recorded as "a note this kista does not know". This narrows "bounded and
+    cleaned as a bundle's is" for the online path: the note is unsigned and reaches `last_run`.
+  - `attachments.feed_answer_max` counts the keys file as the API writes it; a keys file that
+    leaves no room for a statement is not handed on.
+  - The relay checks its reads as the bundle export does: a body whose feed's `export` or cursor
+    changed while the answer was read is answered nothing.
+  - A relayed answer that ends at a statement the feed cannot verify is logged and counted on the
+    feed's record (`relay_stopped`, `relay_stopped_at`; migration 0055 holds the two columns).
+  - A kept refusal replaces the earlier kept row of the same `issuer_id` and body.
 - **A via feed whose relay answers no `keys`** (it does not hand the issuer on) is `failing` too,
   with a text of its own; no fingerprint is shown in either.
 - **Tests.** The end-to-end chain runs in `internal/api` (three servers over TLS: issuer, relaying

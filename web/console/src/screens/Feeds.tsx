@@ -16,6 +16,9 @@ export interface Feed {
   url: string
   /** the relaying tenant's URL (spec 0045): its runs contact it, never url; set at creation only */
   via?: string
+  /** the bodies its last relayed answer ended early, at a statement that does not verify under its
+   * pinned keys (spec 0045) */
+  relay_stopped?: number
   credential: string
   keys: string[]
   kinds: string[]
@@ -110,6 +113,13 @@ export function feedExporterOlder(f: Pick<Feed, 'waiting_without_content'>) {
   return n === 0 ? '' : `The exporting kista is older than its source: ${n} statements arrived without content (${all.map(([w]) => w).sort().join(', ')}).`
 }
 
+/** Spec 0045: a feed whose relayed answers end early, in a line; '' when none did. */
+export function feedRelayStopped(f: Pick<Feed, 'relay_stopped'>) {
+  const n = f.relay_stopped ?? 0
+  return n === 0 ? '' : `Handing on stops early: the last relayed answer ended ${n} bodies at a statement that does not verify with this feed's pinned keys; ` +
+    "kistas that take this tenant's feed receive nothing past it. Pin the key that signed it."
+}
+
 /** A run's counts, those above zero, in a line. */
 export function feedCounts(f: Feed) {
   return Object.entries(f.last_run?.counts ?? {}).filter(([k, n]) => n > 0 && k !== 'offered').map(([k, n]) => `${k} ${n}`).join(' · ')
@@ -157,6 +167,7 @@ export function Feeds() {
                 {f.last_error && <div className="text-danger break-words">{f.last_error}</div>}
                 {feedOlder(f) && <div className="text-warning">{feedOlder(f)}</div>}
                 {feedExporterOlder(f) && <div className="text-warning">{feedExporterOlder(f)}</div>}
+                {feedRelayStopped(f) && <div className="text-warning">{feedRelayStopped(f)}</div>}
                 {f.run_requested && <div className="text-warning">a sync is requested</div>}
               </span>
             )],

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -30,6 +31,11 @@ type Service struct {
 	// FeedAnswerMax is the most bytes a feed's answer holds, a relayed issuer's keys file included
 	// (attachments.feed_answer_max, spec 0045); 0: MaxFeedAnswer
 	FeedAnswerMax int
+	// Log takes what a relayed answer could not say to its caller; nil: none
+	Log *slog.Logger
+	// afterRelayRead runs, in tests, between a relayed answer's reads and its check that nothing
+	// changed under them
+	afterRelayRead func()
 }
 
 func (s *Service) feedAnswerMax() int {

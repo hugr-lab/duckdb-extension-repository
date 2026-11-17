@@ -8,7 +8,7 @@ import {
   attentionText, issuerHost, policyURL, reportBehind, reportFile, reportHTML, reportPageLabel, reportParts, reportPolicy, reportSrcdoc, reportText,
   rowLines, staleScanOf, vulnerabilitiesText,
 } from './report'
-import { feedBody, handOn, handOnWarning, feedKinds } from '../screens/Feeds'
+import { feedBody, feedRelayStopped, handOn, handOnWarning, feedKinds } from '../screens/Feeds'
 import { ReportFrame, ReportLines, ReportPage, feedsLastSuccess } from '../screens/ReportPage'
 import { summaryText } from '../screens/Reports'
 import type { Attachment } from '../screens/types'
@@ -283,6 +283,10 @@ describe('a feed handed on, and taken through a relay', () => {
     expect(feedBody({ ...form, via: '' })).not.toHaveProperty('via')
     expect(feedBody({ ...form, mode: 'bundle' })).not.toHaveProperty('via')
     expect(feedKinds).toContain('report')
+  })
+  it('says when its relayed answers end early', () => {
+    expect(feedRelayStopped({})).toBe('')
+    expect(feedRelayStopped({ relay_stopped: 2 })).toContain('ended 2 bodies at a statement that does not verify')
   })
   it('names the source and who receives its documents before handing it on', () => {
     expect(handOn).toBe("Hand on: to bundles and to kistas that take this tenant's feed")

@@ -39,8 +39,13 @@ type FeedImport struct {
 	verified map[string]int64 // body: the highest seq verified in the bundle
 	last     map[string]int64 // body: the highest seq stored or refused for good
 	held     map[string]bool  // body: a statement held it; nothing after it is applied
-	waits    []store.FeedWait // statements passed over until an upgrade (spec 0046), recorded with the cursors
-	gap      map[string]bool  // body: its range does not start where the feed is
+	// quota: the bodies the tenant's document quota holds (spec 0045): of their later statements,
+	// those that need no new record are still applied; room is what a dry run has left of the quota
+	// (-1: not read yet)
+	quota map[string]bool
+	room  int
+	waits []store.FeedWait // statements passed over until an upgrade (spec 0046), recorded with the cursors
+	gap   map[string]bool  // body: its range does not start where the feed is
 
 	pending []BundleStatement // the last batch: applied once its documents were read
 	docs    *DocSpool         // the bundle feed's documents, shared with its other targets
@@ -59,7 +64,7 @@ func (f *Feeds) ImportFeed(ctx context.Context, t store.Tenant, fd store.Feed, m
 	}
 	fi := &FeedImport{f: f, dryRun: dryRun, started: time.Now().UTC(), bundle: manifestID, ranges: ranges, offered: map[string]bool{},
 		extra: map[string]bool{}, verified: map[string]int64{}, last: map[string]int64{}, held: map[string]bool{}, gap: map[string]bool{},
-		docs: docs, prev: map[string]int64{}}
+		docs: docs, prev: map[string]int64{}, quota: map[string]bool{}, room: -1}
 	fi.r = &run{f: f, fd: fd, t: t, res: &RunResult{Started: fi.started, Counts: map[string]int{}}, renew: renew}
 	fi.r.content = fi.content
 	for _, b := range extra {
@@ -208,6 +213,20 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 	case !ok || st.Seq <= rg[0] || st.Seq > rg[1]:
 		r.refuse(st, "bundle: outside its range")
 		return nil
+	case fi.quota[st.BodyHash] && !fi.gap[st.BodyHash] && !fi.dryRun && !malformed && fi.offered[st.BodyHash] && st.Seq > fi.cursors[st.BodyHash]:
+		// held by the document quota: the cursor stays where it stopped, but a statement that needs
+		// no new record (a withdrawal, a newer one about a document held) is applied now
+		r.noNew = true
+		_, err := r.store(ctx, st, s.Statement, s.Signature)
+		r.noNew = false
+		var tr transient
+		if err != nil && !errors.Is(err, errHeldByQuota) && !errors.As(err, &tr) {
+			if ctx.Err() != nil {
+				return err
+			}
+			fi.Fail(err)
+		}
+		return nil
 	case fi.held[st.BodyHash] || fi.gap[st.BodyHash]:
 		return nil
 	case !fi.offered[st.BodyHash] && (!fi.dryRun || !fi.extra[st.BodyHash]):
@@ -232,7 +251,7 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 	case errors.Is(err, errHeldByQuota):
 		// spec 0045: the tenant's document quota holds the body, it does not refuse; the target ends
 		// failing (limits), the cursors of what was taken before moved
-		fi.held[st.BodyHash], r.quota = true, true
+		fi.held[st.BodyHash], fi.quota[st.BodyHash], r.quota = true, true, true
 		r.res.Counts["held"]++
 		return nil
 	case errors.As(err, &tr):
@@ -324,6 +343,20 @@ func (fi *FeedImport) check(st Statement, s BundleStatement) {
 			r.refuse(st, "document")
 			return
 		}
+		// at the tenant's document quota an import holds the body: nothing would be stored
+		if fi.room < 0 {
+			room, err := fi.f.Store.FeedDocumentRoom(context.Background(), r.t.ID)
+			if err != nil {
+				fi.Fail(err)
+				return
+			}
+			fi.room = room
+		}
+		if fi.room == 0 {
+			r.res.Counts["would_hold"]++
+			return
+		}
+		fi.room--
 		r.res.Counts["would_store"]++
 	}
 }

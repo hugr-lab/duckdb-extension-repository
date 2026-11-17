@@ -93,6 +93,52 @@ func TestReceivedReports(t *testing.T) {
 		if want := []string{h("1"), h("2"), h("3"), h("4"), h("9")}; err != nil || !slices.Equal(bodies, want) {
 			t.Fatalf("the offer:\n got %v\nwant %v (%v)", bodies, want, err)
 		}
+		// another tenant's build that names this tenant's distributor's publisher is that tenant's
+		// own: a publisher is a distributor's only in its own tenant
+		beta := store.Tenant{Name: "beta"}
+		inTx(t, s, func(tx *store.Tx) error { return tx.CreateTenant(ctx, &beta) })
+		foreign := cppBuild(beta, "geo", "1.0", "e")
+		foreign.Source = store.PublisherSource(dist.ID)
+		inTx(t, s, func(tx *store.Tx) error {
+			if err := tx.FindOrInsertBuild(ctx, &foreign); err != nil {
+				return err
+			}
+			return tx.SetLanded(ctx, foreign.ID)
+		})
+		bf := store.Feed{TenantID: beta.ID, Name: "src", URL: f.URL, Credential: "c", Offer: store.OfferUpstreams, Keys: f.Keys, CreatedBy: "os:1:t"}
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertFeed(ctx, &bf) })
+		if bodies, err := s.OfferedBodies(ctx, bf); err != nil || len(bodies) != 0 {
+			t.Fatalf("another tenant offers a body by this tenant's distributor's publisher: %v %v", bodies, err)
+		}
+		// the cursors of the bodies asked about, and no others
+		inTx(t, s, func(tx *store.Tx) error {
+			for i, b := range []string{h("1"), h("2"), h("3")} {
+				if err := tx.SetFeedCursor(ctx, f.ID, b, int64(i+5)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if cur, err := s.FeedCursorsOf(ctx, f.ID, []string{h("1"), h("3"), h("f")}); err != nil || len(cur) != 2 || cur[h("1")] != 5 || cur[h("3")] != 7 {
+			t.Fatalf("the cursors asked about: %v %v", cur, err)
+		}
+		if cur, err := s.FeedCursorsOf(ctx, f.ID, nil); err != nil || len(cur) != 0 {
+			t.Fatalf("no body asked about: %v %v", cur, err)
+		}
+		// what a relayed answer could not verify, on the feed's record
+		if err := s.SetFeedRelayStopped(ctx, f.ID, 3); err != nil {
+			t.Fatal(err)
+		}
+		if got := mustGetFeed(t, s, tn.ID, "src"); got.RelayStopped != 3 || got.RelayStoppedAt.IsZero() {
+			t.Fatalf("relay stopped: %+v", got)
+		}
+		inTx(t, s, func(tx *store.Tx) error { return tx.ClearFeedRelayStopped(ctx, f.ID) })
+		if got := mustGetFeed(t, s, tn.ID, "src"); got.RelayStopped != 0 || !got.RelayStoppedAt.IsZero() {
+			t.Fatalf("relay stopped, cleared: %+v", got)
+		}
+		if room, err := s.FeedDocumentRoom(ctx, tn.ID); err != nil || room != store.MaxTenantAttachments {
+			t.Fatalf("the room for feed documents: %d %v", room, err)
+		}
 
 		// --- feeds.via: stored, read back, never changed by SetFeed, refused on a bundle-mode feed ---
 		got := mustGetFeed(t, s, tn.ID, "src")
@@ -153,9 +199,19 @@ func TestReceivedReports(t *testing.T) {
 		if rs, _ := s.FeedRefusals(ctx, direct.ID, h("1"), 0, 100); len(rs) != 1 {
 			t.Fatalf("another feed's kept row went: %v", rs)
 		}
+		// nor does a row of the same id about another body: a document is one body's
+		inTx(t, s, func(tx *store.Tx) error {
+			return tx.KeepFeedRefusal(ctx, tn.ID, store.FeedRefusal{FeedID: f.ID, BodyHash: h("2"), Seq: 3, IssuerID: "doc-z", Reason: "size", Statement: "{}", Signature: "s"})
+		})
+		inTx(t, s, func(tx *store.Tx) error {
+			return tx.KeepFeedRefusal(ctx, tn.ID, store.FeedRefusal{FeedID: f.ID, BodyHash: h("3"), Seq: 4, IssuerID: "doc-z", Reason: "size", Statement: "{}", Signature: "s"})
+		})
+		if rs, _ := s.FeedRefusals(ctx, f.ID, h("2"), 0, 100); len(rs) != 1 {
+			t.Fatalf("a kept row of another body went: %v", rs)
+		}
 		// a replacement needs no room: at the cap, a later statement of a kept document is still kept
 		was := store.MaxFeedKept
-		store.MaxFeedKept = 6 // src: 1, 3, 6, 7, 8; direct: 2
+		store.MaxFeedKept = 8 // src: 1, 3, 6, 7, 8 and doc-z twice; direct: 2
 		defer func() { store.MaxFeedKept = was }()
 		keep(9, "doc-a")
 		if err := s.InTx(ctx, "", func(tx *store.Tx) error {

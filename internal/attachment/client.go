@@ -384,6 +384,13 @@ func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, 
 		if err := tx.SetFeed(ctx, &fd, expected); err != nil {
 			return err
 		}
+		if _, keys := change["keys"]; keys || change["export"] != nil {
+			// what its relayed answers could not verify is said anew under the new pins
+			if err := tx.ClearFeedRelayStopped(ctx, fd.ID); err != nil {
+				return err
+			}
+			fd.RelayStopped, fd.RelayStoppedAt = 0, time.Time{}
+		}
 		switch change["export"] {
 		case true:
 			if err := tx.ResetFeedCursors(ctx, fd.ID); err != nil {
@@ -489,6 +496,24 @@ func contacted(fd store.Feed) string {
 	return fd.URL
 }
 
+// NoteUnknown stands for a relay's note that is none of kista's fixed words. A note is unsigned: of
+// what a relay writes there, only the waiting reasons and NoteNotHeld are kept, in a run's record
+// and wherever it is shown.
+const NoteUnknown = "a note this kista does not know"
+
+// relayNote keeps of a relay's unsigned note only kista's fixed words.
+func relayNote(note string) string {
+	if note == "" || note == NoteNotHeld || Waits(note) {
+		return note
+	}
+	return NoteUnknown
+}
+
+// errDocumentQuota is errHeldByQuota for the tenant's document quota (spec 0045): the body is held,
+// its later statements that need no new record are still applied, and no new document is fetched
+// for the rest of the run.
+var errDocumentQuota = fmt.Errorf("%w (the document quota)", errHeldByQuota)
+
 // relayNoContent refuses, for good, a statement a relay sends without content (spec 0045), unless
 // its note says the relay left it waiting (spec 0046); a bundle's word is noContent.
 const relayNoContent = "no content"
@@ -568,6 +593,14 @@ type run struct {
 	quota bool
 	// keysKept: a via feed with export kept the relay's keys file in this run
 	keysKept bool
+	// The document quota (spec 0045). quotaFull: it is known reached, so no new document is fetched
+	// for the rest of the run. quotaHeld: the bodies it holds; their cursors stay, and scanned is how
+	// far each one's later statements were read, to apply those that need no new record (a
+	// withdrawal, a newer statement about a document held). noNew: store is applying such a one
+	quotaFull bool
+	quotaHeld map[string]bool
+	scanned   map[string]int64
+	noNew     bool
 	// content reads a new document's content: from its source (a run), or from a bundle (spec 0014);
 	// a reason refuses the statement for good
 	content func(ctx context.Context, st Statement) ([]byte, string, error)
@@ -609,8 +642,9 @@ func (f *Feeds) RunFeed(ctx context.Context, id string, renew func(context.Conte
 	var next time.Time
 	switch {
 	case f.Interval <= 0:
-	case runErr != nil && status == store.FeedFailing && !errors.Is(runErr, egress.ErrHostNotAllowed):
-		// soon; not a host off egress.hosts (spec 0044), off until a restart: at the interval, as errAuth
+	case runErr != nil && status == store.FeedFailing && !errors.Is(runErr, egress.ErrHostNotAllowed) && !errors.Is(runErr, errHeldByQuota):
+		// soon; not a host off egress.hosts (spec 0044), off until a restart, nor a quota or a cap
+		// reached (limits), which no retry in five minutes frees: at the interval, as errAuth
 		next = res.Ended.Add(retryAfter)
 	default:
 		next = res.Ended.Add(f.Interval + time.Duration(rand.Int64N(int64(f.Interval/10)+1)))
@@ -831,7 +865,8 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 		}{Issuer: r.issuer()}
 		for _, b := range bodies {
 			if !failed[b] {
-				req.Bodies = append(req.Bodies, FeedBody{BodyHash: b, AfterSeq: cursors[b]})
+				// a body the quota holds is read on from where its statements were scanned
+				req.Bodies = append(req.Bodies, FeedBody{BodyHash: b, AfterSeq: max(cursors[b], r.scanned[b])})
 			}
 		}
 		if len(req.Bodies) == 0 {
@@ -865,7 +900,7 @@ func (r *run) batch(ctx context.Context, bodies []string, cursors map[string]int
 			if r.fd.Via != "" {
 				break
 			}
-			if sent[h.BodyHash] && !failed[h.BodyHash] && h.Seq > cursors[h.BodyHash] && h.Seq <= r.verified {
+			if sent[h.BodyHash] && !failed[h.BodyHash] && !r.quotaHeld[h.BodyHash] && h.Seq > cursors[h.BodyHash] && h.Seq <= r.verified {
 				if err := r.write(ctx, false, func(tx *store.Tx) error { return tx.SetFeedCursor(ctx, r.fd.ID, h.BodyHash, h.Seq) }); err != nil {
 					return err
 				}
@@ -966,8 +1001,24 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 	if failed[st.BodyHash] || st.Seq <= cursors[st.BodyHash] {
 		return nil // after a failure, the body's later statements wait for the next run; or a replay
 	}
+	if r.quotaHeld[st.BodyHash] {
+		// held by the document quota: its cursor stays, but what needs no new record is applied now
+		// (a withdrawal must not wait for room); the range is judged again once there is room
+		if st.Seq <= r.scanned[st.BodyHash] || malformed {
+			return nil
+		}
+		r.scanned[st.BodyHash] = st.Seq
+		r.noNew = true
+		_, err := r.store(ctx, st, stmt, sig)
+		r.noNew = false
+		var tr transient
+		if errors.Is(err, errHeldByQuota) || errors.As(err, &tr) {
+			return nil
+		}
+		return err
+	}
 	reason, err := "statement", error(nil)
-	note, level := Text(w.Note, MaxNote), r.f.ReaderLevel()
+	note, level := relayNote(w.Note), r.f.ReaderLevel()
 	if !malformed {
 		if note != "" {
 			// a relay sent it without content (spec 0045): none is fetched
@@ -988,6 +1039,13 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 	}
 	var tr transient
 	switch {
+	case errors.Is(err, errDocumentQuota):
+		if r.quotaHeld == nil {
+			r.quotaHeld, r.scanned = map[string]bool{}, map[string]int64{}
+		}
+		r.quotaHeld[st.BodyHash], r.scanned[st.BodyHash], r.quota = true, st.Seq, true
+		r.res.Counts["held"]++
+		return nil
 	case errors.Is(err, errHeldByQuota):
 		failed[st.BodyHash], r.quota = true, true
 		r.res.Counts["held"]++
@@ -1005,7 +1063,7 @@ func (r *run) one(ctx context.Context, w WireStatement, sent map[string]bool, cu
 		r.refuse(st, reason)
 		if reason == relayNoContent && note != "" && len(r.res.Refused) > 0 {
 			if x := &r.res.Refused[len(r.res.Refused)-1]; x.IssuerID == st.IssuerID {
-				x.Note = note // the relay's word, kept beside the fixed reason
+				x.Note = note // one of kista's fixed words: a relay's free text is never kept
 			}
 		}
 	}
@@ -1237,7 +1295,21 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		}
 		return "", err
 	}
-	// a new document: its content, checked against the statement
+	// a new document. At the tenant's document quota it is not fetched (spec 0045): the body is held
+	if r.noNew {
+		return "", errDocumentQuota
+	}
+	if !r.quotaFull {
+		room, err := r.f.Store.FeedDocumentRoom(ctx, t.ID)
+		if err != nil {
+			return "", err
+		}
+		r.quotaFull = room == 0
+	}
+	if r.quotaFull {
+		return "", errDocumentQuota
+	}
+	// its content, checked against the statement
 	read := r.content
 	if read == nil {
 		read = r.download
@@ -1282,7 +1354,7 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		case errors.Is(err, store.ErrAttachmentQuota):
 			// spec 0045: the tenant's document quota holds the body's cursor, it does not refuse: the
 			// document is taken once there is room (only the heads limit, per issuer, refuses)
-			return errHeldByQuota
+			return errDocumentQuota
 		case errors.Is(err, store.ErrInvalid):
 			reason = "limits"
 			return nil
@@ -1294,6 +1366,9 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 	if err != nil || reason != "" {
 		if errors.Is(err, errHeldByQuota) {
 			reason = ""
+		}
+		if errors.Is(err, errDocumentQuota) {
+			r.quotaFull = true // filled meanwhile: nothing more is fetched in this run
 		}
 		dctx := context.WithoutCancel(ctx)
 		if _, gerr := r.f.Store.GetAttachment(dctx, t.ID, rec.ID); errors.Is(gerr, store.ErrNotFound) {

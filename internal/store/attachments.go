@@ -101,6 +101,16 @@ AND b.name = ? AND b.body_hash = ? AND r.origin = ? AND r.created_by = ?`, tenan
 	return n > 0, err
 }
 
+// FeedDocumentRoom is how many more documents from feeds the tenant's quota takes (0: it is
+// reached). A feed's run asks before it fetches a new document (spec 0045): at the quota it holds
+// the body instead of downloading what it could not store.
+func (s *Store) FeedDocumentRoom(ctx context.Context, tenantID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND removed_at IS NULL AND origin = ?"),
+		tenantID, AttachedByFeed).Scan(&n)
+	return max(MaxTenantAttachments-n, 0), err
+}
+
 // InsertAttachment adds a document's record (its object is already stored). The caller holds the
 // tenant's attachment lock: the limits are counted here.
 func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {

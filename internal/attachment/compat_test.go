@@ -1,6 +1,7 @@
 package attachment_test
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -65,6 +66,8 @@ type newerSource struct {
 	noKeys    bool             // the answer carries no keys
 	highWater map[string]int64 // body: an unsigned high-water beyond the statements sent
 	posts     int
+	downloads int    // documents asked for
+	keysPad   string // a member of the keys file a later release might add
 }
 
 // spoil breaks a statement's signature.
@@ -89,8 +92,15 @@ func (s *newerSource) wire(body string, after, upTo int64) []attachment.BundleSt
 
 func (s *newerSource) keysFile() []byte {
 	pemStr, _ := extfile.MarshalPublicKeyPEM(&s.key.PublicKey)
-	b, _ := json.Marshal(map[string]any{"keys": []any{map[string]any{"fingerprint": s.fp, "public_key": pemStr}}, "since": "a later release's member"})
-	return b
+	m := map[string]any{"keys": []any{map[string]any{"fingerprint": s.fp, "public_key": pemStr}}, "since": "a later release's member"}
+	if s.keysPad != "" {
+		m["pad"] = s.keysPad
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // as a source that writes its file without escaping
+	_ = enc.Encode(m)
+	return bytes.TrimSpace(buf.Bytes())
 }
 
 type sourceStatement struct {
@@ -226,6 +236,7 @@ func (s *newerSource) Download(_ context.Context, raw string, o egress.DownloadO
 	} else if !strings.HasPrefix(raw, srcURL+"/feed/documents/") {
 		s.t.Errorf("a feed without via downloads from %s", raw)
 	}
+	s.downloads++
 	doc, ok := s.docs[raw[strings.LastIndex(raw, "/")+1:]]
 	switch {
 	case !ok:

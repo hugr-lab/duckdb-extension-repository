@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -77,6 +79,17 @@ func HeldStatements(ctx context.Context, st *store.Store, tenantID, issuer, feed
 	return out, nil
 }
 
+// RelayStopped says, for a feed's administrators, that the answers it relays end early (spec 0045):
+// at a statement that does not verify under the feed's pinned keys, past which its downstreams
+// receive nothing of the body. "" when none did.
+func RelayStopped(f store.Feed) string {
+	if f.RelayStopped == 0 {
+		return ""
+	}
+	return fmt.Sprintf("Handing on stops early: the last relayed answer ended %d bodies at a statement that does not verify with this feed's pinned keys; "+
+		"kistas that take this tenant's feed receive nothing past it. Pin the key that signed it.", f.RelayStopped)
+}
+
 // NoteNotHeld is the relay's note on a statement it sends without content and does not wait on: a
 // document removed or refused at the relay, or of a kind its export feed does not take (spec 0045).
 const NoteNotHeld = "not held by the relay"
@@ -137,20 +150,23 @@ func NormalFeedURL(raw string) (string, error) {
 
 // handedOn are the tenant's feeds that hand an issuer's documents on (spec 0045): its online feeds
 // of the issuer with export set that kept a keys file, by name. None: the tenant does not relay the
-// issuer.
-func (s *Service) handedOn(ctx context.Context, tenantID, issuer string) ([]store.Feed, error) {
-	var out []store.Feed
-	err := s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+// issuer. exporting are all its online feeds of the issuer with export set, those that have not run
+// yet too: they may yet store what another refused.
+func (s *Service) handedOn(ctx context.Context, tenantID, issuer string) (ready, exporting []store.Feed, err error) {
+	err = s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		all, err := tx.ListFeeds(ctx, tenantID)
-		out = nil
+		ready, exporting = nil, nil
 		for _, f := range all {
-			if f.URL == issuer && f.Mode == store.FeedOnline && f.Export && !f.KeysFileAt.IsZero() {
-				out = append(out, f)
+			if f.URL == issuer && f.Mode == store.FeedOnline && f.Export {
+				exporting = append(exporting, f)
+				if !f.KeysFileAt.IsZero() {
+					ready = append(ready, f)
+				}
 			}
 		}
 		return err
 	})
-	return out, err
+	return ready, exporting, err
 }
 
 // takes reports whether one of the feeds takes a kind (none named: every kind).
@@ -166,20 +182,30 @@ func issuerParam(issuer string) error {
 	return nil
 }
 
+// relayOne is the room one statement takes in an answer at most (its bytes and signature in base64,
+// a note, its body's high-water): an answer always has room for the keys file and one statement.
+const relayOne = 24 << 10
+
 // relay answers a subscriber's bodies with what the tenant holds from another issuer (spec 0045):
 // only for an issuer of which the tenant has an online export feed with a keys file (any other
 // issuer answers as bodies without documents, with no keys), and only for the bodies in the caller's
-// scope. Per body, from the caller's cursor to the feed's, in seq order: the issuer's stored bytes
-// and signatures, unchanged. A statement goes without content, with a note, when the relay holds no
-// content for it or its kind is one no export feed of the issuer takes: the waiting reason for one
-// the relay waits on, else NoteNotHeld. Each statement is verified against the relaying feed's own
-// pinned keys before it is sent: a body's answer ends just below one that does not verify. The relay
-// applies no kind filter of its own and signs nothing. keys is the issuer's keys file as the feed
-// last fetched it. The answer holds at most the configured bytes, the keys file included, then
-// more.
+// scope. Per body, from the caller's cursor to the feed's that read furthest, in seq order: the
+// issuer's stored bytes and signatures, unchanged. A statement goes without content, with a note,
+// when the relay holds no content for it or its kind is one no export feed of the issuer takes: the
+// waiting reason for one the relay waits on, else NoteNotHeld. A body's answer ends just below:
+//   - a statement that does not verify against the relaying feed's own pinned keys (each is verified
+//     before it is sent); the feed's record then says so to its administrators;
+//   - a statement that feed refused for its kind while another feed of the issuer that hands on
+//     takes the kind and has not read that far: the document may yet be stored here, and "not held"
+//     would be refused downstream for good.
+//
+// The relay applies no kind filter of its own and signs nothing. keys is the issuer's keys file as
+// the feed last fetched it. The answer holds at most the configured bytes as the API writes them,
+// the keys file included, then more. The reads are not one snapshot: a body whose feed's export
+// setting or cursor changed meanwhile is answered nothing, as a bundle's export fails such a feed.
 func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodies []FeedBody, inScope map[string]bool) (FeedAnswer, error) {
 	out := FeedAnswer{Statements: []WireStatement{}, Bodies: []HighWater{}}
-	feeds, err := s.handedOn(ctx, t.ID, issuer)
+	feeds, exporting, err := s.handedOn(ctx, t.ID, issuer)
 	if err != nil || len(feeds) == 0 {
 		return out, err
 	}
@@ -205,11 +231,24 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 	if len(keys) == 0 || err != nil {
 		return out, nil // dropped meanwhile (export switched off): not handed on
 	}
-	out.Keys = keys
+	// the keys file as the API writes it (compact, HTML-escaped): what the answer's bound counts. One
+	// that leaves no room for a statement cannot be served within the bound: not handed on
+	wire, err := json.Marshal(json.RawMessage(keys))
+	if err != nil || len(wire)+relayOne > s.feedAnswerMax() {
+		s.warn("attachment: an issuer's keys file leaves no room for a statement in a feed answer (attachments.feed_answer_max): it is not handed on",
+			"tenant", t.Name, "issuer", issuer, "bytes", len(wire))
+		return out, nil
+	}
+	var asked []string
+	for _, b := range bodies {
+		if inScope[b.BodyHash] {
+			asked = append(asked, b.BodyHash)
+		}
+	}
 	cursors := map[string]map[string]int64{}
 	pins := map[string]map[string]*rsa.PublicKey{}
-	for _, f := range feeds {
-		if cursors[f.ID], err = s.Store.FeedCursors(ctx, f.ID); err != nil {
+	for _, f := range exporting {
+		if cursors[f.ID], err = s.Store.FeedCursorsOf(ctx, f.ID, asked); err != nil {
 			return out, err
 		}
 		pins[f.ID] = map[string]*rsa.PublicKey{}
@@ -219,7 +258,15 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 			}
 		}
 	}
-	size := len(keys) + 64
+	type part struct { // one body's part of the answer
+		body  string
+		feed  store.Feed
+		stmts []WireStatement
+		high  int64
+	}
+	var parts []part
+	stopped := map[string]int{} // feed: bodies whose answer ended at a statement that does not verify
+	size := len(wire) + 64
 	for _, b := range bodies {
 		if !inScope[b.BodyHash] {
 			continue
@@ -238,18 +285,31 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 		if err != nil {
 			return out, err
 		}
-		high := b.AfterSeq
+		p := part{body: b.BodyHash, feed: best, high: b.AfterSeq}
 		full := false
+	statements:
 		for _, h := range held {
 			stmt := []byte(h.Statement)
 			sig, err := base64.StdEncoding.DecodeString(h.Signature)
-			if err != nil {
+			var st Statement
+			malformed := false
+			if err == nil {
+				st, err = Verify(stmt, sig, pins[best.ID])
+				malformed = errors.Is(err, ErrMalformed) && h.Doc == nil
+			}
+			if err != nil && !malformed || st.Issuer != issuer || st.BodyHash != b.BodyHash || st.Seq != h.Seq {
+				// as an unverified statement holds a cursor: nothing of the body goes past it
+				stopped[best.ID]++
+				s.warn("attachment: a relayed answer ends at a statement that does not verify under the feed's pinned keys",
+					"tenant", t.Name, "feed", best.Name, "body", b.BodyHash, "seq", h.Seq)
 				break
 			}
-			st, err := Verify(stmt, sig, pins[best.ID])
-			malformed := errors.Is(err, ErrMalformed) && h.Doc == nil
-			if err != nil && !malformed || st.Issuer != issuer || st.BodyHash != b.BodyHash || st.Seq != h.Seq {
-				break // as an unverified statement holds a cursor: nothing of the body goes past it
+			if h.Refused == "kind" && h.Doc == nil && !malformed && !st.Withdrawn {
+				for _, f := range exporting {
+					if f.ID != best.ID && takes([]store.Feed{f}, st.Kind) && cursors[f.ID][b.BodyHash] < h.Seq {
+						break statements // that feed may yet store it: it is not "not held" for good
+					}
+				}
 			}
 			w := WireStatement{Statement: base64.StdEncoding.EncodeToString(stmt), Signature: h.Signature}
 			switch {
@@ -267,19 +327,65 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 				break
 			}
 			size += n
-			out.Statements = append(out.Statements, w)
-			high = h.Seq
+			p.stmts = append(p.stmts, w)
+			p.high = h.Seq
 		}
-		if high > b.AfterSeq {
-			out.Bodies = append(out.Bodies, HighWater{BodyHash: b.BodyHash, Seq: high})
+		if p.high > b.AfterSeq {
+			parts = append(parts, p)
 			size += 100
 		}
 		if full {
 			out.More = true
-			return out, nil
+			break
 		}
 	}
+	for _, f := range feeds {
+		// said on the feed's record, and again no more often than a minute
+		if n := stopped[f.ID]; n > 0 && (n != f.RelayStopped || s.Store.Now().Sub(f.RelayStoppedAt) > time.Minute) {
+			if err := s.Store.SetFeedRelayStopped(ctx, f.ID, n); err != nil {
+				s.warn("attachment: recording where a relayed answer ended", "feed", f.Name, "error", err)
+			}
+		}
+	}
+	if s.afterRelayRead != nil {
+		s.afterRelayRead()
+	}
+	// the reads above are not one snapshot: a change of export (what the feed kept dropped, its
+	// cursors reset) or the collector (a body's rows gone with its cursor) meanwhile would leave an
+	// answer that hides statements. Such a body is answered nothing; the subscriber asks again
+	now, _, err := s.handedOn(ctx, t.ID, issuer)
+	if err != nil {
+		return out, err
+	}
+	if len(now) == 0 {
+		return FeedAnswer{Statements: []WireStatement{}, Bodies: []HighWater{}}, nil
+	}
+	out.Keys = wire
+	again := map[string]map[string]int64{}
+	for _, p := range parts {
+		i := slices.IndexFunc(now, func(f store.Feed) bool { return f.ID == p.feed.ID })
+		if i < 0 || now[i].ExportEpoch != p.feed.ExportEpoch {
+			continue
+		}
+		if again[p.feed.ID] == nil {
+			if again[p.feed.ID], err = s.Store.FeedCursorsOf(ctx, p.feed.ID, asked); err != nil {
+				return out, err
+			}
+		}
+		if again[p.feed.ID][p.body] < cursors[p.feed.ID][p.body] {
+			continue
+		}
+		out.Statements = append(out.Statements, p.stmts...)
+		out.Bodies = append(out.Bodies, HighWater{BodyHash: p.body, Seq: p.high})
+	}
 	return out, nil
+}
+
+// warn logs a warning when the service has a log.
+func (s *Service) warn(msg string, args ...any) {
+	if s.Log != nil {
+		s.Log.Warn(msg, args...)
+	}
 }
 
 // relayDocument hands a document the tenant holds from another issuer, and its content, to use
@@ -288,7 +394,7 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 // one.
 func (s *Service) relayDocument(ctx context.Context, t store.Tenant, channels []string, issuer, issuerID string, use func(store.Attachment, []byte) error) error {
 	missing := fmt.Errorf("%w: document %s", store.ErrNotFound, issuerID)
-	feeds, err := s.handedOn(ctx, t.ID, issuer)
+	feeds, _, err := s.handedOn(ctx, t.ID, issuer)
 	if err != nil {
 		return err
 	}
