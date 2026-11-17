@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -61,6 +62,11 @@ func TestReport(t *testing.T) {
 	}
 	if !KindRE.MatchString(store.KindReport) || len(Report) > 200 {
 		t.Fatal("the kind or its media type is outside a statement's frozen bounds (spec 0046)")
+	}
+	// a kind added raises the reader level (spec 0046): a feed then takes again, by itself, the
+	// reports an older binary left waiting as an unknown kind
+	if ReaderLevel < 2 || !slices.Contains(Kinds, store.KindReport) || floors[store.KindReport] == nil {
+		t.Fatalf("the reader level %d, the kinds %v", ReaderLevel, Kinds)
 	}
 	want := map[string]any{"envelope": "kista.report.v1", "report": "rep_1:2026.A-b", "issue": 2.0, "issued_at": "2026-11-16T09:00:00Z",
 		"depth": "static_v1", "bodies": 2.0, "read": true, "kinds_evaluated": 12.0,
