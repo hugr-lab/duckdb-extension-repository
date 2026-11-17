@@ -203,7 +203,8 @@ so the operator declares it:
   no longer verifies. kista never wrote such a statement.
 - **Rolling upgrade.** A replica of the previous release ignores the new columns. While both run,
   the older one still holds a body on a statement with an unknown field and refuses an unknown kind
-  for good, as before.
+  for good, as before, and does not know a narrowed document's mark (an administrator could widen
+  such a document through it): finish the rollout before relying on either.
 
 ### Version retention in channels (spec 0042)
 

@@ -283,7 +283,7 @@ func wireProduce(t *testing.T) map[string][]byte {
 	fail("the licence key block", err)
 	add := func(version string) store.Release {
 		t.Helper()
-		r, _, err := src.env.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(keyed(t, version, block, "wire_duckdb_cpp_init")),
+		r, _, err := src.rel.Add(ctx, admin, "acme", "prod", bytes.NewReader(keyed(t, version, block, "wire_duckdb_cpp_init")),
 			release.AddOptions{Name: "wire"})
 		fail("wire "+version, err)
 		return r
@@ -310,7 +310,7 @@ func wireProduce(t *testing.T) map[string][]byte {
 	}
 	// the source releases 1.1 and yanks 1.0: the gateway takes the new one and applies the revocation
 	add("1.1")
-	_, err = src.env.rel.Apply(ctx, admin, "acme", "prod", "", first.ID, release.Yank, 0)
+	_, err = src.rel.Apply(ctx, admin, "acme", "prod", "", first.ID, release.Yank, 0)
 	fail("the yank", err)
 	if res := gw.sync("gw"); res.Counts[store.CellReleased] != 1 || res.Counts["revoked"] != 1 || res.Error != "" {
 		t.Fatalf("the gateway's second run: %+v", res)
