@@ -3,7 +3,7 @@ import { Button, ErrorBox, Loading, Mono, when } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
 import { seg } from '../lib/http'
 import { type Feed } from './Feeds'
-import { type ReportTheme, reportFile, reportHTML, reportPageLabel, reportSrcdoc, rowLines } from '../lib/report'
+import { type ReportTheme, downloadable, reportFile, reportHTML, reportPageLabel, reportSrcdoc, rowLines } from '../lib/report'
 import reportCss from '../report.css?raw'
 import reportCssURL from '../report.css?url'
 import { every, save } from './Reports'
@@ -77,14 +77,20 @@ export function ReportPage({ a, base, onClose }: { a: Attachment; base: string; 
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[13px] font-semibold text-ink">{a.title}</span>
         <span className="ml-auto flex gap-1.5">
-          {page.data !== undefined && (
-            <Button tone="outline" onClick={() => save(new Blob([reportFile(page.data!, reportCss)]), `${a.id}.html`)}>Download the page</Button>
+          {page.data !== undefined && downloadable(page.data) && (
+            <Button tone="outline" onClick={() => {
+              const file = reportFile(page.data!, reportCss)
+              if (file !== undefined) save(new Blob([file]), `${a.id}.html`)
+            }}>Download the page</Button>
           )}
           <Button onClick={onClose}>Close</Button>
         </span>
       </div>
       {page.error != null ? <ErrorBox error={page.error} /> : page.data === undefined ? <Loading /> : <ReportFrame a={a} html={page.data} />}
-      <p className="m-0 text-[12px] text-ink-muted">To print it, download the page and open the file: a framed page cannot print itself.</p>
+      {page.data !== undefined && (downloadable(page.data)
+        ? <p className="m-0 text-[12px] text-ink-muted">To print it, download the page and open the file: a framed page cannot print itself.</p>
+        : <p className="m-0 text-[12px] text-ink-muted">This page cannot be downloaded: it carries an <Mono>http-equiv</Mono> instruction, which a
+          downloaded file would follow. It is shown here only.</p>)}
     </div>
   )
 }

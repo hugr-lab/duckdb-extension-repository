@@ -238,7 +238,8 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
   kista's. The `iframe` has an empty `sandbox` and a border labelled "<issuer host>'s page". The
   page so follows the console's light and dark theme. The console's own header
   (`web/console/console.go:183-194`) only gains `frame-src 'none'`.
-- **Download** is the print path (a sandboxed frame cannot print itself): the same prefix with
+- **Download** (not offered for a page whose `html` contains `http-equiv`: see the implementation
+  notes) is the print path (a sandboxed frame cannot print itself): the same prefix with
   kista's stylesheet inlined and `style-src 'unsafe-inline'` in the `meta`, then `html`, saved
   through the existing `save()` (an octet-stream blob with the `download` attribute). kista never
   serves `text/html`. Other kinds are downloaded only, as before.
@@ -265,7 +266,9 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 ## What a source must do
 
 1. `"envelope": "kista.report.v1"` and the floor's members within their bounds; `html` semantic,
-   with no style, no script and no external resource; every body of a statement in
+   with no style, no script and no external resource, and without the text `http-equiv` anywhere
+   in it (a page that contains it, in any letter case, is shown but cannot be downloaded, so not
+   printed); every body of a statement in
    `subject.bodies`; `kinds_evaluated` as an integer (a producer whose own member of that name is
    a list maps it).
 2. One statement per document and body; each issue `supersedes` the previous one of the same body;
@@ -379,11 +382,14 @@ What the implementation found, where the text above says less or otherwise. None
   link. A sandboxed frame does not see the console's theme (it is a toggle, not the system's
   preference), so "the page follows the console's light and dark theme" needs it. The stylesheet
   and the policy are as written.
-- **The download does not stop a `meta` refresh.** A policy in a `meta` element cannot carry
-  `sandbox`, and no directive of it stops a refresh or a link: the downloaded file loads nothing,
-  runs nothing and submits nothing, but a `meta` refresh in the issuer's html takes the browser to
-  its target when the file is opened. The frame is not affected. The docs say so, and
-  `web/console/e2e/report-frame.spec.ts` holds both the property and this limit.
+- **No download for a page whose `html` contains `http-equiv`** (the owner's decision). A policy
+  in a `meta` element cannot carry `sandbox`, and no directive of it stops a refresh: a downloaded
+  file would follow a `meta` refresh in the issuer's html when opened. So the console offers no
+  download, and builds no file, for a page whose raw `html` contains the bytes `http-equiv` in any
+  letter case, anywhere (a substring check; the html is not parsed, so a page that only mentions
+  the word loses its download too). It says why instead. The frame is unchanged: there the sandbox
+  stops the refresh. Any other page downloads as written: the file loads nothing, runs nothing
+  and submits nothing; a link in it is a link. `web/console/e2e/report-frame.spec.ts` holds both.
 - **A link that navigates the frame** is refused by `frame-src 'none'`: its target is never
   requested, and the browser then shows its own blocked page in the frame until the report is opened
   again.

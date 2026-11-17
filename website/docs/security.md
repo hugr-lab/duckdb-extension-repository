@@ -413,7 +413,9 @@ Resource hints in the page (`dns-prefetch`, `preconnect`) are not verified close
 `frame-src 'none'` stops a link from navigating the frame ([Console](console.md#a-reports-page)). In the embedded mount the host's policy governs:
 link navigation inside the frame is the host's `frame-src` to block. The downloaded page is a file
 opened outside kista, under its own `meta` policy and no sandbox: it loads nothing and runs
-nothing, but its links, and a `meta` refresh in it, are followed by the browser. What the page
+nothing, and its links are links. A file could not stop a `meta` refresh, so the console offers
+no download, and builds no file, for a page whose html contains `http-equiv` (a substring check,
+any letter case, no parsing): such a page is shown in the frame only. What the page
 says is not promised: it is the issuer's word, inside a border that names the issuer from the
 record. A report's summary members have fixed names, grammars and bounds; a list that breaks its
 rule is left out and flagged, never shown.

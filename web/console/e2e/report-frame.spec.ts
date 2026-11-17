@@ -108,7 +108,11 @@ test.beforeAll(async () => {
       case '/ui/start.js': return start()
       case '/ui/t/acme/decisions': return shell(consolePolicy, '/ui/console.css', '/ui/start.js')
       case '/ui/bare': return { ...shell('', '/ui/console.css', '/ui/start.js'), headers: {} } // no policy of the page's own
-      case '/ui/make': return { type: 'text/html', body: '<!doctype html><script type="module">import { reportFile } from "/ui/report-frame.js"\nwindow.made = reportFile(await window.reportHTML(), await window.reportCSS())</script>' }
+      // the download as ReportPage offers it: a control only for a page that may be downloaded
+      case '/ui/make': return { type: 'text/html', body: '<!doctype html><body><script type="module">import { downloadable, reportFile } from "/ui/report-frame.js"\n' +
+        'const html = await window.reportHTML()\nif (downloadable(html)) document.body.insertAdjacentHTML("beforeend", "<button id=download>Download the page</button>")\n' +
+        'else document.body.insertAdjacentHTML("beforeend", "<p id=no-download>This page cannot be downloaded</p>")\n' +
+        'window.made = reportFile(html, await window.reportCSS()) ?? null</script>' }
       case '/file/report.html': return { type: 'text/html; charset=utf-8', body: pageHTML }
     }
     return undefined
@@ -262,8 +266,10 @@ async function download(page: Page, html: string) {
   await page.exposeFunction('reportHTML', () => html)
   await page.exposeFunction('reportCSS', () => reportCss)
   await page.goto(`${kista}/ui/make`)
-  await page.waitForFunction(() => typeof (window as unknown as { made?: string }).made === 'string')
-  const file = await page.evaluate(() => (window as unknown as { made: string }).made)
+  await page.waitForFunction(() => (window as unknown as { made?: string | null }).made !== undefined)
+  const file = await page.evaluate(() => (window as unknown as { made: string | null }).made)
+  if (file === null) return null
+  await expect(page.locator('#download')).toBeVisible()
   expect(file.startsWith('<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\';')).toBe(true)
   expect(file.endsWith(html)).toBe(true)
   return file
@@ -271,7 +277,9 @@ async function download(page: Page, html: string) {
 
 test('the download opens styled and loads nothing', async ({ page }) => {
   // opened outside the console: a document of its own, under its own meta policy only
-  pageHTML = await download(page, hostile(false))
+  const file = await download(page, hostile(false))
+  expect(file).not.toBeNull()
+  pageHTML = file!
   seen = []
   const opened = await page.context().newPage()
   await opened.goto(`${kista}/file/report.html`)
@@ -290,16 +298,21 @@ test('the download opens styled and loads nothing', async ({ page }) => {
   expect(opened.url()).toBe(`${kista}/file/report.html`)
 })
 
-// A limit of the download, held here so the docs stay true: the file is a document of its own, with
-// no sandbox around it (a policy in a meta element cannot carry one), so a meta refresh in the
-// issuer's html takes the reader's browser to its target when the file is opened. Nothing else of
-// the page loads or runs. Spec 0045 lists meta refresh as closed by the frame's sandbox, which the
-// download does not have.
-test('the download does not stop a meta refresh in the page (a limit)', async ({ page }) => {
-  pageHTML = await download(page, hostile(true))
-  seen = []
-  const opened = await page.context().newPage()
-  await opened.goto(`${kista}/file/report.html`)
-  await opened.waitForURL(`${evil}/refresh`)
-  expect(seen).toEqual(['/refresh'])
+// A downloaded file is a document of its own, with no sandbox around it (a policy in a meta element
+// cannot carry one): a meta refresh in the issuer's html would take the reader's browser to its
+// target when the file is opened. So no download is offered for a page whose html contains
+// http-equiv, and no file is built for it; the frame still shows the page, where the sandbox stops
+// the refresh (the "no meta refresh" tests above).
+test('a page with a meta refresh has no download', async ({ page }) => {
+  expect(await download(page, hostile(true))).toBeNull()
+  await expect(page.locator('#no-download')).toBeVisible()
+  expect(await page.locator('#download').count()).toBe(0)
+  // nor one that names it in another letter case, or only in its text
+  for (const html of ['<h1 id="title">Report</h1><META HTTP-EQUIV="Refresh" CONTENT="0;url=' + evil + '/refresh">', '<p>about http-equiv</p>']) {
+    const again = await page.context().newPage()
+    expect(await download(again, html), html).toBeNull()
+    expect(await again.locator('#download').count(), html).toBe(0)
+    await again.close()
+  }
+  expect(seen).toEqual([])
 })

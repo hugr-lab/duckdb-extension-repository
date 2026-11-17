@@ -249,8 +249,13 @@ A `report` document holds its issuer's page. **View page**, in the Reports block
 - **Download the page** is the print path (a framed page cannot print itself): a file with the same
   prefix, kista's stylesheet inlined and `style-src 'unsafe-inline'`, then the `html`. Opened, it
   loads nothing, runs no script and submits no form. It is a document of its own, outside any
-  sandbox, so the browser follows a link in it, and a `meta` refresh if the issuer's page has one:
-  open it as any file from that issuer.
+  sandbox, so the browser follows a link in it.
+- **A page whose html contains `http-equiv` has no download.** A downloaded file would follow such
+  an instruction (a `meta` refresh to another address), which no policy inside the file can stop.
+  The console looks for the text in the raw html, in any letter case, without parsing it, so a page
+  that only mentions the word loses its download too, and says why in place of the button. The
+  page is still shown in the frame, where the sandbox stops the refresh. Such a page cannot be
+  printed: the console has no print of its own, and printing is the download's job.
 
 Every other kind is downloaded only. kista never serves a document as `text/html`.
 

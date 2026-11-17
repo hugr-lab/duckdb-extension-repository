@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { Perms, TenantContext } from './context'
 import { Client } from './http'
 import {
-  attentionText, issuerHost, orderReports, policyURL, reportBehind, reportFile, reportHTML, reportPageLabel, reportParts, reportPolicy, reportSrcdoc, reportText,
+  attentionText, downloadable, issuerHost, orderReports, policyURL, reportBehind, reportFile, reportHTML, reportPageLabel, reportParts, reportPolicy, reportSrcdoc, reportText,
   rowLines, staleScanOf, vulnerabilitiesText,
 } from './report'
 import { buildsOf } from '../screens/Decisions'
@@ -127,10 +127,28 @@ describe('the report frame', () => {
 
 describe('the download', () => {
   it('is the same prefix with the stylesheet inlined', () => {
-    const file = reportFile(hostile, 'body{color:red}')
+    const page = hostile.replace(/<meta http-equiv[^>]*>/, '')
+    const file = reportFile(page, 'body{color:red}')
     expect(file).toBe('<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; ' +
-      "style-src 'unsafe-inline'; img-src data:; form-action 'none'; base-uri 'none'\"><style>body{color:red}</style>" + hostile)
+      "style-src 'unsafe-inline'; img-src data:; form-action 'none'; base-uri 'none'\"><style>body{color:red}</style>" + page)
     expect(reportFile('<p>x</p>', 'a{}</STYLE><script>x</script>')).not.toContain('<script>x')
+  })
+  it('is not built for a page whose html contains http-equiv, anywhere, in any letter case', () => {
+    for (const html of [
+      hostile, // a meta refresh
+      '<META HTTP-EQUIV="refresh" content="0;url=https://evil.example/">',
+      '<meta Http-Equiv=refresh content=0>',
+      '<p title="http-equiv">inside an attribute</p>',
+      '<p>The page sets no http-equiv header.</p>', // in prose: refused too, the html is not parsed
+      '<meta\nhttp-equiv\n=\n"refresh">',
+    ]) {
+      expect(downloadable(html), html).toBe(false)
+      expect(reportFile(html, 'body{}'), html).toBeUndefined()
+    }
+    for (const html of ['', '<h1>Report</h1><p>Nothing of the kind.</p>', '<p>http equiv, httpequiv, http_equiv</p>', '<meta name="refresh" content="0">']) {
+      expect(downloadable(html), html).toBe(true)
+      expect(reportFile(html, 'body{}'), html).toContain(html)
+    }
   })
   it("uses kista's stylesheet, which loads nothing and cannot end its own element", () => {
     expect(reportCss).toContain(":root[data-kista-theme='dark']")
@@ -332,12 +350,23 @@ describe('the row, read', () => {
 
 describe("a report's page, read", () => {
   it('frames the html of the document it downloads', async () => {
-    api(() => new Response(JSON.stringify({ envelope: 'kista.report.v1', html: hostile }), { status: 200, headers: { 'Content-Type': 'application/vnd.kista.report+json' } }))
+    const page = hostile.replace(/<meta http-equiv[^>]*>/, '') // everything else an issuer might try
+    api(() => new Response(JSON.stringify({ envelope: 'kista.report.v1', html: page }), { status: 200, headers: { 'Content-Type': 'application/vnd.kista.report+json' } }))
     tenant(<ReportPage a={held({})} base="/tenants/acme/extensions/geo/attachments" onClose={() => {}} />)
     const frame = await waitFor(() => screen.getByTitle("enterest.example's page")) as HTMLIFrameElement
     expect(frame.getAttribute('sandbox')).toBe('')
-    expect((frame.getAttribute('srcdoc') ?? '').endsWith(hostile)).toBe(true)
+    expect((frame.getAttribute('srcdoc') ?? '').endsWith(page)).toBe(true)
+    expect(screen.getByText(/To print it, download the page/)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Download the page' })).toBeTruthy()
+  })
+  it('offers no download of a page that carries http-equiv, and still frames it', async () => {
+    api(() => new Response(JSON.stringify({ html: '<h1>Report</h1><META HTTP-EQUIV="refresh" content="0;url=https://evil.example/">' }), { status: 200 }))
+    tenant(<ReportPage a={held({})} base="/tenants/acme/extensions/geo/attachments" onClose={() => {}} />)
+    const frame = await waitFor(() => screen.getByTitle("enterest.example's page")) as HTMLIFrameElement
+    expect(frame.getAttribute('sandbox')).toBe('')
+    expect(screen.queryByRole('button', { name: 'Download the page' })).toBeNull()
+    expect(screen.getByText(/This page cannot be downloaded: it carries an/)).toBeTruthy()
+    expect(screen.queryByText(/To print it, download the page/)).toBeNull()
   })
   it('frames nothing of a document without a string html', async () => {
     api(() => new Response(JSON.stringify({ html: ['<p>'] }), { status: 200 }))
