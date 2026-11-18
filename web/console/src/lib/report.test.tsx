@@ -8,7 +8,7 @@ import {
   attentionText, downloadable, issuerHost, orderReports, policyURL, reportBehind, reportFile, reportHTML, reportPageLabel, reportParts, reportPolicy, reportSrcdoc, reportText,
   rowLines, staleScanOf, vulnerabilitiesText,
 } from './report'
-import { buildsOf } from '../screens/Decisions'
+import { RowReports, buildsOf, versionsCache } from '../screens/Decisions'
 import { NewFeed, feedBody, feedRelayStopped, handOn, handOnWarning, feedKinds } from '../screens/Feeds'
 import { ReportFrame, ReportLines, ReportPage, feedsLastSuccess } from '../screens/ReportPage'
 import { summaryText } from '../screens/Reports'
@@ -141,11 +141,17 @@ describe('the download', () => {
       '<p title="http-equiv">inside an attribute</p>',
       '<p>The page sets no http-equiv header.</p>', // in prose: refused too, the html is not parsed
       '<meta\nhttp-equiv\n=\n"refresh">',
+      // a nested frame's document is an attribute value, where entities are decoded: it can carry
+      // the instruction without the bytes
+      '<iframe srcdoc="&lt;meta http&#45;equiv=refresh content=&quot;0;url=https://evil.example/&quot;&gt;"></iframe>',
+      '<IFRAME SrcDoc="x"></IFRAME>',
+      '<p>about srcdoc</p>',
     ]) {
       expect(downloadable(html), html).toBe(false)
       expect(reportFile(html, 'body{}'), html).toBeUndefined()
     }
-    for (const html of ['', '<h1>Report</h1><p>Nothing of the kind.</p>', '<p>http equiv, httpequiv, http_equiv</p>', '<meta name="refresh" content="0">']) {
+    for (const html of ['', '<h1>Report</h1><p>Nothing of the kind.</p>', '<p>http equiv, httpequiv, http_equiv, src doc</p>', '<meta name="refresh" content="0">',
+      '<iframe src="x"></iframe>']) {
       expect(downloadable(html), html).toBe(true)
       expect(reportFile(html, 'body{}'), html).toContain(html)
     }
@@ -365,7 +371,7 @@ describe("a report's page, read", () => {
     const frame = await waitFor(() => screen.getByTitle("enterest.example's page")) as HTMLIFrameElement
     expect(frame.getAttribute('sandbox')).toBe('')
     expect(screen.queryByRole('button', { name: 'Download the page' })).toBeNull()
-    expect(screen.getByText(/This page cannot be downloaded: it carries an/)).toBeTruthy()
+    expect(screen.getByText(/This page cannot be downloaded: it carries an/).textContent).toContain('http-equiv or srcdoc instruction')
     expect(screen.queryByText(/To print it, download the page/)).toBeNull()
   })
   it('frames nothing of a document without a string html', async () => {
@@ -406,6 +412,38 @@ describe('a feed handed on, and taken through a relay', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add and hand on' }))
     await waitFor(() => expect(done).toBe(true))
     expect(calls.filter((c) => c.method === 'POST').map((c) => c.body)).toEqual([expect.objectContaining({ name: 'reports', export: true })])
+  })
+  it('reads an entry\'s versions once, and again after a read that failed', async () => {
+    let n = 0
+    const versionsOf = versionsCache(async () => {
+      if (++n === 1) throw new Error('down')
+      return { versions: [] }
+    })
+    await expect(versionsOf('/x')).rejects.toThrow('down')
+    await expect(versionsOf('/x')).resolves.toEqual({ versions: [] }) // not the rejection, kept
+    await versionsOf('/x')
+    expect(n).toBe(2)
+  })
+  it('reads no versions for a row whose caller may not read documents', async () => {
+    let reads = 0
+    const versionsOf = async () => {
+      reads++
+      return { versions: [] }
+    }
+    const calls = api(() => json({ attachments: [] }))
+    const { container } = tenant(<RowReports item={{ group: 'manual', channel: 'prod', source: 'upstream:core', name: 'geo', waiting: '1.2.0' }} version="1.2.0"
+      versionsOf={versionsOf} />, new Perms(false, []))
+    await new Promise((r) => setTimeout(r, 20))
+    expect([reads, calls.length, container.textContent]).toEqual([0, 0, ''])
+  })
+  it('says what to do by case when the page cannot be framed', () => {
+    render(<ReportFrame a={{ origin: 'tenant' }} html="<p>x</p>" stylesheet="not a url" />)
+    expect(screen.getByText('The page cannot be shown here: download it instead.')).toBeTruthy()
+    expect(document.querySelector('iframe')).toBeNull()
+    cleanup()
+    render(<ReportFrame a={{ origin: 'tenant' }} html={'<meta http-equiv="refresh" content="0">'} stylesheet="not a url" />)
+    expect(screen.getByText('The page cannot be shown here, and it cannot be downloaded either: it carries an http-equiv or srcdoc instruction, which a downloaded file would follow.')).toBeTruthy()
+    expect(screen.queryByText(/download it instead/)).toBeNull()
   })
   it("counts the version's builds the catalogue holds, withdrawn ones aside", () => {
     const b = (state: string) => ({ state }) as never

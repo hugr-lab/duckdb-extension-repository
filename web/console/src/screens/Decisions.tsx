@@ -56,28 +56,41 @@ export const buildsOf = (v: EntryVersions, version: string) =>
 
 /** The row's report lines, with the number of the version's builds from the entry's read the row's
  * actions make too (one read of it per row, shared). */
-function RowReports({ item: i, version, feeds, versionsOf }: { item: Item; version: string; feeds?: Feed[]; versionsOf: VersionsOf }) {
-  const { api } = useTenant()
+export function RowReports({ item: i, version, feeds, versionsOf }: { item: Item; version: string; feeds?: Feed[]; versionsOf: VersionsOf }) {
+  const { api, perms } = useTenant()
   const path = entryPath(api, i.source, i.name)
-  const versions = useLoad(() => versionsOf(path), [path, versionsOf])
+  // as ReportLines: nothing is read for a caller who may not read the name's documents
+  const may = perms.extensionAdmin(i.name) || perms.canAudit
+  const versions = useLoad(() => (may ? versionsOf(path) : Promise.resolve(undefined)), [path, versionsOf, may])
+  if (!may) return null
   return <ReportLines name={i.name} source={i.source} version={version} feeds={feeds} builds={versions.data ? buildsOf(versions.data, version) : undefined} />
 }
 
 /** An entry's versions with their builds, read once per page load and entry. */
-type VersionsOf = (path: string) => Promise<EntryVersions>
+export type VersionsOf = (path: string) => Promise<EntryVersions>
+
+/** A page's reads of entries' versions, each path once. A read that failed is not kept: the next
+ * asker reads again. */
+export function versionsCache(get: (path: string) => Promise<EntryVersions>): VersionsOf {
+  const read = new Map<string, Promise<EntryVersions>>()
+  return (path) => {
+    let p = read.get(path)
+    if (!p) {
+      p = get(path)
+      read.set(path, p)
+      p.catch(() => {
+        if (read.get(path) === p) read.delete(path)
+      })
+    }
+    return p
+  }
+}
 
 export function Decisions() {
   const { client, api, perms } = useTenant()
   const home = useHome()
   // an entry's builds are read once for its row's lines and its actions, and again after a reload
-  const versionsOf = useMemo<VersionsOf>(() => {
-    const read = new Map<string, Promise<EntryVersions>>()
-    return (path) => {
-      let p = read.get(path)
-      if (!p) read.set(path, p = client.get<EntryVersions>(path).then((r) => r.data))
-      return p
-    }
-  }, [client, home?.reads])
+  const versionsOf = useMemo<VersionsOf>(() => versionsCache((path) => client.get<EntryVersions>(path).then((r) => r.data)), [client, home?.reads])
   // when the feeds last succeeded, for "No report held" (the tenant administrators' read)
   const feeds = useLoad(() => (home && perms.tenantAdmin ? client.get<{ feeds: Feed[] }>(`${api}/feeds`).then((r) => r.data.feeds) : Promise.resolve(undefined)),
     [api, perms.tenantAdmin, home != null])

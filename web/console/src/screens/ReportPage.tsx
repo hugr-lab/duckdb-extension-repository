@@ -45,12 +45,14 @@ function useTheme(ref: React.RefObject<HTMLElement | null>): ReportTheme | null 
 /** The frame: an empty sandbox, the prefixed document, a border labelled with who the page is from.
  * A link in the page that navigates the frame is refused by the console's policy and leaves the
  * browser's blocked page in it: "Show the page again" builds the frame anew. */
-export function ReportFrame({ a, html }: { a: Pick<Attachment, 'origin' | 'issuer' | 'attached_by' | 'source_origin'>; html: string }) {
+export function ReportFrame({ a, html, stylesheet = reportStylesheet() }: { a: Pick<Attachment, 'origin' | 'issuer' | 'attached_by' | 'source_origin'>; html: string;
+  /** kista's report stylesheet; given in tests */
+  stylesheet?: string }) {
   const label = reportPageLabel(a)
   const box = useRef<HTMLElement>(null)
   const theme = useTheme(box)
   const [shown, setShown] = useState(0)
-  const doc = useMemo(() => (theme ? reportSrcdoc(html, reportStylesheet(), theme) : null), [html, theme])
+  const doc = useMemo(() => (theme ? reportSrcdoc(html, stylesheet, theme) : null), [html, stylesheet, theme])
   return (
     <figure ref={box} className="m-0 overflow-hidden rounded-md border-2 border-line" role="group" aria-label={label}>
       <figcaption className="flex flex-wrap items-center gap-2 border-b border-line bg-surface-soft px-3 py-1.5 text-[12px] font-semibold text-ink-muted">
@@ -58,7 +60,8 @@ export function ReportFrame({ a, html }: { a: Pick<Attachment, 'origin' | 'issue
         <span className="ml-auto"><Button tone="plain" onClick={() => setShown(shown + 1)}>Show the page again</Button></span>
       </figcaption>
       {doc === ''
-        ? <p className="m-0 p-3 text-[13px] text-danger">The page cannot be shown here: download it instead.</p>
+        ? <p className="m-0 p-3 text-[13px] text-danger">{downloadable(html) ? 'The page cannot be shown here: download it instead.'
+          : 'The page cannot be shown here, and it cannot be downloaded either: it carries an http-equiv or srcdoc instruction, which a downloaded file would follow.'}</p>
         : doc !== null && <iframe key={shown} title={label} sandbox="" srcDoc={doc} referrerPolicy="no-referrer" className="block h-[70vh] w-full border-0" />}
     </figure>
   )
@@ -89,8 +92,8 @@ export function ReportPage({ a, base, onClose }: { a: Attachment; base: string; 
       {page.error != null ? <ErrorBox error={page.error} /> : page.data === undefined ? <Loading /> : <ReportFrame a={a} html={page.data} />}
       {page.data !== undefined && (downloadable(page.data)
         ? <p className="m-0 text-[12px] text-ink-muted">To print it, download the page and open the file: a framed page cannot print itself.</p>
-        : <p className="m-0 text-[12px] text-ink-muted">This page cannot be downloaded: it carries an <Mono>http-equiv</Mono> instruction, which a
-          downloaded file would follow. It is shown here only.</p>)}
+        : <p className="m-0 text-[12px] text-ink-muted">This page cannot be downloaded: it carries an <Mono>http-equiv</Mono> or <Mono>srcdoc</Mono> instruction,
+          which a downloaded file would follow. It is shown here only.</p>)}
     </div>
   )
 }

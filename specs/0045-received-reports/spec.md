@@ -238,7 +238,7 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
   kista's. The `iframe` has an empty `sandbox` and a border labelled "<issuer host>'s page". The
   page so follows the console's light and dark theme. The console's own header
   (`web/console/console.go:183-194`) only gains `frame-src 'none'`.
-- **Download** (not offered for a page whose `html` contains `http-equiv`: see the implementation
+- **Download** (not offered for a page whose `html` contains `http-equiv` or `srcdoc`: see the implementation
   notes) is the print path (a sandboxed frame cannot print itself): the same prefix with
   kista's stylesheet inlined and `style-src 'unsafe-inline'` in the `meta`, then `html`, saved
   through the existing `save()` (an octet-stream blob with the `download` attribute). kista never
@@ -266,7 +266,7 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 ## What a source must do
 
 1. `"envelope": "kista.report.v1"` and the floor's members within their bounds; `html` semantic,
-   with no style, no script and no external resource, and without the text `http-equiv` anywhere
+   with no style, no script and no external resource, and without the text `http-equiv` or `srcdoc` anywhere
    in it (a page that contains it, in any letter case, is shown but cannot be downloaded, so not
    printed); every body of a statement in
    `subject.bodies`; `kinds_evaluated` as an integer (a producer whose own member of that name is
@@ -308,7 +308,8 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
   inline styles in the frame, which is why the page carries none). HTML's presentational
   attributes (`bgcolor`, `text`, a `font` element's `color`, `width`, `align`) are not styles to a
   policy and still apply; kista's stylesheet states the colours and backgrounds of the body, tables
-  and `font` so that none of them hides or recolours text. Resource hints (`dns-prefetch`,
+  (their rows, cells, columns, column groups and captions), `font`, `hr` and `marquee` so that
+  none of them hides or recolours text. Resource hints (`dns-prefetch`,
   `preconnect`) are not verified closed. Closed by `frame-src 'none'`: a link navigating the frame,
   standalone. **Not closed by kista in the embedded mount**: there the host's policy governs, and
   link navigation inside the frame is the host's `frame-src` to block. The download is a file the
@@ -382,12 +383,15 @@ What the implementation found, where the text above says less or otherwise. None
   link. A sandboxed frame does not see the console's theme (it is a toggle, not the system's
   preference), so "the page follows the console's light and dark theme" needs it. The stylesheet
   and the policy are as written.
-- **No download for a page whose `html` contains `http-equiv`** (the owner's decision). A policy
-  in a `meta` element cannot carry `sandbox`, and no directive of it stops a refresh: a downloaded
-  file would follow a `meta` refresh in the issuer's html when opened. So the console offers no
-  download, and builds no file, for a page whose raw `html` contains the bytes `http-equiv` in any
-  letter case, anywhere (a substring check; the html is not parsed, so a page that only mentions
-  the word loses its download too). It says why instead. The frame is unchanged: there the sandbox
+- **No download for a page whose `html` contains `http-equiv` or `srcdoc`** (the owner's
+  decision). A policy in a `meta` element cannot carry `sandbox`, and no directive of it stops a
+  refresh: a downloaded file would follow a `meta` refresh in the issuer's html when opened. So
+  the console offers no download, and builds no file, for a page whose raw `html` contains the
+  bytes `http-equiv` or `srcdoc` in any letter case, anywhere (a substring check; the html is not
+  parsed, so a page that only mentions either word loses its download too). `srcdoc` is refused
+  with it because a nested frame's document is an attribute value, where entities are decoded:
+  it can carry the instruction without the bytes `http-equiv`; an attribute's name is not decoded,
+  so `srcdoc` itself cannot hide. It says why instead. The frame is unchanged: there the sandbox
   stops the refresh. Any other page downloads as written: the file loads nothing, runs nothing
   and submits nothing; a link in it is a link. `web/console/e2e/report-frame.spec.ts` holds both.
 - **A link that navigates the frame** is refused by `frame-src 'none'`: its target is never

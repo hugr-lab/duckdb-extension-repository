@@ -30,13 +30,15 @@ export function reportSrcdoc(html: string, stylesheet: string, theme: ReportThem
     `<meta http-equiv="Content-Security-Policy" content="${attr(reportPolicy(stylesheet))}"><link rel="stylesheet" href="${attr(stylesheet)}">` + html
 }
 
-/** Whether a page may be downloaded as a file: not when its html contains http-equiv, in any
- * letter case, anywhere (the bytes are looked for, the html is not parsed). A downloaded file is a
- * document of its own with no sandbox around it, and would follow such an instruction (a refresh
- * to another address); the frame does not. A page that only mentions the word loses its download
- * too: the check errs to the safe side. */
+/** Whether a page may be downloaded as a file: not when its html contains http-equiv or srcdoc, in
+ * any letter case, anywhere (the bytes are looked for, the html is not parsed). A downloaded file
+ * is a document of its own with no sandbox around it, and would follow an http-equiv instruction
+ * (a refresh to another address); the frame does not. srcdoc is refused with it: a nested frame's
+ * document is an attribute value, where entities are decoded, so it can carry the instruction
+ * without those bytes (attribute names are not decoded, so srcdoc itself cannot hide). A page that
+ * only mentions either word loses its download too: the check errs to the safe side. */
 export function downloadable(html: string) {
-  return !/http-equiv/i.test(html)
+  return !/http-equiv|srcdoc/i.test(html)
 }
 
 /** The page as a file (the print path: a sandboxed frame cannot print itself): the same prefix with

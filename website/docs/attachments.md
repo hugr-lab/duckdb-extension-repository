@@ -128,8 +128,8 @@ no verdict and kista computes none ([spec 0045](https://github.com/hugr-lab/duck
   another letter case (`Attention` without `attention`), which is not read; the console's row then says "summary
   incomplete: open the report".
 - **`html`** is semantic HTML only: headings, paragraphs, lists, tables, code, `details`; no style,
-  no script, no external resource, and not the text `http-equiv` anywhere in it: a page that
-  contains it (in any letter case, even in prose) is shown in the console but cannot be downloaded
+  no script, no external resource, and not the text `http-equiv` or `srcdoc` anywhere in it: a page that
+  contains either (in any letter case, even in prose) is shown in the console but cannot be downloaded
   from it, and so not printed. kista checks only that it is a string; its size is the
   document's, within `attachments.max_size`. The console shows it in an isolated frame under kista's
   own stylesheet ([Console](console.md#a-reports-page)); the API serves a report as any document,

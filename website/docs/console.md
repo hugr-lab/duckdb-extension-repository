@@ -241,8 +241,9 @@ A `report` document holds its issuer's page. **View page**, in the Reports block
   is never requested, and the frame then shows the browser's blocked page; **Show the page again**
   builds the frame anew. Links to the top or to a new window are stopped by the sandbox.
 - HTML's presentational attributes (`bgcolor`, `text`, a `font` element's `color`) are not styles
-  to a policy; kista's stylesheet states the colours and backgrounds of the body, tables and `font`
-  so that none of them hides or recolours text.
+  to a policy; kista's stylesheet states the colours and backgrounds of the body, tables
+  (rows, cells, columns, column groups, captions), `font`, `hr` and `marquee` so that none of them
+  hides or recolours text.
 - The border around the frame names who the page is from, from the record ("`<issuer host>`'s
   page"; a publisher's or the tenant's own report says so). What the
   page says is the issuer's word, not kista's.
@@ -250,10 +251,11 @@ A `report` document holds its issuer's page. **View page**, in the Reports block
   prefix, kista's stylesheet inlined and `style-src 'unsafe-inline'`, then the `html`. Opened, it
   loads nothing, runs no script and submits no form. It is a document of its own, outside any
   sandbox, so the browser follows a link in it.
-- **A page whose html contains `http-equiv` has no download.** A downloaded file would follow such
-  an instruction (a `meta` refresh to another address), which no policy inside the file can stop.
-  The console looks for the text in the raw html, in any letter case, without parsing it, so a page
-  that only mentions the word loses its download too, and says why in place of the button. The
+- **A page whose html contains `http-equiv` or `srcdoc` has no download.** A downloaded file would
+  follow an `http-equiv` instruction (a `meta` refresh to another address), which no policy inside
+  the file can stop, and a nested frame's `srcdoc` can carry one entity-encoded. The console looks
+  for the two words in the raw html, in any letter case, without parsing it, so a page that only
+  mentions one loses its download too, and says why in place of the button. The
   page is still shown in the frame, where the sandbox stops the refresh. Such a page cannot be
   printed: the console has no print of its own, and printing is the download's job.
 

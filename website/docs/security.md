@@ -414,8 +414,9 @@ Resource hints in the page (`dns-prefetch`, `preconnect`) are not verified close
 link navigation inside the frame is the host's `frame-src` to block. The downloaded page is a file
 opened outside kista, under its own `meta` policy and no sandbox: it loads nothing and runs
 nothing, and its links are links. A file could not stop a `meta` refresh, so the console offers
-no download, and builds no file, for a page whose html contains `http-equiv` (a substring check,
-any letter case, no parsing): such a page is shown in the frame only. What the page
+no download, and builds no file, for a page whose html contains `http-equiv` or `srcdoc` (a
+substring check, any letter case, no parsing; a nested frame's `srcdoc` could carry the instruction
+entity-encoded): such a page is shown in the frame only. What the page
 says is not promised: it is the issuer's word, inside a border that names the issuer from the
 record. A report's summary members have fixed names, grammars and bounds; a list that breaks its
 rule is left out and flagged, never shown.

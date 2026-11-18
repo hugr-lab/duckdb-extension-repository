@@ -53,7 +53,9 @@ ${refresh ? `<meta http-equiv="refresh" content="0;url=${evil}/refresh">` : ''}
 <video src="${evil}/video.mp4"></video><audio src="${evil}/audio.mp3"></audio><iframe src="${evil}/frame"></iframe><object data="${evil}/object"></object>
 <p id="inline" style="color: rgb(255, 0, 0); background-image: url(${evil}/inline.png)">Inline.</p><p id="block">Block.</p>
 <body bgcolor="#000000" text="#000000" link="#000000" background="${pixel}">
-<table bgcolor="#000000"><tr bgcolor="#000000"><td id="cell" bgcolor="#000000">a cell with <font id="font" color="#ff0000" face="x" size="7">a font element</font></td></tr></table>
+<table bgcolor="#000000"><caption id="caption" bgcolor="#000000">a caption</caption><colgroup id="colgroup" bgcolor="#000000"><col id="col" bgcolor="#000000"></colgroup>
+<tr bgcolor="#000000"><td id="cell" bgcolor="#000000">a cell with <font id="font" color="#ff0000" face="x" size="7">a font element</font></td></tr></table>
+<hr id="hr" color="#ff0000"><marquee id="marquee" bgcolor="#000000">moving text</marquee>
 <a id="link" href="${evil}/link">a link</a> <a id="top" href="${evil}/top" target="_top">to the top</a> <a id="blank" href="${evil}/blank" target="_blank">a new window</a>
 <base href="${evil}/base/">`
 
@@ -237,6 +239,12 @@ for (const mode of ['standalone', 'no policy', 'embedded'] as const) {
       expect(await style('#cell', 'backgroundColor')).toBe('rgba(0, 0, 0, 0)')
       expect(await style('table >> nth=1', 'backgroundColor')).toBe('rgba(0, 0, 0, 0)')
       expect(await style('#font', 'color')).toBe(ink)
+      // a column's and a column group's bgcolor paint behind the cells: the text would be ink on black
+      for (const id of ['#colgroup', '#col', '#caption', '#marquee']) expect(await style(id, 'backgroundColor'), id).toBe('rgba(0, 0, 0, 0)')
+      expect(await style('#caption', 'color')).not.toBe('rgb(0, 0, 0)')
+      expect(await style('#marquee', 'color')).toBe(ink)
+      expect(await f.locator('#hr').evaluate((el) => [getComputedStyle(el).color, getComputedStyle(el).borderTopColor, getComputedStyle(el).backgroundColor]))
+        .toEqual(['rgb(211, 225, 226)', 'rgb(211, 225, 226)', 'rgba(0, 0, 0, 0)'])
       expect(await style('#link', 'color')).toBe('rgb(42, 116, 112)')
       expect(await f.locator('#font').evaluate((el) => getComputedStyle(el).fontSize)).toBe(await f.locator('#cell').evaluate((el) => getComputedStyle(el).fontSize))
     })
@@ -308,7 +316,9 @@ test('a page with a meta refresh has no download', async ({ page }) => {
   await expect(page.locator('#no-download')).toBeVisible()
   expect(await page.locator('#download').count()).toBe(0)
   // nor one that names it in another letter case, or only in its text
-  for (const html of ['<h1 id="title">Report</h1><META HTTP-EQUIV="Refresh" CONTENT="0;url=' + evil + '/refresh">', '<p>about http-equiv</p>']) {
+  // nor one with a nested frame's document, which can carry the instruction entity-encoded
+  for (const html of ['<h1 id="title">Report</h1><META HTTP-EQUIV="Refresh" CONTENT="0;url=' + evil + '/refresh">', '<p>about http-equiv</p>',
+    `<h1 id="title">Report</h1><iframe srcdoc="&lt;meta http&#45;equiv=refresh content=&quot;0;url=${evil}/refresh&quot;&gt;"></iframe>`]) {
     const again = await page.context().newPage()
     expect(await download(again, html), html).toBeNull()
     expect(await again.locator('#download').count(), html).toBe(0)
