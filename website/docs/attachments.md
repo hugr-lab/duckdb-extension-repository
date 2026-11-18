@@ -449,17 +449,18 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}?issuer=<url>   →  the cont
   `not held by the relay`.
 - Each statement is verified against the relaying feed's own pinned keys before it is sent: a
   body's answer ends just below one that does not verify. The relaying feed's record then says so
-  (`relay_stopped`, the number of bodies its last such answer ended early, and `relay_stopped_at`;
-  a line in the console and in `feed show`), and the server logs it: its downstreams receive
-  nothing past that statement until the key that signed it is pinned. A change of the feed's keys
-  or of `export` clears the record.
+  (`relay_stopped_at`, when an answer last ended early; a line in the console and in `feed show`),
+  and the server logs it, both at most once a minute whatever the requests: its downstreams
+  receive nothing past that statement until the key that signed it is pinned. A change of the
+  feed's keys or of `export` clears the record.
 - With several feeds of the issuer that hand on, a body is answered from the one that read
   furthest. A statement that feed refused for its `kinds` is not sent as "not held" while another
   of them takes the kind and has not read that far (one that has not run yet, or is paused,
   included): the body's answer ends just below it, until that feed has read it.
 - An answer holds at most `attachments.feed_answer_max` bytes as written, the keys file included,
   then `more`. A keys file that leaves no room for a statement under that bound is not handed on
-  (the answer carries no `keys`), and the server logs it.
+  (the answer carries no `keys`); the relaying feed's record and the log say so as above, and the
+  downstream's feed is `failing` ("…or its answer has no room for the issuer's keys").
 - The answer is checked against a change made while it was read: a body whose feed's `export` or
   cursor changed meanwhile is answered nothing, and the subscriber asks again.
 - A suspended tenant serves nothing on the feed routes: a downstream's feed turns `unauthorized`,
@@ -678,11 +679,20 @@ Cursors are per (feed, body):
 - **The document quota**: a document that does not fit the tenant's quota of feed documents holds
   its body's cursor (`held` in the run), the other bodies go on, and the run ends `failing`
   (`limits`). Nothing is lost: the document is taken once there is room. At the quota a run fetches
-  no new document at all; of a held body's later statements, those that need no new record (a
-  withdrawal, a newer statement about a document held) are still applied, and the cursor stays. A
-  run that ended on a limit is tried again at the feed's interval, not after 5 minutes. A bundle
-  import holds the same way, and a dry run counts `would_hold` for what an import would hold. The
-  quota is one pool per tenant, which a single source can fill; only the heads limit is per issuer.
+  no new document at all. Only a document that would be stored holds its body: a statement that
+  arrives without content, one about a body no longer held and one over its issuer's heads limit
+  are refused as ever, and the cursor moves. Of a held body's later statements, those that need no
+  new record (a withdrawal, a newer statement about a document held) are still applied, and the
+  cursor stays. A run that ended on a limit alone is tried again at the feed's interval, not after
+  5 minutes (one that also met a transient failure: after 5 minutes). A bundle import holds the
+  same way; a dry run counts `would_hold` for what an import would hold, against the tenant's room
+  once for all the bundle's feeds, and `would_update` for a newer statement about a document held.
+  The quota is one pool per tenant, which a single source can fill; only the heads limit is per
+  issuer.
+  - **A limit while a relay is at its quota.** A tenant that hands the source on answers a body
+    only up to its feed's cursor. A withdrawal it applied behind a hold is therefore not handed on
+    until it has room and its cursor passes it: a downstream keeps showing the document meanwhile.
+    The relaying feed shows `limits`; make room there.
 - **Not verified** (`encoding`, `signature`: an unpinned key, bad bytes or a field name that breaks
   the member-name rule, `issuer`: another issuer): the body's cursor is held, so the statement is tried again at the next run and taken once
   its key is pinned.

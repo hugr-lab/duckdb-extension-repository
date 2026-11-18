@@ -317,7 +317,7 @@ func TestRelayBetweenServers(t *testing.T) {
 	if r := relay.call(t, "POST", api+"/feed", own, ask); r.status != 200 || len(r.json(t)["statements"].([]any)) != 0 {
 		t.Fatalf("the relay's answer over altered bytes: %d %s", r.status, r.body)
 	}
-	if f := relay.call(t, "GET", api+"/feeds/issuer", relay.toks["tenant admin"], "").json(t); f["relay_stopped"] != 1.0 || f["relay_stopped_at"] == nil {
+	if f := relay.call(t, "GET", api+"/feeds/issuer", relay.toks["tenant admin"], "").json(t); f["relay_stopped_at"] == nil || f["relay_stopped"] != nil {
 		t.Fatalf("A's feed after an answer that ended early: %v", f)
 	}
 	if err := store.ExecRaw(ctx, relay.st, "UPDATE attachments SET statement = ? WHERE id = ?", held[0].Statement, held[0].ID); err != nil {

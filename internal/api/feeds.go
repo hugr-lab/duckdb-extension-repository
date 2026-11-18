@@ -159,9 +159,9 @@ type feedJSON struct {
 	// Via is the relaying tenant's URL (spec 0045): the feed's runs contact it, never url, which
 	// stays the issuer's identity; set at creation only
 	Via string `json:"via,omitempty"`
-	// RelayStopped counts the bodies the feed's last relayed answer ended early, at a statement that
-	// does not verify under its pinned keys (spec 0045): its downstreams receive nothing past it
-	RelayStopped   int      `json:"relay_stopped,omitempty"`
+	// RelayStoppedAt is when a relayed answer of the feed last ended early (spec 0045): at a
+	// statement its pinned keys do not verify, or for a keys file with no room in an answer; its
+	// downstreams receive nothing past it. Absent: none since its pins or export last changed
 	RelayStoppedAt string   `json:"relay_stopped_at,omitempty"`
 	Credential     string   `json:"credential"`
 	Keys           []string `json:"keys"`
@@ -194,7 +194,7 @@ type feedJSON struct {
 }
 
 func (h *Handler) feedOf(r *http.Request, f store.Feed, c caller) feedJSON {
-	o := feedJSON{Name: f.Name, URL: f.URL, Via: f.Via, RelayStopped: f.RelayStopped, RelayStoppedAt: timeOf(f.RelayStoppedAt), Credential: f.Credential, Keys: f.Keys, Kinds: f.Kinds, Readers: f.Readers, Offer: f.Offer,
+	o := feedJSON{Name: f.Name, URL: f.URL, Via: f.Via, RelayStoppedAt: timeOf(f.RelayStoppedAt), Credential: f.Credential, Keys: f.Keys, Kinds: f.Kinds, Readers: f.Readers, Offer: f.Offer,
 		State: f.State, Status: f.Status, LastError: f.LastError, LastSuccessAt: timeOf(f.LastSuccessAt), LastRunAt: timeOf(f.LastRunAt),
 		NextRunAt: timeOf(f.NextRunAt), RunRequested: !f.RequestedAt.IsZero(), CreatedAt: timeOf(f.CreatedAt),
 		CreatedBy: createdBy(f.CreatedBy, c), ETag: versionTag(f.Version), Mode: f.Mode, Export: f.Export, KeysFileAt: timeOf(f.KeysFileAt),

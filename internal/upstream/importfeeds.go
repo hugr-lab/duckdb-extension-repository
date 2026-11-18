@@ -27,13 +27,16 @@ type ftarget struct {
 	detail string
 	imp    *attachment.FeedImport
 	res    attachment.RunResult
-	spool  *attachment.DocSpool // its bundle feed's documents, shared with the other targets of it
+	spool  *attachment.DocSpool  // its bundle feed's documents, shared with the other targets of it
+	room   *attachment.QuotaRoom // a dry run's room in the tenant's document quota, shared by the import's targets
 }
 
 // feedSpools gives the targets of one bundle feed one document spool.
 func (s *Service) feedSpools(fts []*ftarget) func() {
 	spools := map[int]*attachment.DocSpool{}
+	room := &attachment.QuotaRoom{} // the quota is the tenant's: one count for the bundle's feeds
 	for _, ft := range fts {
+		ft.room = room
 		if spools[ft.fi] == nil {
 			spools[ft.fi] = attachment.NewDocSpool(s.Feeds.TempDir, 0)
 		}
@@ -142,7 +145,9 @@ func (s *Service) prepareFeed(ctx context.Context, t store.Tenant, ft *ftarget, 
 	ft.imp, err = s.Feeds.ImportFeed(ctx, t, ft.f, m.ID, ranges, brought, ft.spool, dryRun, func(context.Context) error { return nil })
 	if err != nil {
 		ft.status, ft.detail = TargetFailed, err.Error()
+		return
 	}
+	ft.imp.ShareRoom(ft.room)
 }
 
 func (ft *ftarget) active() bool { return ft.status == TargetImported && ft.imp != nil }

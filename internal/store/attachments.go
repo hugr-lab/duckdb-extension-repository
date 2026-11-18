@@ -114,6 +114,11 @@ func (s *Store) FeedDocumentRoom(ctx context.Context, tenantID string) (int, err
 // InsertAttachment adds a document's record (its object is already stored). The caller holds the
 // tenant's attachment lock: the limits are counted here.
 func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
+	// what refuses it whatever the room (its chain, its issuer's heads limit) is judged first: at the
+	// quota such a document is refused, not held for room that would not admit it
+	if err := t.JudgeAttachment(ctx, a); err != nil {
+		return err
+	}
 	// the tenant's own documents and those its feeds bring are counted apart: a source never fills
 	// the tenant's own quota
 	var total int
@@ -128,6 +133,28 @@ func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
 	if total >= MaxTenantAttachments {
 		return fmt.Errorf("%w: %w: a tenant holds at most %d attachments (and as many from feeds)", ErrInvalid, ErrAttachmentQuota, MaxTenantAttachments)
 	}
+	if a.ID == "" {
+		a.ID = NewID()
+	}
+	if a.IssuerID == "" {
+		a.IssuerID = a.ID
+	}
+	a.CreatedAt, a.Version = t.Now(), 1
+	if a.IssuedAt.IsZero() {
+		a.IssuedAt = a.CreatedAt
+	}
+	_, err := t.exec(ctx, "INSERT INTO attachments ("+attachmentCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		a.ID, a.TenantID, a.BodyHash, a.Kind, a.MediaType, a.Title, a.Size, a.ContentHash, a.Summary, a.Origin, a.AttachedBy,
+		a.Visibility, a.Feedable, a.Version, t.s.d.nullTimeArg(a.RemovedAt), t.s.d.timeArg(a.CreatedAt), a.Issuer, a.IssuerID,
+		nullable(a.KeyFP), nullable(a.SourceOrigin), t.s.d.timeArg(a.IssuedAt), t.s.d.nullTimeArg(a.ValidUntil), nullable(a.Supersedes),
+		t.s.d.nullTimeArg(a.WithdrawnAt), nullable(a.Statement), nullable(a.Signature), nullableInt(a.Seq), a.Narrowed)
+	return t.s.mapErr(err, "attachment")
+}
+
+// JudgeAttachment checks a document against what refuses it whatever room the tenant's quota has:
+// the document it supersedes, and the heads limit of its (body, kind, origin, issuer). The quota
+// itself is InsertAttachment's.
+func (t *Tx) JudgeAttachment(ctx context.Context, a *Attachment) error {
 	unresolved := false
 	if a.Supersedes != "" {
 		prev, err := t.attachmentByIssuer(ctx, a.TenantID, a.Issuer, a.Supersedes)
@@ -165,22 +192,7 @@ AND n.supersedes = a.issuer_id AND n.removed_at IS NULL)`, a.TenantID, a.BodyHas
 			return fmt.Errorf("%w: at most %d documents of a kind per body and origin: supersede one", ErrInvalid, MaxAttachmentHeads)
 		}
 	}
-	if a.ID == "" {
-		a.ID = NewID()
-	}
-	if a.IssuerID == "" {
-		a.IssuerID = a.ID
-	}
-	a.CreatedAt, a.Version = t.Now(), 1
-	if a.IssuedAt.IsZero() {
-		a.IssuedAt = a.CreatedAt
-	}
-	_, err := t.exec(ctx, "INSERT INTO attachments ("+attachmentCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		a.ID, a.TenantID, a.BodyHash, a.Kind, a.MediaType, a.Title, a.Size, a.ContentHash, a.Summary, a.Origin, a.AttachedBy,
-		a.Visibility, a.Feedable, a.Version, t.s.d.nullTimeArg(a.RemovedAt), t.s.d.timeArg(a.CreatedAt), a.Issuer, a.IssuerID,
-		nullable(a.KeyFP), nullable(a.SourceOrigin), t.s.d.timeArg(a.IssuedAt), t.s.d.nullTimeArg(a.ValidUntil), nullable(a.Supersedes),
-		t.s.d.nullTimeArg(a.WithdrawnAt), nullable(a.Statement), nullable(a.Signature), nullableInt(a.Seq), a.Narrowed)
-	return t.s.mapErr(err, "attachment")
+	return nil
 }
 
 func (t *Tx) attachmentByIssuer(ctx context.Context, tenantID, issuer, issuerID string) (Attachment, error) {

@@ -388,7 +388,7 @@ describe('a feed handed on, and taken through a relay', () => {
   })
   it('says when its relayed answers end early', () => {
     expect(feedRelayStopped({})).toBe('')
-    expect(feedRelayStopped({ relay_stopped: 2 })).toContain('ended 2 bodies at a statement that does not verify')
+    expect(feedRelayStopped({ relay_stopped_at: '2026-11-18T10:00:00Z' })).toMatch(/^Handing on stops early: a relayed answer ended at a statement that does not verify .* \(last at .+\)\.$/)
   })
   it('asks before adding a feed with export set, naming the source, and adds nothing until confirmed', async () => {
     const calls = api((c) => (c.method === 'POST' ? json({ name: 'reports' }, 201) : json({ channels: [] })))

@@ -5,11 +5,10 @@
 -- issuer's URL, so it no longer runs here. What an export feed keeps of a refusal gains the
 -- document's id at its issuer: a kept refusal replaces the earlier kept row of the same document (a
 -- row kept before has none and is replaced by none). A feed that hands its source's documents on
--- records how many bodies its last relayed answer ended early, at a statement that does not verify
--- under its pins, and when: its administrators see that its downstreams receive nothing past it.
+-- records when a relayed answer last ended early (at a statement that does not verify under its
+-- pins, or for a keys file with no room in an answer): its administrators see that its downstreams
+-- receive nothing past it.
 ALTER TABLE feeds ADD COLUMN via TEXT NULL
--- +statement
-ALTER TABLE feeds ADD COLUMN relay_stopped INTEGER NOT NULL DEFAULT 0
 -- +statement
 ALTER TABLE feeds ADD COLUMN relay_stopped_at TEXT NULL
 -- +statement

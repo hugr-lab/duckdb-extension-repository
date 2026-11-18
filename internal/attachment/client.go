@@ -389,7 +389,7 @@ func (f *Feeds) Change(ctx context.Context, a authz.Actor, tenant, name string, 
 			if err := tx.ClearFeedRelayStopped(ctx, fd.ID); err != nil {
 				return err
 			}
-			fd.RelayStopped, fd.RelayStoppedAt = 0, time.Time{}
+			fd.RelayStoppedAt = time.Time{}
 		}
 		switch change["export"] {
 		case true:
@@ -561,7 +561,7 @@ var errHeldByQuota = errors.New("attachment: the tenant's document quota, or the
 // its key.
 var (
 	errRelayKeys   = fmt.Errorf("%w: none of the pinned keys is in what the relay serves; take the issuer's current fingerprint from the issuer", ErrStatement)
-	errRelayNoKeys = fmt.Errorf("%w: the relay serves no keys of this issuer: it does not hand the issuer's documents on (its feed's export), or the feed's URL is not the issuer's as the relay has it", ErrStatement)
+	errRelayNoKeys = fmt.Errorf("%w: the relay serves no keys of this issuer: it does not hand the issuer's documents on (its feed's export), the feed's URL is not the issuer's as the relay has it, or its answer has no room for the issuer's keys", ErrStatement)
 )
 
 // errOvertaken is a run whose feed's export setting changed meanwhile: the change reset or dropped
@@ -642,9 +642,11 @@ func (f *Feeds) RunFeed(ctx context.Context, id string, renew func(context.Conte
 	var next time.Time
 	switch {
 	case f.Interval <= 0:
-	case runErr != nil && status == store.FeedFailing && !errors.Is(runErr, egress.ErrHostNotAllowed) && !errors.Is(runErr, errHeldByQuota):
+	case runErr != nil && status == store.FeedFailing && !errors.Is(runErr, egress.ErrHostNotAllowed) &&
+		(!errors.Is(runErr, errHeldByQuota) || res.Counts["failed"] > 0):
 		// soon; not a host off egress.hosts (spec 0044), off until a restart, nor a quota or a cap
-		// reached (limits), which no retry in five minutes frees: at the interval, as errAuth
+		// reached (limits), which no retry in five minutes frees: at the interval, as errAuth. A run
+		// that also met a transient failure is tried again soon, for that
 		next = res.Ended.Add(retryAfter)
 	default:
 		next = res.Ended.Add(f.Interval + time.Duration(rand.Int64N(int64(f.Interval/10)+1)))
@@ -1295,28 +1297,37 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		}
 		return "", err
 	}
-	// a new document. At the tenant's document quota it is not fetched (spec 0045): the body is held
-	if r.noNew {
-		return "", errDocumentQuota
+	// a new document. What needs no fetch to judge comes first, so that at the quota a statement
+	// that would be refused anyway is refused, not held: one without content (a relay's note, a
+	// bundle that carries none), then, at the quota, a body not held and its issuer's heads limit
+	var content []byte
+	if r.content != nil {
+		c, why, err := r.content(ctx, st)
+		if err != nil || why != "" {
+			return why, err
+		}
+		content = c
 	}
-	if !r.quotaFull {
+	// at the tenant's document quota nothing is fetched (spec 0045): the body is held
+	if !r.noNew && !r.quotaFull {
 		room, err := r.f.Store.FeedDocumentRoom(ctx, t.ID)
 		if err != nil {
 			return "", err
 		}
 		r.quotaFull = room == 0
 	}
-	if r.quotaFull {
+	if r.noNew || r.quotaFull {
+		if reason, err := r.judgeAtQuota(ctx, st); err != nil || reason != "" {
+			return reason, err
+		}
 		return "", errDocumentQuota
 	}
-	// its content, checked against the statement
-	read := r.content
-	if read == nil {
-		read = r.download
-	}
-	content, why, err := read(ctx, st)
-	if err != nil || why != "" {
-		return why, err
+	if r.content == nil { // its content, checked against the statement
+		c, why, err := r.download(ctx, st)
+		if err != nil || why != "" {
+			return why, err
+		}
+		content = c
 	}
 	if int64(len(content)) != st.Size || blob.ContentHash(content) != st.ContentHash {
 		return "content", nil
@@ -1385,6 +1396,33 @@ func (r *run) store(ctx context.Context, st Statement, stmt, sig []byte) (string
 		r.res.Counts["superseded"]++
 	}
 	return "", nil
+}
+
+// judgeAtQuota judges, at the document quota, a statement about a new document by what would
+// refuse it whatever the room: a body the tenant does not hold (not held), its chain or its
+// issuer's heads limit (limits). "" when only the quota stands in its way: the body is then held.
+func (r *run) judgeAtQuota(ctx context.Context, st Statement) (string, error) {
+	reason := ""
+	rec := store.Attachment{TenantID: r.t.ID, BodyHash: st.BodyHash, Kind: st.Kind, Origin: store.AttachedByFeed, Issuer: st.Issuer,
+		IssuerID: st.IssuerID, Supersedes: st.Supersedes}
+	err := r.f.Store.InTenantTx(ctx, r.t.ID, []string{lock(r.t)}, func(tx *store.Tx) error {
+		reason = ""
+		held, err := tx.TouchBody(ctx, r.t.ID, st.BodyHash)
+		if err != nil {
+			return err
+		}
+		if !held {
+			reason = "not held"
+			return nil
+		}
+		if err := tx.JudgeAttachment(ctx, &rec); errors.Is(err, store.ErrInvalid) {
+			reason = "limits"
+		} else if err != nil {
+			return err
+		}
+		return nil
+	})
+	return reason, err
 }
 
 // applyKept applies to a document just stored what an export feed kept about it while it was not

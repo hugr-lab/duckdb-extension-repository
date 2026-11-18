@@ -126,14 +126,23 @@ func TestReceivedReports(t *testing.T) {
 			t.Fatalf("no body asked about: %v %v", cur, err)
 		}
 		// what a relayed answer could not verify, on the feed's record
-		if err := s.SetFeedRelayStopped(ctx, f.ID, 3); err != nil {
-			t.Fatal(err)
+		cur := mustGetFeed(t, s, tn.ID, "src")
+		if wrote, err := s.MarkFeedRelayStopped(ctx, cur); err != nil || !wrote {
+			t.Fatalf("relay stopped: %v %v", wrote, err)
 		}
-		if got := mustGetFeed(t, s, tn.ID, "src"); got.RelayStopped != 3 || got.RelayStoppedAt.IsZero() {
+		if wrote, err := s.MarkFeedRelayStopped(ctx, cur); err != nil || wrote { // within the minute
+			t.Fatalf("relay stopped, written twice in a minute: %v %v", wrote, err)
+		}
+		if got := mustGetFeed(t, s, tn.ID, "src"); got.RelayStoppedAt.IsZero() {
 			t.Fatalf("relay stopped: %+v", got)
 		}
 		inTx(t, s, func(tx *store.Tx) error { return tx.ClearFeedRelayStopped(ctx, f.ID) })
-		if got := mustGetFeed(t, s, tn.ID, "src"); got.RelayStopped != 0 || !got.RelayStoppedAt.IsZero() {
+		stale := cur
+		stale.Version-- // a feed as read before it changed
+		if wrote, err := s.MarkFeedRelayStopped(ctx, stale); err != nil || wrote {
+			t.Fatalf("relay stopped, written for a feed read before its change: %v %v", wrote, err)
+		}
+		if got := mustGetFeed(t, s, tn.ID, "src"); !got.RelayStoppedAt.IsZero() {
 			t.Fatalf("relay stopped, cleared: %+v", got)
 		}
 		if room, err := s.FeedDocumentRoom(ctx, tn.ID); err != nil || room != store.MaxTenantAttachments {

@@ -16,9 +16,9 @@ export interface Feed {
   url: string
   /** the relaying tenant's URL (spec 0045): its runs contact it, never url; set at creation only */
   via?: string
-  /** the bodies its last relayed answer ended early, at a statement that does not verify under its
-   * pinned keys (spec 0045) */
-  relay_stopped?: number
+  /** when a relayed answer of it last ended early (spec 0045): at a statement its pinned keys do
+   * not verify, or for a keys file with no room in an answer */
+  relay_stopped_at?: string
   credential: string
   keys: string[]
   kinds: string[]
@@ -114,10 +114,10 @@ export function feedExporterOlder(f: Pick<Feed, 'waiting_without_content'>) {
 }
 
 /** Spec 0045: a feed whose relayed answers end early, in a line; '' when none did. */
-export function feedRelayStopped(f: Pick<Feed, 'relay_stopped'>) {
-  const n = f.relay_stopped ?? 0
-  return n === 0 ? '' : `Handing on stops early: the last relayed answer ended ${n} bodies at a statement that does not verify with this feed's pinned keys; ` +
-    "kistas that take this tenant's feed receive nothing past it. Pin the key that signed it."
+export function feedRelayStopped(f: Pick<Feed, 'relay_stopped_at'>) {
+  return !f.relay_stopped_at ? '' : "Handing on stops early: a relayed answer ended at a statement that does not verify with this feed's pinned keys, " +
+    "or the issuer's keys file leaves no room for a statement in an answer (attachments.feed_answer_max); " +
+    `kistas that take this tenant's feed receive nothing past it (last at ${when(f.relay_stopped_at)}).`
 }
 
 /** A run's counts, those above zero, in a line. */

@@ -403,10 +403,16 @@ What the implementation found, where the text above says less or otherwise. None
   - With several export feeds of one issuer, a statement the feed that read furthest refused for
     its `kinds` is not answered "not held by the relay" while another export feed of the issuer
     takes the kind and has not read that far: the body's answer ends just below it.
-  - At the document quota a run fetches no new document; a held body's later statements that need
-    no new record (a withdrawal, a newer statement about a document held) are applied without
-    moving the cursor; a run that ended `limits` is tried again at the feed's interval; a bundle's
-    dry run counts `would_hold`.
+  - At the document quota a run fetches no new document. Only a document that would be stored
+    holds its body: a statement without content, one about a body not held and one over its
+    issuer's heads limit are judged first and refused as ever. A held body's later statements that
+    need no new record (a withdrawal, a newer statement about a document held) are applied without
+    moving the cursor. A run that ended `limits` alone is tried again at the feed's interval. A
+    bundle's dry run counts `would_hold` (the tenant's room once for all its feeds) and
+    `would_update`.
+  - A known limit: a relay answers a body only up to its feed's cursor, so a withdrawal it applied
+    behind a quota hold is not handed on until it has room; a downstream keeps showing the document
+    meanwhile, and the relay's feed shows `limits`.
   - Of a relay's note only the fixed words are kept (the waiting reasons, "not held by the relay");
     any other text is recorded as "a note this kista does not know". This narrows "bounded and
     cleaned as a bundle's is" for the online path: the note is unsigned and reaches `last_run`.
@@ -414,8 +420,10 @@ What the implementation found, where the text above says less or otherwise. None
     leaves no room for a statement is not handed on.
   - The relay checks its reads as the bundle export does: a body whose feed's `export` or cursor
     changed while the answer was read is answered nothing.
-  - A relayed answer that ends at a statement the feed cannot verify is logged and counted on the
-    feed's record (`relay_stopped`, `relay_stopped_at`; migration 0055 holds the two columns).
+  - A relayed answer that ends at a statement the feed cannot verify, and an issuer's keys file
+    that leaves no room for a statement in an answer, are logged and recorded on the feed
+    (`relay_stopped_at`, in migration 0055): one conditional update, at most once a minute
+    whatever the requests, cleared by a change of the feed's keys or `export`.
   - A kept refusal replaces the earlier kept row of the same `issuer_id` and body.
 - **After the reviews** (the kind and its summaries):
   - A summary member spelled only in another letter case (`Attention` without `attention`) is not

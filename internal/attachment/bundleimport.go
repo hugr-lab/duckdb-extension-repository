@@ -43,7 +43,7 @@ type FeedImport struct {
 	// those that need no new record are still applied; room is what a dry run has left of the quota
 	// (-1: not read yet)
 	quota map[string]bool
-	room  int
+	room  *QuotaRoom
 	waits []store.FeedWait // statements passed over until an upgrade (spec 0046), recorded with the cursors
 	gap   map[string]bool  // body: its range does not start where the feed is
 
@@ -64,7 +64,7 @@ func (f *Feeds) ImportFeed(ctx context.Context, t store.Tenant, fd store.Feed, m
 	}
 	fi := &FeedImport{f: f, dryRun: dryRun, started: time.Now().UTC(), bundle: manifestID, ranges: ranges, offered: map[string]bool{},
 		extra: map[string]bool{}, verified: map[string]int64{}, last: map[string]int64{}, held: map[string]bool{}, gap: map[string]bool{},
-		docs: docs, prev: map[string]int64{}, quota: map[string]bool{}, room: -1}
+		docs: docs, prev: map[string]int64{}, quota: map[string]bool{}, room: &QuotaRoom{}}
 	fi.r = &run{f: f, fd: fd, t: t, res: &RunResult{Started: fi.started, Counts: map[string]int{}}, renew: renew}
 	fi.r.content = fi.content
 	for _, b := range extra {
@@ -251,7 +251,12 @@ func (fi *FeedImport) apply(ctx context.Context, s BundleStatement) error {
 	case errors.Is(err, errHeldByQuota):
 		// spec 0045: the tenant's document quota holds the body, it does not refuse; the target ends
 		// failing (limits), the cursors of what was taken before moved
-		fi.held[st.BodyHash], fi.quota[st.BodyHash], r.quota = true, true, true
+		// only the document quota applies a held body's later statements, as online (a bundle-mode
+		// feed keeps nothing for export, so the other cap is not reached here)
+		fi.held[st.BodyHash], r.quota = true, true
+		if errors.Is(err, errDocumentQuota) {
+			fi.quota[st.BodyHash] = true
+		}
 		r.res.Counts["held"]++
 		return nil
 	case errors.As(err, &tr):
@@ -327,6 +332,26 @@ func (fi *FeedImport) check(st Statement, s BundleStatement) {
 		r.refuse(st, "size")
 		return
 	}
+	// a document held already: a newer statement about it updates it, an older one changes nothing;
+	// neither needs room, nor content
+	var existing *store.Attachment
+	if err := fi.f.Store.InTx(context.Background(), "", func(tx *store.Tx) error {
+		a, err := tx.FeedAttachment(context.Background(), r.t.ID, st.Issuer, st.IssuerID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil
+		}
+		existing = &a
+		return err
+	}); err != nil {
+		fi.Fail(err)
+		return
+	}
+	if existing != nil {
+		if existing.RemovedAt.IsZero() && existing.Seq < st.Seq {
+			r.res.Counts["would_update"]++
+		}
+		return
+	}
 	b, why, err := fi.content(context.Background(), st)
 	switch {
 	case (err != nil || why != "") && Waits(s.Note):
@@ -343,20 +368,21 @@ func (fi *FeedImport) check(st Statement, s BundleStatement) {
 			r.refuse(st, "document")
 			return
 		}
-		// at the tenant's document quota an import holds the body: nothing would be stored
-		if fi.room < 0 {
+		// at the tenant's document quota an import holds the body: nothing would be stored. The
+		// room is the tenant's, counted once across the bundle's feeds
+		if !fi.room.read {
 			room, err := fi.f.Store.FeedDocumentRoom(context.Background(), r.t.ID)
 			if err != nil {
 				fi.Fail(err)
 				return
 			}
-			fi.room = room
+			fi.room.read, fi.room.n = true, room
 		}
-		if fi.room == 0 {
+		if fi.room.n == 0 {
 			r.res.Counts["would_hold"]++
 			return
 		}
-		fi.room--
+		fi.room.n--
 		r.res.Counts["would_store"]++
 	}
 }
@@ -454,4 +480,18 @@ func (fi *FeedImport) Finish(ctx context.Context, actor string, whole bool) (Run
 			"refused": reasons, "error": runClass(fi.err), "bundle": fi.bundle, "dry_run": fi.dryRun})
 	})
 	return res, err
+}
+
+// QuotaRoom is what a dry run has left of the tenant's document quota, shared by the feeds one
+// bundle fills: the room is the tenant's, not a feed's.
+type QuotaRoom struct {
+	read bool
+	n    int
+}
+
+// ShareRoom makes the import count a dry run's room with the bundle's other feeds of the tenant.
+func (fi *FeedImport) ShareRoom(room *QuotaRoom) {
+	if room != nil {
+		fi.room = room
+	}
 }

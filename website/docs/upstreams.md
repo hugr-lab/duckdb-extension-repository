@@ -729,6 +729,12 @@ anyone places it. The tenant it mirrors answers only for bodies released in the 
 grant covers, which is what a mirror holds. With `export` set on its own feed, the own kista hands
 the documents on in turn, online and to a [bundle](#bundle-mode) for an air-gapped site.
 
+One limit to know: while the tenant it mirrors is at its document quota, its feed of the analyser
+holds (`limits`) and it hands a body on only up to where that feed stopped. A withdrawal the tenant
+applied behind the hold does not reach the own kista until the tenant has room again, so the own
+kista keeps showing the withdrawn document meanwhile
+([the document quota](attachments.md#how-a-subscriber-verifies)).
+
 **Discovery.** Each run, after the [revocation pass](#revocations-from-a-kista), reads `-/names`,
 every page, with the upstream's credential, and keeps a name when:
 

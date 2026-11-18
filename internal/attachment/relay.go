@@ -79,15 +79,19 @@ func HeldStatements(ctx context.Context, st *store.Store, tenantID, issuer, feed
 	return out, nil
 }
 
-// RelayStopped says, for a feed's administrators, that the answers it relays end early (spec 0045):
-// at a statement that does not verify under the feed's pinned keys, past which its downstreams
-// receive nothing of the body. "" when none did.
+// RelayStoppedText is what a feed's administrators are told while its relayed answers end early
+// (spec 0045), with when one last did.
+const RelayStoppedText = "Handing on stops early: a relayed answer ended at a statement that does not verify with this feed's pinned keys, " +
+	"or the issuer's keys file leaves no room for a statement in an answer (attachments.feed_answer_max); " +
+	"kistas that take this tenant's feed receive nothing past it"
+
+// RelayStopped says, for a feed's administrators, that the answers it relays end early (spec 0045),
+// and when one last did. "" when none has since its pins or its export last changed.
 func RelayStopped(f store.Feed) string {
-	if f.RelayStopped == 0 {
+	if f.RelayStoppedAt.IsZero() {
 		return ""
 	}
-	return fmt.Sprintf("Handing on stops early: the last relayed answer ended %d bodies at a statement that does not verify with this feed's pinned keys; "+
-		"kistas that take this tenant's feed receive nothing past it. Pin the key that signed it.", f.RelayStopped)
+	return RelayStoppedText + " (last at " + f.RelayStoppedAt.UTC().Format(time.RFC3339) + ")."
 }
 
 // NoteNotHeld is the relay's note on a statement it sends without content and does not wait on: a
@@ -235,8 +239,8 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 	// that leaves no room for a statement cannot be served within the bound: not handed on
 	wire, err := json.Marshal(json.RawMessage(keys))
 	if err != nil || len(wire)+relayOne > s.feedAnswerMax() {
-		s.warn("attachment: an issuer's keys file leaves no room for a statement in a feed answer (attachments.feed_answer_max): it is not handed on",
-			"tenant", t.Name, "issuer", issuer, "bytes", len(wire))
+		s.relayStopped(ctx, t, newest, "attachment: an issuer's keys file leaves no room for a statement in a feed answer (attachments.feed_answer_max): it is not handed on",
+			"issuer", issuer, "bytes", len(wire))
 		return out, nil
 	}
 	var asked []string
@@ -265,7 +269,7 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 		high  int64
 	}
 	var parts []part
-	stopped := map[string]int{} // feed: bodies whose answer ended at a statement that does not verify
+	stopped := map[string][]any{} // feed: where an answer ended at a statement that does not verify
 	size := len(wire) + 64
 	for _, b := range bodies {
 		if !inScope[b.BodyHash] {
@@ -299,9 +303,9 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 			}
 			if err != nil && !malformed || st.Issuer != issuer || st.BodyHash != b.BodyHash || st.Seq != h.Seq {
 				// as an unverified statement holds a cursor: nothing of the body goes past it
-				stopped[best.ID]++
-				s.warn("attachment: a relayed answer ends at a statement that does not verify under the feed's pinned keys",
-					"tenant", t.Name, "feed", best.Name, "body", b.BodyHash, "seq", h.Seq)
+				if stopped[best.ID] == nil {
+					stopped[best.ID] = []any{"body", b.BodyHash, "seq", h.Seq}
+				}
 				break
 			}
 			if h.Refused == "kind" && h.Doc == nil && !malformed && !st.Withdrawn {
@@ -339,16 +343,13 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 			break
 		}
 	}
-	for _, f := range feeds {
-		// said on the feed's record, and again no more often than a minute
-		if n := stopped[f.ID]; n > 0 && (n != f.RelayStopped || s.Store.Now().Sub(f.RelayStoppedAt) > time.Minute) {
-			if err := s.Store.SetFeedRelayStopped(ctx, f.ID, n); err != nil {
-				s.warn("attachment: recording where a relayed answer ended", "feed", f.Name, "error", err)
-			}
-		}
-	}
 	if s.afterRelayRead != nil {
 		s.afterRelayRead()
+	}
+	for _, f := range feeds {
+		if where := stopped[f.ID]; where != nil {
+			s.relayStopped(ctx, t, f, "attachment: a relayed answer ends at a statement that does not verify under the feed's pinned keys", where...)
+		}
 	}
 	// the reads above are not one snapshot: a change of export (what the feed kept dropped, its
 	// cursors reset) or the collector (a body's rows gone with its cursor) meanwhile would leave an
@@ -379,6 +380,18 @@ func (s *Service) relay(ctx context.Context, t store.Tenant, issuer string, bodi
 		out.Bodies = append(out.Bodies, HighWater{BodyHash: p.body, Seq: p.high})
 	}
 	return out, nil
+}
+
+// relayStopped records on a feed that a relayed answer ended early, and logs why: both at most
+// once a minute for the feed, whatever the requests (the record's conditional update is the limit).
+func (s *Service) relayStopped(ctx context.Context, t store.Tenant, f store.Feed, msg string, args ...any) {
+	wrote, err := s.Store.MarkFeedRelayStopped(ctx, f)
+	switch {
+	case err != nil:
+		s.warn("attachment: recording that a relayed answer ended early", "tenant", t.Name, "feed", f.Name, "error", err)
+	case wrote:
+		s.warn(msg, append([]any{"tenant", t.Name, "feed", f.Name}, args...)...)
+	}
 }
 
 // warn logs a warning when the service has a log.

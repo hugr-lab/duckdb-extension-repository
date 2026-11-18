@@ -228,9 +228,9 @@ type Feed struct {
 	// Via is the relaying tenant's URL (spec 0045), set at creation and never changed: a run asks
 	// it for the statements of the issuer URL names, which is then never contacted. "": none
 	Via string
-	// RelayStopped is how many bodies the feed's last relayed answer ended early, at a statement
-	// that does not verify under its pins (spec 0045), and RelayStoppedAt when; 0: none
-	RelayStopped   int
+	// RelayStoppedAt is when a relayed answer of the feed last ended early (spec 0045): at a
+	// statement that does not verify under its pins, or for a keys file that leaves no room for a
+	// statement in an answer. Zero: none since its pins or its export last changed
 	RelayStoppedAt time.Time
 	// Export keeps what a bundle needs to answer a site's plan (spec 0014): the keys file, permanent
 	// refusals, statements about documents not held
@@ -260,7 +260,7 @@ func FeedLock(tenantID string) string { return "kista/feeds/" + tenantID }
 
 const feedCols = `id, tenant_id, name, url, credential, kinds, readers, offer, state, version, requested_at, next_run_at,
 last_run_at, last_run, status, last_success_at, last_error, created_at, created_by, mode, export, bundle_id, bundle_created_at,
-bundle_manifest_sha256, attestation_keys_at, export_epoch, via, relay_stopped, relay_stopped_at`
+bundle_manifest_sha256, attestation_keys_at, export_epoch, via, relay_stopped_at`
 
 func scanFeed(scan func(...any) error) (Feed, error) {
 	var f Feed
@@ -269,7 +269,7 @@ func scanFeed(scan func(...any) error) (Feed, error) {
 	err := scan(&f.ID, &f.TenantID, &f.Name, &f.URL, &cred, &kinds, &f.Readers, &f.Offer, &f.State, &f.Version,
 		scanTime{&f.RequestedAt}, scanTime{&f.NextRunAt}, scanTime{&f.LastRunAt}, &lastRun, &f.Status, scanTime{&f.LastSuccessAt},
 		&lastErr, scanTime{&f.CreatedAt}, &f.CreatedBy, &f.Mode, &f.Export, &bundleID, scanTime{&f.BundleCreatedAt}, &bundleSHA,
-		scanTime{&f.KeysFileAt}, &f.ExportEpoch, &via, &f.RelayStopped, scanTime{&f.RelayStoppedAt})
+		scanTime{&f.KeysFileAt}, &f.ExportEpoch, &via, scanTime{&f.RelayStoppedAt})
 	f.Credential, f.LastRun, f.LastError, f.Via = cred.String, lastRun.String, lastErr.String, via.String
 	f.BundleID, f.BundleManifestSHA256 = bundleID.String, bundleSHA.String
 	if kinds != "" {
@@ -579,19 +579,30 @@ func (s *Store) FeedCursorsOf(ctx context.Context, feedID string, bodies []strin
 	return out, nil
 }
 
-// SetFeedRelayStopped records that a feed's relayed answer ended n bodies early, at a statement
-// that does not verify under its pins (spec 0045), and when.
-func (s *Store) SetFeedRelayStopped(ctx context.Context, feedID string, n int) error {
-	return s.InTx(ctx, "", func(t *Tx) error {
-		_, err := t.exec(ctx, "UPDATE feeds SET relay_stopped = ?, relay_stopped_at = ? WHERE id = ?", n, t.s.d.timeArg(t.Now()), feedID)
+// MarkFeedRelayStopped records that a relayed answer of a feed ended early (spec 0045), at most
+// once a minute whatever the requests: one conditional update. It writes only while the feed is as
+// the answer read it (its version: a change of its pins or its export since clears the record, and
+// must not have it written back), and reports whether it wrote, so its caller logs no more often.
+func (s *Store) MarkFeedRelayStopped(ctx context.Context, f Feed) (bool, error) {
+	wrote := false
+	err := s.InTx(ctx, "", func(t *Tx) error {
+		now := t.Now()
+		res, err := t.exec(ctx, "UPDATE feeds SET relay_stopped_at = ? WHERE id = ? AND version = ? AND (relay_stopped_at IS NULL OR relay_stopped_at < ?)",
+			t.s.d.timeArg(now), f.ID, f.Version, t.s.d.timeArg(now.Add(-time.Minute)))
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		wrote = n > 0
 		return err
 	})
+	return wrote, err
 }
 
-// ClearFeedRelayStopped forgets what SetFeedRelayStopped recorded: the feed's pins or its export
+// ClearFeedRelayStopped forgets what MarkFeedRelayStopped recorded: the feed's pins or its export
 // changed, so the next relayed answer says anew.
 func (t *Tx) ClearFeedRelayStopped(ctx context.Context, feedID string) error {
-	_, err := t.exec(ctx, "UPDATE feeds SET relay_stopped = 0, relay_stopped_at = NULL WHERE id = ?", feedID)
+	_, err := t.exec(ctx, "UPDATE feeds SET relay_stopped_at = NULL WHERE id = ?", feedID)
 	return err
 }
 

@@ -185,7 +185,7 @@ so the operator declares it:
 ### Received reports (spec 0045)
 
 - **Migration `0055_received_reports`** adds `feeds.via` (the relaying tenant's URL of a feed taken
-  through a relay), `feeds.relay_stopped` and `relay_stopped_at` (where a relayed answer ended
+  through a relay), `feeds.relay_stopped_at` (when a relayed answer last ended
   early) and `feed_refusals.issuer_id` with an index (a kept refusal replaces the earlier
   kept row of the same document; a row kept before has none and is replaced by none). It raises
   `min_reader` to 55: stop every older replica first. An older replica would run a `via` feed

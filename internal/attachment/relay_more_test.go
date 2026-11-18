@@ -277,7 +277,7 @@ func TestRelayStoppedIsShown(t *testing.T) {
 		}
 		return ans
 	}
-	if ask(); a.feed("src").RelayStopped != 0 || attachment.RelayStopped(a.feed("src")) != "" {
+	if ask(); !a.feed("src").RelayStoppedAt.IsZero() || attachment.RelayStopped(a.feed("src")) != "" {
 		t.Fatalf("an answer that verified: %+v", a.feed("src"))
 	}
 	r2 := a.docs()["r2"]
@@ -288,12 +288,12 @@ func TestRelayStoppedIsShown(t *testing.T) {
 		t.Fatalf("the answer: %q", got)
 	}
 	got := a.feed("src")
-	if got.RelayStopped != 1 || got.RelayStoppedAt.IsZero() || !strings.Contains(attachment.RelayStopped(got), "ended 1 bodies at a statement that does not verify") {
-		t.Fatalf("the feed's record: %d %v %q", got.RelayStopped, got.RelayStoppedAt, attachment.RelayStopped(got))
+	if got.RelayStoppedAt.IsZero() || !strings.Contains(attachment.RelayStopped(got), "ended at a statement that does not verify") {
+		t.Fatalf("the feed's record: %v %q", got.RelayStoppedAt, attachment.RelayStopped(got))
 	}
 	// new pins: said anew by the next answer
 	pins := []string{a.src.fp, "sha256:" + strings.Repeat("1", 64)}
-	if f, err := a.feeds.Change(ctx, admin, "acme", "src", attachment.FeedChange{Keys: &pins}, 0); err != nil || f.RelayStopped != 0 || a.feed("src").RelayStopped != 0 {
+	if f, err := a.feeds.Change(ctx, admin, "acme", "src", attachment.FeedChange{Keys: &pins}, 0); err != nil || !f.RelayStoppedAt.IsZero() || !a.feed("src").RelayStoppedAt.IsZero() {
 		t.Fatalf("after a change of pins: %+v %v", f, err)
 	}
 }
@@ -365,5 +365,170 @@ func TestRelayScopeByChannel(t *testing.T) {
 	}
 	if err := read("r2"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("a document of a body released only where the caller holds no feed: %v", err)
+	}
+}
+
+// Where handing on stops early is recorded on the feed at most once a minute, whatever bodies a
+// caller asks about; a change of the feed's pins clears it, and an answer that read the feed before
+// the change does not write it back.
+func TestRelayStoppedOncePerMinute(t *testing.T) {
+	a := newSubscriber(t)
+	relayOf(a)
+	a.src.offer(a.body, "r1", []byte(reviewDoc), nil, nil)
+	a.src.offer(a.other, "r2", []byte(reviewDoc), nil, nil)
+	a.add("src", func(sp *attachment.FeedSpec) { sp.Export = true })
+	a.run("src")
+	for _, d := range a.docs() { // neither body's statement verifies any more
+		if err := store.ExecRaw(ctx, a.st, "UPDATE attachments SET statement = ? WHERE id = ?", strings.Replace(d.Statement, `"title":"Review"`, `"title":"Other"`, 1), d.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock := time.Now().UTC().Truncate(time.Second)
+	a.st.Now = func() time.Time { return clock }
+	ask := func(bodies ...string) {
+		t.Helper()
+		var req []attachment.FeedBody
+		for _, b := range bodies {
+			req = append(req, attachment.FeedBody{BodyHash: b})
+		}
+		if ans, err := a.svc.Feed(ctx, downstream, "acme", req, srcURL); err != nil || len(ans.Statements) != 0 {
+			t.Fatalf("the answer: %+v %v", ans, err)
+		}
+	}
+	ask(a.body)
+	first := a.feed("src").RelayStoppedAt
+	if first.IsZero() || attachment.RelayStopped(a.feed("src")) == "" {
+		t.Fatalf("not recorded: %v", first)
+	}
+	// callers with other sets of bodies, within the minute: nothing is written again
+	for _, bodies := range [][]string{{a.body, a.other}, {a.other}, {a.body}} {
+		clock = clock.Add(10 * time.Second)
+		ask(bodies...)
+		if at := a.feed("src").RelayStoppedAt; !at.Equal(first) {
+			t.Fatalf("written again within a minute for %d bodies: %v, was %v", len(bodies), at, first)
+		}
+	}
+	clock = clock.Add(2 * time.Minute)
+	ask(a.other)
+	if at := a.feed("src").RelayStoppedAt; !at.After(first) {
+		t.Fatalf("not said again after a minute: %v", at)
+	}
+	// the pins change while an answer is being read: the answer does not write the record back
+	pins := []string{a.src.fp, "sha256:" + strings.Repeat("1", 64)}
+	clock = clock.Add(2 * time.Minute)
+	a.svc.AfterRelayRead(func() {
+		if _, err := a.feeds.Change(ctx, admin, "acme", "src", attachment.FeedChange{Keys: &pins}, 0); err != nil {
+			t.Fatal(err)
+		}
+	})
+	ask(a.body)
+	a.svc.AfterRelayRead(nil)
+	if got := a.feed("src"); !got.RelayStoppedAt.IsZero() || attachment.RelayStopped(got) != "" {
+		t.Fatalf("written back after the pins changed: %v", got.RelayStoppedAt)
+	}
+}
+
+// An issuer's keys file that leaves no room for a statement in an answer is said on the relaying
+// feed's record, as an answer that ends early is, and the downstream's error covers it.
+func TestRelayKeysOverBoundIsShown(t *testing.T) {
+	a := newSubscriber(t)
+	relayOf(a)
+	a.svc.FeedAnswerMax = attachment.MinFeedAnswer
+	a.src.keysPad = strings.Repeat("<", 60<<10)
+	a.src.offer(a.body, "r1", []byte(reviewDoc), nil, nil)
+	a.add("src", func(sp *attachment.FeedSpec) { sp.Export = true })
+	a.run("src")
+	b := newSubscriber(t)
+	b.feeds.Fetch = &throughRelay{t: t, relay: a.svc}
+	b.add("own", func(sp *attachment.FeedSpec) { viaFeed(sp); sp.Keys = []string{a.src.fp} })
+	res := b.run("own")
+	if !strings.Contains(res.Error, "no room for the issuer's keys") || b.feed("own").Status != store.FeedFailing {
+		t.Fatalf("the downstream's run: %+v", res)
+	}
+	if got := a.feed("src"); got.RelayStoppedAt.IsZero() || attachment.RelayStopped(got) == "" {
+		t.Fatalf("the relaying feed's record: %v %q", got.RelayStoppedAt, attachment.RelayStopped(got))
+	}
+}
+
+// At the quota, a statement that would need no record is judged as ever: one without content, and
+// one over its issuer's heads limit, are refused for good and the cursor moves; only a document
+// that would be stored holds its body.
+func TestQuotaJudgesWhatNeedsNoRecord(t *testing.T) {
+	s := newViaSubscriber(t)
+	wasMax, wasHeads := store.MaxTenantAttachments, store.MaxAttachmentHeads
+	defer func() { store.MaxTenantAttachments, store.MaxAttachmentHeads = wasMax, wasHeads }()
+	store.MaxTenantAttachments, store.MaxAttachmentHeads = 1, 1
+	s.src.offer(s.body, "r1", []byte(reviewDoc), nil, nil)         // 1: stored, the quota is full
+	gone := s.src.offer(s.body, "r2", []byte(reviewDoc), nil, nil) // 2: not held by the relay
+	s.src.offer(s.body, "r3", []byte(reviewDoc), nil, nil)         // 3: a second head of its kind on the body
+	s.src.offer(s.other, "r4", []byte(reviewDoc), nil, nil)        // 4: would be stored: held
+	s.src.notes[gone] = attachment.NoteNotHeld
+	f := s.add("own", viaFeed)
+	res := s.run("own")
+	if res.Counts["received"] != 1 || reasons(res)["no content"] != 1 || reasons(res)["limits"] != 1 || res.Counts["held"] != 1 ||
+		s.cursor(f, s.body) != 3 || s.cursor(f, s.other) != 0 || s.src.downloads != 1 {
+		t.Fatalf("the run at the quota: %+v, cursors %d %d, %d downloads", res, s.cursor(f, s.body), s.cursor(f, s.other), s.src.downloads)
+	}
+}
+
+// The same from a bundle: a statement the bundle carries no content for is refused at the quota,
+// not held; and a dry run says so, counts a newer statement about a document held as an update,
+// and counts its room once for the tenant, across the bundle's feeds.
+func TestBundleQuotaJudgesWhatNeedsNoRecord(t *testing.T) {
+	s := newSubscriber(t)
+	was := store.MaxTenantAttachments
+	defer func() { store.MaxTenantAttachments = was }()
+	store.MaxTenantAttachments = 1
+	s.src.offer(s.body, "r1", []byte(reviewDoc), nil, nil) // 1
+	s.src.offer(s.body, "r2", []byte(`{"not":"carried"}`), nil, nil)
+	delete(s.src.docs, "r2") // 2: the bundle carries no content for it
+	fi, fd := s.bundleImport("air", 0, 2, false, map[int64]string{2: "limits"})
+	res, err := fi.Finish(ctx, "os:1:t", true)
+	if err != nil || fi.Failed() != nil || res.Counts["received"] != 1 || res.Counts["held"] != 0 || reasons(res)["bundle: no content"] != 1 {
+		t.Fatalf("the import at the quota: %+v %v %v", res, err, fi.Failed())
+	}
+	if cur, _ := s.st.FeedCursors(ctx, fd.ID); cur[s.body] != 2 {
+		t.Fatalf("the cursor: %v", cur)
+	}
+	// a dry run, the quota full: a newer statement about the document held is no hold, a statement
+	// without content is refused, a new document would be held
+	s.src.offer(s.body, "r1", []byte(reviewDoc), func(st *attachment.Statement) { st.Audience = "administrators" }, nil) // 3: r1 again
+	s.src.offer(s.body, "r5", []byte(reviewDoc+" "), nil, nil)                                                           // 4: new
+	fi, _ = s.bundleImport("air", 2, 4, true, nil)
+	res, _ = fi.Finish(ctx, "os:1:t", true)
+	if res.Counts["would_update"] != 1 || res.Counts["would_hold"] != 1 || res.Counts["would_store"] != 0 {
+		t.Fatalf("the dry run at the quota: %+v", res)
+	}
+	// room for one: two feeds of the bundle, each bringing a new document, share it
+	store.MaxTenantAttachments = 2
+	room := &attachment.QuotaRoom{}
+	one, _ := s.bundleImport("air", 2, 4, true, nil)
+	one.ShareRoom(room)
+	r1, _ := one.Finish(ctx, "os:1:t", true)
+	two, _ := s.bundleImport("air2", 0, 4, true, nil)
+	two.ShareRoom(room)
+	r2, _ := two.Finish(ctx, "os:1:t", true)
+	if r1.Counts["would_store"] != 1 || r2.Counts["would_store"] != 0 || r2.Counts["would_hold"] != 1 {
+		t.Fatalf("two feeds' dry runs with room for one: %+v %+v", r1, r2)
+	}
+}
+
+// A run with a transient failure and a quota hold is tried again soon, for the failure: only a
+// run that ended on the limit alone waits for the feed's interval.
+func TestQuotaAndFailureRetrySoon(t *testing.T) {
+	s := newSubscriber(t)
+	s.feeds.Interval = time.Hour
+	was := store.MaxTenantAttachments
+	defer func() { store.MaxTenantAttachments = was }()
+	store.MaxTenantAttachments = 1
+	s.src.offer(s.body, "r1", []byte(reviewDoc), nil, nil)  // fails to download for now
+	s.src.offer(s.other, "r2", []byte(reviewDoc), nil, nil) // stored
+	s.src.offer(s.other, "r3", []byte(reviewDoc), nil, nil) // over the quota
+	s.src.down = map[string]bool{"r1": true}
+	s.add("src", nil)
+	res := s.run("src")
+	got := s.feed("src")
+	if res.Counts["failed"] != 1 || res.Counts["held"] != 1 || got.Status != store.FeedFailing || time.Until(got.NextRunAt) > 10*time.Minute {
+		t.Fatalf("the run: %+v, next in %s", res, time.Until(got.NextRunAt))
 	}
 }
