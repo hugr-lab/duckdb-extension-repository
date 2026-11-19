@@ -14,6 +14,20 @@ import { ReportFrame, ReportLines, ReportPage, feedsLastSuccess } from '../scree
 import { summaryText } from '../screens/Reports'
 import type { Attachment } from '../screens/types'
 
+// On Node 26 Response.blob() makes jsdom's Blob in this environment, which has no text() (a browser's
+// has); jsdom's FileReader reads it
+beforeAll(() => {
+  if (typeof Blob.prototype.text === 'function') return
+  Blob.prototype.text = function (this: Blob) {
+    return new Promise<string>((resolve, reject) => {
+      const r = new FileReader()
+      r.onload = () => resolve(r.result as string)
+      r.onerror = () => reject(r.error)
+      r.readAsText(this)
+    })
+  }
+})
+
 // kista's report stylesheet, as the build inlines it into a download (vitest empties a css import)
 const reportCss = readFileSync('src/report.css', 'utf8')
 
