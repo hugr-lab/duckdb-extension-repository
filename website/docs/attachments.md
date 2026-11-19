@@ -442,7 +442,7 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}?issuer=<url>   →  the cont
 - Per body, from `after_seq` to the feed's cursor, in `seq` order: the stored statement bytes and
   signature of each document held from the issuer, withdrawals, and what the export feed keeps
   (refusals, statements that wait, statements about documents not held).
-- Content is served only for documents of kinds an `export` feed of that issuer takes. Every other
+- Content is served only for documents of kinds the `export` feed of that issuer takes. Every other
   statement goes without content, with an unsigned `note`: for a statement the relay waits on, its
   waiting reason (`newer`, `unknown kind`, `media type`, `document version`); for the rest (removed
   or refused at the relay, or of a kind its export feed does not take) the fixed text
@@ -453,10 +453,12 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}?issuer=<url>   →  the cont
   and the server logs it, both at most once a minute whatever the requests: its downstreams
   receive nothing past that statement until the key that signed it is pinned. A change of the
   feed's keys or of `export` clears the record.
-- With several feeds of the issuer that hand on, a body is answered from the one that read
-  furthest. A statement that feed refused for its `kinds` is not sent as "not held" while another
-  of them takes the kind and has not read that far (one that has not run yet, or is paused,
-  included): the body's answer ends just below it, until that feed has read it.
+- **One feed per issuer hands on.** In a tenant, `export` is on for at most one feed of an issuer:
+  setting it on a second feed of the same URL is refused (`400`), at the feed's creation and at a
+  change, with a message that names the feed that hands the issuer on already; clear `export`
+  there first, or remove that feed. The relay answers from that one feed: a statement it refused
+  for its `kinds` is sent as "not held", even when another feed of the issuer stored the document.
+  Hand an issuer on from the feed that takes the kinds its downstreams need.
 - An answer holds at most `attachments.feed_answer_max` bytes as written, the keys file included,
   then `more`. A keys file that leaves no room for a statement under that bound is not handed on
   (the answer carries no `keys`); the relaying feed's record and the log say so as above, and the
@@ -533,7 +535,7 @@ kista admin -config kista.yaml feed add bigcorp enterest \
 | Readers | `-readers` / `readers` | allow documents whose signed `audience` is `readers` to arrive as `readers` |
 | Offer | `-channels` / `offer`, `channels` | which body hashes are sent to the source (below) |
 | Mode | `-mode` / `mode` | `online` (the default) or `bundle`: for statements in bundles ([Feeds for air-gapped sites](#feeds-for-air-gapped-sites)); set at creation |
-| Export | `-export` / `export` | hand the source's documents on: to bundles and to kistas that take this tenant's feed ([Handing received documents on](#handing-received-documents-on)) |
+| Export | `-export` / `export` | hand the source's documents on: to bundles and to kistas that take this tenant's feed ([Handing received documents on](#handing-received-documents-on)); at most one feed per issuer in a tenant, a second is refused |
 | Via | `-via` / `via` | the relaying tenant's feed URL ([A feed through a relay](#a-feed-through-a-relay)); set at creation only |
 
 **Offer.** By default (`offer: upstreams`) the subscriber sends the bodies of its catalogue builds
@@ -745,8 +747,8 @@ handing its documents on needs, in a bundle that answers a site's plan and onlin
 
 **Changing it.** Setting `export` (`-export=true`) resets the feed's cursors and, on an active feed,
 requests a run: it reads the whole history again and keeps what it refused before. Clearing it
-(`-export=false`), or removing the feed, deletes its refusals and keys file; the kept statements of a
-source go when no feed of its URL has `export` left. A run that the change overtakes stops and
+(`-export=false`), or removing the feed, deletes its refusals and keys file, and the statements kept about its
+source's documents (no other feed of the URL hands it on: one feed per issuer). A run that the change overtakes stops and
 writes nothing (`overtaken`). The collector deletes a body's refusals and kept statements with its
 cursors.
 

@@ -91,7 +91,8 @@ export const handOn = 'Hand on: to bundles and to kistas that take this tenant\'
  * receives them. */
 export function handOnWarning(f: Pick<Feed, 'name' | 'url'>) {
   return `Every holder of feed on a channel of this tenant will receive the documents of ${f.url} (the feed ${f.name}) about the bodies ` +
-    'released in that channel: those who hold feed already included. Bundles for air-gapped sites carry them too.'
+    'released in that channel: those who hold feed already included. Bundles for air-gapped sites carry them too. ' +
+    'One feed per source hands on: this is refused while another feed of the same source does.'
 }
 
 /** A feed's status in words: a bundle-mode feed never runs. */

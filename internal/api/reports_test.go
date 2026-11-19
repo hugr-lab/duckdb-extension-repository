@@ -150,6 +150,31 @@ func TestReportRoutes(t *testing.T) {
 			t.Errorf("%s: %d %s", name, r.status, r.body)
 		}
 	}
+	// a tenant hands on at most one feed per issuer: export on a second feed of the URL is refused,
+	// at its creation and at a change, naming the feed that hands the issuer on
+	handed := func(name string, export bool) string {
+		e := ""
+		if export {
+			e = `,"export":true`
+		}
+		return `{"name":"` + name + `","url":"https://source.example/api/v1/tenants/handed","credential":"src","keys":` + keys + e + `}`
+	}
+	if r := m.call(t, "POST", T+"/feeds", tom, handed("first", true)); r.status != 201 || r.json(t)["export"] != true {
+		t.Fatalf("an export feed: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", T+"/feeds", tom, handed("second", true)); r.status != 400 || !strings.Contains(string(r.body), `the feed \"first\" hands`) ||
+		!strings.Contains(string(r.body), "at most one feed per issuer") {
+		t.Fatalf("a second export feed of the issuer: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", T+"/feeds", tom, handed("second", false)); r.status != 201 {
+		t.Fatalf("a second feed of the issuer without export: %d %s", r.status, r.body)
+	}
+	if r := m.call(t, "POST", T+"/feeds/second", tom, `{"export":true}`, "If-Match", "*"); r.status != 400 || !strings.Contains(string(r.body), `the feed \"first\" hands`) {
+		t.Fatalf("export set on a second feed of the issuer: %d %s", r.status, r.body)
+	}
+	if got := m.call(t, "GET", T+"/feeds/second", tom, "").json(t); got["export"] != false {
+		t.Fatalf("the refused change was written: %v", got)
+	}
 	// a feed without via has no such member
 	plain := `{"name":"plain","url":"https://source.example/api/v1/tenants/x","credential":"src","keys":` + keys + `}`
 	if r := m.call(t, "POST", T+"/feeds", tom, plain); r.status != 201 || strings.Contains(string(r.body), `"via"`) {

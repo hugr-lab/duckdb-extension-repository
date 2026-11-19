@@ -132,6 +132,14 @@ becomes "Hand on: to bundles and to kistas that take this tenant's feed", and se
 confirmation naming the source and saying that every holder of `feed` on a channel will receive
 its documents.
 
+**A tenant hands on at most one feed per issuer.** `export` may be on for one feed of a given
+issuer (the feed's URL) in a tenant. Setting it on a second one is refused, at the feed's creation
+and at a change, with a message that names the feed that hands the issuer on already (`400`; the
+CLI and the console show it). The check runs in the transaction that sets the flag, under the
+tenant's feed lock, which every creation and change of a feed takes. The relay and the bundle
+export therefore answer from that one feed, with nothing to choose: a statement it refused for
+its `kinds` is "not held", whatever another feed of the issuer stored.
+
 **The relaying tenant**, two routes (`issuer`: a feed URL in spec 0011's normalised form, else
 `400`):
 
@@ -150,7 +158,7 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}?issuer=<url>   →  the cont
 - Per body, from `after_seq` to the feed's cursor, in `seq` order: the stored statement bytes and
   signature of each document held from the issuer, withdrawals, and what the export feed keeps
   (spec 0014; spec 0046, "Export feeds and relays": a waiting statement is kept as a refusal is).
-  Content is served only for documents of kinds an `export` feed of that issuer takes. Every other
+  Content is served only for documents of kinds the `export` feed of that issuer takes. Every other
   statement goes without content, with a `note`: for a statement the relay waits on, its kept
   reason, one of spec 0046's waiting reasons; for the rest (removed or refused here, or of a kind
   the export feed does not take) the fixed text "not held by the relay".
@@ -368,6 +376,10 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 - **kista rendering a structured report**: it would freeze a producer's model into kista; the
   issuer's page changes without a kista release.
 - **Re-signing by the relay**: the tenant's key would vouch for the issuer's words.
+- **Several export feeds of one issuer** (as spec 0014 allowed, each body answered from the feed
+  that read furthest): rejected. The choice between them lost or stalled documents (a statement
+  one feed refused for its kinds answered "not held" while another had yet to store it), and one
+  feed per issuer is the ordinary case.
 - **A second switch beside `export`**, or **routes under the channel's prefix** (spec 0039): a
   setting to forget, or the feed's client built twice with `install` reading documents.
 - **A third offer, an issue rule, a keys route**: removed in review; spec 0011's parts do the work.
@@ -404,9 +416,11 @@ What the implementation found, where the text above says less or otherwise. None
 - **The offer's catalogue builds** are the builds the catalogue keeps (landed, or released), not
   withdrawn.
 - **After the reviews of the implementation** (relay and feeds):
-  - With several export feeds of one issuer, a statement the feed that read furthest refused for
-    its `kinds` is not answered "not held by the relay" while another export feed of the issuer
-    takes the kind and has not read that far: the body's answer ends just below it.
+  - One feed per issuer hands on (the design section above; the owner's decision after the
+    reviews): the rule is held in the store (`InsertFeed`, `SetFeed`) by a check under the feed
+    lock rather than a unique index, because a filtered index over `feeds.url` (1,000 characters)
+    is over SQL Server's index key size. The relay's and the bundle export's choice among several
+    feeds is gone.
   - At the document quota a run fetches no new document. Only a document that would be stored
     holds its body: a statement without content, one about a body not held and one over its
     issuer's heads limit are judged first and refused as ever. A held body's later statements that

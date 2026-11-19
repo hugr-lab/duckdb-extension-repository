@@ -364,11 +364,6 @@ func TestRelay(t *testing.T) {
 	if res := s.run("all"); res.Error != "" || res.Counts["received"] != 1 || res.Counts["waiting"] != 1 {
 		t.Fatalf("the other feed's run: %+v", res)
 	}
-	// the export feed takes audit out by its kinds: a third, with export and every kind, waits on it
-	s.add("wide", func(sp *attachment.FeedSpec) { sp.Export = true })
-	if res := s.run("wide"); res.Error != "" || res.Counts["waiting"] != 1 {
-		t.Fatalf("the wide export feed's run: %+v", res)
-	}
 	ask := func(a authz.Actor, issuer string, bodies ...attachment.FeedBody) (attachment.FeedAnswer, error) {
 		return s.svc.Feed(ctx, a, "acme", bodies, issuer)
 	}
@@ -394,7 +389,9 @@ func TestRelay(t *testing.T) {
 			}
 		}
 	}
-	want := []sent{{"r1", 1, ""}, {"p1", 2, ""}, {"s1", 3, ""}, {"a1", 5, attachment.WaitKind}, {"r2", 4, ""}}
+	// the one feed that hands the issuer on left the SBOM and audit out by its kinds: they are
+	// answered as it has them, not held, though another feed of the issuer stored the SBOM
+	want := []sent{{"r1", 1, ""}, {"p1", 2, ""}, {"s1", 3, attachment.NoteNotHeld}, {"a1", 5, attachment.NoteNotHeld}, {"r2", 4, ""}}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("sent:\n got %v\nwant %v", got, want)
 	}
@@ -406,11 +403,8 @@ func TestRelay(t *testing.T) {
 		t.Fatalf("after 2: %+v", ans)
 	}
 
-	// content only for kinds an export feed of the issuer takes: with wide removed, the SBOM (held,
-	// stored by the feed that is not for export) and audit go without content
-	if err := s.feeds.Remove(ctx, admin, "acme", "wide", false, 0); err != nil {
-		t.Fatal(err)
-	}
+	// content only for kinds the export feed of the issuer takes: the SBOM (held, stored by the feed
+	// that is not for export) and audit go without content
 	ans, _ = ask(downstream, srcURL, attachment.FeedBody{BodyHash: s.body})
 	notes := map[string]string{}
 	for _, w := range ans.Statements {

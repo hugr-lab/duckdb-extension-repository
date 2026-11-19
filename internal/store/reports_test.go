@@ -161,7 +161,35 @@ func TestReceivedReports(t *testing.T) {
 		}
 		direct := f
 		direct.ID, direct.Name, direct.Via = "", "direct", ""
+		// a tenant hands on at most one feed per issuer: a second feed of the URL with export is
+		// refused, at its creation and at a change, naming the feed that hands the issuer on
+		err = s.InTx(ctx, "", func(tx *store.Tx) error { return tx.InsertFeed(ctx, &direct) })
+		if !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), `"src"`) {
+			t.Fatalf("a second export feed of the issuer: %v", err)
+		}
+		direct.ID, direct.Export = "", false
 		inTx(t, s, func(tx *store.Tx) error { return tx.InsertFeed(ctx, &direct) })
+		on := mustGetFeed(t, s, tn.ID, "direct")
+		on.Export = true
+		if err := s.InTx(ctx, "", func(tx *store.Tx) error { return tx.SetFeed(ctx, &on, 0) }); !errors.Is(err, store.ErrInvalid) || !strings.Contains(err.Error(), `"src"`) {
+			t.Fatalf("export set on a second feed of the issuer: %v", err)
+		}
+		if d := mustGetFeed(t, s, tn.ID, "direct"); d.Export {
+			t.Fatal("the refused change was written")
+		}
+		// the one that hands on may change otherwise; another issuer's feed, and another tenant's feed
+		// of the same issuer, hand on freely
+		same := mustGetFeed(t, s, tn.ID, "src")
+		same.Readers = !same.Readers
+		inTx(t, s, func(tx *store.Tx) error { return tx.SetFeed(ctx, &same, 0) })
+		elsewhere := f
+		elsewhere.ID, elsewhere.Name, elsewhere.URL, elsewhere.Via = "", "elsewhere", "https://other.example/api/v1/tenants/x", ""
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertFeed(ctx, &elsewhere) })
+		gamma := store.Tenant{Name: "gamma"}
+		inTx(t, s, func(tx *store.Tx) error { return tx.CreateTenant(ctx, &gamma) })
+		theirs := f
+		theirs.ID, theirs.TenantID, theirs.Via = "", gamma.ID, ""
+		inTx(t, s, func(tx *store.Tx) error { return tx.InsertFeed(ctx, &theirs) })
 		if d := mustGetFeed(t, s, tn.ID, "direct"); d.Via != "" {
 			t.Fatalf("a feed without via: %q", d.Via)
 		}

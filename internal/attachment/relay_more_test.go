@@ -36,72 +36,61 @@ func seqs(t *testing.T, ans attachment.FeedAnswer) string {
 	return strings.Join(out, " ")
 }
 
-// A statement the feed that read furthest refused for its kind is not answered "not held by the
-// relay" while another feed of the issuer that hands on takes the kind and has not read that far:
-// the downstream would refuse it for good, and never get the document the other feed stores later.
-func TestRelayUnequalFeeds(t *testing.T) {
+// A tenant hands on at most one feed per issuer (spec 0045): export is refused for a second feed
+// of the issuer, at its creation and at a change, naming the feed that hands the issuer on. The
+// relay then answers from that one feed: a statement it refused for its kinds is "not held", though
+// another feed of the issuer stored the document, and one it waits on carries the waiting reason.
+func TestOneExportFeedPerIssuer(t *testing.T) {
 	a := newSubscriber(t)
 	relayOf(a)
 	src := a.src
-	src.offer(a.body, "r1", []byte(reviewDoc), nil, nil)          // 1
-	src.offer(a.body, "p1", reportJSON(1, a.body), asReport, nil) // 2: narrow leaves the kind out
-	src.offer(a.body, "r2", []byte(reviewDoc), nil, nil)          // 3
+	src.offer(a.body, "r1", []byte(reviewDoc), nil, nil)                                                                                  // 1
+	src.offer(a.body, "p1", reportJSON(1, a.body), asReport, nil)                                                                         // 2: narrow leaves the kind out
+	src.offer(a.body, "a1", []byte(`{}`), func(st *attachment.Statement) { st.Kind, st.MediaType = "audit", "application/x-audit" }, nil) // 3: a kind not known here
 	a.add("narrow", func(sp *attachment.FeedSpec) { sp.Export, sp.Kinds = true, []string{store.KindReview} })
-	a.add("wide", func(sp *attachment.FeedSpec) { sp.Export = true })
-	if res := a.run("narrow"); res.Counts["received"] != 2 || reasons(res)["kind"] != 1 {
+	spec := attachment.FeedSpec{Name: "wide", URL: srcURL, Credential: "src", Keys: []string{src.fp}, Offer: store.OfferChannels, Channels: []string{"prod"}, Export: true}
+	_, err := a.feeds.Add(ctx, admin, "acme", spec)
+	if !errors.Is(err, store.ErrInvalid) || !errors.Is(err, store.ErrHandedOn) || !strings.Contains(err.Error(), `the feed "narrow" hands `+srcURL+` on already`) {
+		t.Fatalf("a second export feed of the issuer: %v", err)
+	}
+	a.add("wide", nil) // without export it is any other feed of the issuer
+	on, off := true, false
+	if _, err := a.feeds.Change(ctx, admin, "acme", "wide", attachment.FeedChange{Export: &on}, 0); !errors.Is(err, store.ErrHandedOn) || a.feed("wide").Export {
+		t.Fatalf("export set on a second feed of the issuer: %v", err)
+	}
+	// a feed of another issuer hands on freely
+	a.add("other", func(sp *attachment.FeedSpec) { sp.URL, sp.Export = "https://src.example/api/v1/tenants/other", true })
+
+	if res := a.run("narrow"); res.Counts["received"] != 1 || reasons(res)["kind"] != 2 {
 		t.Fatalf("narrow's run: %+v", res)
 	}
-	ask := func() attachment.FeedAnswer {
+	if res := a.run("wide"); res.Counts["received"] != 1 || res.Counts["waiting"] != 1 {
+		t.Fatalf("wide's run: %+v", res)
+	}
+	ask := func() string {
 		t.Helper()
 		ans, err := a.svc.Feed(ctx, downstream, "acme", []attachment.FeedBody{{BodyHash: a.body}}, srcURL)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return ans
+		return seqs(t, ans)
 	}
-	// wide has not run: the body's answer ends just below the report
-	if got := seqs(t, ask()); got != "1" {
-		t.Fatalf("while wide is behind: %q", got)
+	if got := ask(); got != "1 2!"+attachment.NoteNotHeld+" 3!"+attachment.NoteNotHeld {
+		t.Fatalf("answered from the one feed that hands on: %q", got)
 	}
-	b := newSubscriber(t)
-	b.feeds.Fetch = &throughRelay{t: t, relay: a.svc}
-	fb := b.add("own", func(sp *attachment.FeedSpec) { viaFeed(sp); sp.Keys = []string{src.fp} })
-	if res := b.run("own"); res.Counts["received"] != 1 || res.Counts["refused"] != 0 || b.cursor(fb, b.body) != 1 {
-		t.Fatalf("B's run while wide is behind: %+v", res)
+	if err := a.svc.FeedDocument(ctx, downstream, "acme", "p1", srcURL, func(store.Attachment, []byte) error { return nil }); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("content of a kind the export feed does not take: %v", err)
 	}
-	// the same while wide is paused: it still hands on, and may yet store the report
-	paused, active := store.FeedPaused, store.FeedActive
-	if _, err := a.feeds.Change(ctx, admin, "acme", "wide", attachment.FeedChange{State: &paused}, 0); err != nil {
+	// the tenant moves handing on to the feed that takes every kind: one clears, the other sets
+	if _, err := a.feeds.Change(ctx, admin, "acme", "narrow", attachment.FeedChange{Export: &off}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if got := seqs(t, ask()); got != "1" {
-		t.Fatalf("while wide is paused: %q", got)
+	if _, err := a.feeds.Change(ctx, admin, "acme", "wide", attachment.FeedChange{Export: &on}, 0); err != nil {
+		t.Fatalf("export on the other feed once the first gave it up: %v", err)
 	}
-	if res := b.run("own"); res.Counts["refused"] != 0 || b.cursor(fb, b.body) != 1 {
-		t.Fatalf("B's run while wide is paused: %+v", res)
-	}
-	// wide catches up and stores it: B receives the report and what follows
-	if _, err := a.feeds.Change(ctx, admin, "acme", "wide", attachment.FeedChange{State: &active}, 0); err != nil {
-		t.Fatal(err)
-	}
-	if res := a.run("wide"); res.Counts["received"] != 1 {
-		t.Fatalf("wide's run: %+v", res)
-	}
-	if got := seqs(t, ask()); got != "1 2 3" {
-		t.Fatalf("once wide read it: %q", got)
-	}
-	if res := b.run("own"); res.Counts["received"] != 2 || res.Counts["refused"] != 0 || b.docs()["p1"].Kind != store.KindReport {
-		t.Fatalf("B's run once wide read it: %+v", res)
-	}
-	// a kind no feed that hands on takes is still "not held": nobody here will store it
-	src.offer(a.body, "s1", []byte(sbom), func(st *attachment.Statement) { st.Kind, st.MediaType = store.KindSBOM, attachment.CycloneDX }, nil) // 4
-	kinds := []string{store.KindReview, store.KindReport}
-	if _, err := a.feeds.Change(ctx, admin, "acme", "wide", attachment.FeedChange{Kinds: &kinds}, 0); err != nil {
-		t.Fatal(err)
-	}
-	a.run("narrow")
-	if got := seqs(t, ask()); got != "1 2 3 4!"+attachment.NoteNotHeld {
-		t.Fatalf("a kind no feed takes: %q", got)
+	a.run("wide") // it reads the history again, and keeps what it waits on
+	if got := ask(); got != "1 2 3!"+attachment.WaitKind {
+		t.Fatalf("answered from the feed that takes every kind: %q", got)
 	}
 }
 

@@ -9,7 +9,7 @@ import {
   rowLines, staleScanOf, vulnerabilitiesText,
 } from './report'
 import { RowReports, buildsOf, versionsCache } from '../screens/Decisions'
-import { NewFeed, feedBody, feedRelayStopped, handOn, handOnWarning, feedKinds } from '../screens/Feeds'
+import { Feeds, NewFeed, feedBody, feedRelayStopped, handOn, handOnWarning, feedKinds } from '../screens/Feeds'
 import { ReportFrame, ReportLines, ReportPage, feedsLastSuccess } from '../screens/ReportPage'
 import { summaryText } from '../screens/Reports'
 import type { Attachment } from '../screens/types'
@@ -444,6 +444,19 @@ describe('a feed handed on, and taken through a relay', () => {
     render(<ReportFrame a={{ origin: 'tenant' }} html={'<meta http-equiv="refresh" content="0">'} stylesheet="not a url" />)
     expect(screen.getByText('The page cannot be shown here, and it cannot be downloaded either: it carries an http-equiv or srcdoc instruction, which a downloaded file would follow.')).toBeTruthy()
     expect(screen.queryByText(/download it instead/)).toBeNull()
+  })
+  it('shows the refusal when another feed hands the issuer on already', async () => {
+    const refusal = 'the feed "first" hands https://enterest.example/api/v1/tenants/acme on already, and a tenant hands on at most one feed per issuer: clear its export first, or remove it'
+    const feed = { name: 'second', url: 'https://enterest.example/api/v1/tenants/acme', credential: 'src', keys: ['sha256:a'], kinds: [], readers: false, offer: 'upstreams',
+      mode: 'online', export: false, state: 'active', status: 'ok', run_requested: false, etag: '"v1"' }
+    const calls = api((c) => (c.method === 'POST'
+      ? new Response(JSON.stringify({ type: 'https://kista.dev/problems/invalid', title: 'invalid', status: 400, detail: refusal }), { status: 400, headers: { 'Content-Type': 'application/problem+json' } })
+      : json({ feeds: [feed] })))
+    tenant(<Feeds />)
+    fireEvent.click(await waitFor(() => screen.getByRole('button', { name: 'Hand on…' })))
+    fireEvent.click(screen.getByRole('button', { name: 'Hand on' }))
+    await waitFor(() => expect(screen.getByText(new RegExp('the feed "first" hands .* on already'))).toBeTruthy())
+    expect(calls.filter((c) => c.method === 'POST').map((c) => c.body)).toEqual([{ export: true }])
   })
   it("counts the version's builds the catalogue holds, withdrawn ones aside", () => {
     const b = (state: string) => ({ state }) as never

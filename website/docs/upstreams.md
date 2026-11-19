@@ -697,7 +697,9 @@ analyser's documents on, and the own kista takes them from it
 
 1. **On the tenant it mirrors**: the tenant's feed of the analyser has `export` set ("Hand on" in
    the console), and the own kista's credential holds `feed` on the mirrored channel **beside**
-   `install`. `install` never implies `feed`.
+   `install`. `install` never implies `feed`. A tenant hands an analyser on from one feed: `export`
+   on a second feed of the same analyser is refused, so set it on the feed that takes the kinds the
+   own kista needs (name no `-kinds` on it).
 
    ```bash
    kista admin -config kista.yaml feed set acme reports -export=true
@@ -985,7 +987,7 @@ administrator's act, recorded as `bundle.export`. A plan discloses the site's co
 gateway: its sources, allowlists, platforms, DuckDB versions and the bodies it holds.
 
 **Statements** (spec 0014 phase 1b). For each of the plan's feeds, the export carries what the
-tenant's export feeds of the same URL hold ([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites)).
+tenant's export feed of the same URL holds ([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites)).
 It contacts no feed. The same setting hands a feed's documents on online, to the kistas that take
 the tenant's feed ([Handing received documents on](attachments.md#handing-received-documents-on)):
 `export` is not only for air-gapped sites. A plan's feeds take their bodies from the feed's offer:
@@ -999,10 +1001,10 @@ bodies it holds itself, under its own grant at the source: a body it does not mi
 grant, gives the site nothing for it. The server administrator who runs the export decides what
 leaves: a statement's signed `audience` travels with it, and the site applies its own `readers`.
 
-- **Which feed**: an online feed of the URL with `export` set, whose kinds include every kind the
-  site's feed accepts, and which kept a keys file. Without one the feed fails as a whole ("not
-  subscribed here", "not kept for export", "accepts fewer kinds", "never ran"), the bundle carries
-  the others, and the command exits `1`. With several, each body takes the one that read furthest.
+- **Which feed**: the tenant's online feed of the URL with `export` set (a tenant hands on at most
+  one feed per issuer), which must take every kind the site's feed accepts and have kept a keys
+  file. Otherwise the feed fails as a whole ("not subscribed here", "not kept for export", "accepts
+  fewer kinds", "never ran"), the bundle carries the others, and the command exits `1`.
 - **Which bodies**: those the plan offers, and from the start those of the files the bundle brings
   for the feed's sources. Each body's range runs from the plan's cursor to what the gateway read.
 - **What**: each statement as its issuer signed it. A stored document's content goes with it,

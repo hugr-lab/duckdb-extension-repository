@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -304,6 +305,9 @@ func (t *Tx) InsertFeed(ctx context.Context, f *Feed) error {
 	if f.Mode != FeedOnline && f.Mode != FeedBundle || f.Mode == FeedBundle && (f.Credential != "" || f.Export || f.Via != "") {
 		return fmt.Errorf("%w: a feed's mode is online, or bundle without a credential, export or via", ErrInvalid)
 	}
+	if err := t.oneExport(ctx, f); err != nil {
+		return err
+	}
 	_, err := t.exec(ctx, `INSERT INTO feeds (id, tenant_id, name, url, credential, kinds, readers, offer, state, version, status,
 created_at, created_by, mode, export, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, f.ID, f.TenantID, f.Name, f.URL, nullable(f.Credential),
 		strings.Join(f.Kinds, ","), f.Readers, f.Offer, f.State, f.Version, f.Status, t.s.d.timeArg(f.CreatedAt), f.CreatedBy, f.Mode, f.Export,
@@ -322,6 +326,26 @@ created_at, created_by, mode, export, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		}
 	}
 	return nil
+}
+
+// ErrHandedOn is export asked for a feed whose issuer another feed of the tenant hands on already
+// (spec 0045); it wraps into ErrInvalid.
+var ErrHandedOn = errors.New("store: the issuer is handed on already")
+
+// oneExport holds the rule that a tenant hands on at most one feed per issuer (spec 0045): export
+// is refused for a feed while another feed of the tenant with the same URL has it, naming that
+// feed. The caller holds the tenant's feed lock, which every creation and change of a feed takes,
+// so two cannot get around each other.
+func (t *Tx) oneExport(ctx context.Context, f *Feed) error {
+	if !f.Export {
+		return nil
+	}
+	names, err := t.strings(ctx, "SELECT name FROM feeds WHERE tenant_id = ? AND url = ? AND export = ? AND id <> ? ORDER BY name", f.TenantID, f.URL, true, f.ID)
+	if err != nil || len(names) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w: %w: the feed %q hands %s on already, and a tenant hands on at most one feed per issuer: clear its export first, or remove it",
+		ErrInvalid, ErrHandedOn, names[0], f.URL)
 }
 
 func (t *Tx) feedChildren(ctx context.Context, f *Feed) error {
@@ -390,6 +414,9 @@ func (t *Tx) SetFeed(ctx context.Context, f *Feed, expected int64) error {
 	}
 	if f.Mode == FeedBundle && (f.Credential != "" || f.Export) {
 		return fmt.Errorf("%w: a bundle-mode feed takes no credential and no export", ErrInvalid)
+	}
+	if err := t.oneExport(ctx, f); err != nil {
+		return err
 	}
 	err := t.cas(ctx, `UPDATE feeds SET state = ?, credential = ?, kinds = ?, readers = ?, export = ?,
 export_epoch = CASE WHEN export = ? THEN export_epoch ELSE export_epoch + 1 END, version = version + 1 WHERE id = ? AND version = ? AND mode = ?`,

@@ -363,6 +363,14 @@ func TestAdminCLI(t *testing.T) {
 		t.Fatalf("feed show of a via feed: %q", got)
 	}
 	run(2, "feed", "set", "acme", "own", "-via", feedURL) // never changed
+	// a tenant hands on at most one feed per issuer: -export on a second feed of the URL is refused
+	run(0, "feed", "set", "acme", "own", "-export=true")
+	run(1, "feed", "add", "acme", "own2", "-url", issuerURL, "-via", feedURL, "-credential", "src", "-key", fp, "-export")
+	run(0, "feed", "add", "acme", "own2", "-url", issuerURL, "-via", feedURL, "-credential", "src", "-key", fp)
+	run(1, "feed", "set", "acme", "own2", "-export=true")
+	run(0, "feed", "set", "acme", "own", "-export=false")
+	run(0, "feed", "set", "acme", "own2", "-export=true") // once the first gave it up
+	run(0, "feed", "remove", "acme", "own2")
 	run(0, "feed", "remove", "acme", "own")
 	run(0, "attachment", "remove", "acme", "tresor", aid)
 	run(1, "attachment", "show", "acme", "tresor", aid)

@@ -190,7 +190,9 @@ on the Upstreams page, lists subscriptions with their status, last run and last
 success; they are added (with `via`, for a feed taken through a relaying tenant), synced, paused,
 resumed and removed there. **Hand on…** sets a feed's `export` ("Hand on: to bundles and to kistas
 that take this tenant's feed"): the confirmation names the source and says that every holder of
-`feed` on a channel will receive its documents; adding a feed with it set asks the same. A feed
+`feed` on a channel will receive its documents; adding a feed with it set asks the same. A tenant
+hands on one feed per source: while another feed of the same source hands it on, the change is
+refused and the page shows the refusal, which names that feed. A feed
 whose relayed answers end at a statement its pinned keys do not verify says so in a line. Changing a feed's credential,
 keys, kinds or readers is done with the API or the CLI. See [Attachments and the feed](attachments.md).
 A feed whose source sends what this kista is too old to read, and an upstream whose last run met a

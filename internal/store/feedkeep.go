@@ -209,17 +209,13 @@ WHERE tenant_id = ? AND issuer = ? AND body_hash = ? AND seq > ? AND seq <= ? OR
 }
 
 // DropFeedExport deletes what a feed kept for export: its refusals and keys file, and the
-// statements kept about its issuer's documents once no other feed of its URL has export set.
+// statements kept about its issuer's documents (no other feed of its URL has export set: a tenant
+// hands on at most one feed per issuer, spec 0045).
 func (t *Tx) DropFeedExport(ctx context.Context, f Feed) error {
 	if _, err := t.exec(ctx, "DELETE FROM feed_refusals WHERE feed_id = ?", f.ID); err != nil {
 		return err
 	}
 	if _, err := t.exec(ctx, "UPDATE feeds SET attestation_keys = NULL, attestation_keys_at = NULL WHERE id = ?", f.ID); err != nil {
-		return err
-	}
-	var others int
-	if err := t.queryRow(ctx, "SELECT COUNT(*) FROM feeds WHERE tenant_id = ? AND url = ? AND id <> ? AND export = ?",
-		f.TenantID, f.URL, f.ID, true).Scan(&others); err != nil || others > 0 {
 		return err
 	}
 	_, err := t.exec(ctx, "DELETE FROM feed_kept WHERE tenant_id = ? AND issuer = ?", f.TenantID, f.URL)

@@ -595,7 +595,7 @@ See [Access](access.md).
 | `POST tenants/{t}/attestation-keys` | server |
 | `GET tenants/{t}/attestation-keys/{id}`; `POST …/{id}/activate`, `/retire` | tenant admin |
 | `POST tenants/{t}/feed`; `GET tenants/{t}/feed/documents/{issuer_id}` | principal holding `feed` (not a management route). With `issuer` in the request (`?issuer=` on the content route): another issuer's documents the tenant hands on, with that issuer's keys file as `keys` in the answer and a `note` on each statement without content |
-| `GET, POST tenants/{t}/feeds`; `GET, POST, DELETE …/feeds/{name}`; `POST …/feeds/{name}/sync` (`409` for a bundle-mode feed) | tenant admin. `POST …/feeds` takes `via`, the relaying tenant's URL, at creation only; a change that names it is `400` |
+| `GET, POST tenants/{t}/feeds`; `GET, POST, DELETE …/feeds/{name}`; `POST …/feeds/{name}/sync` (`409` for a bundle-mode feed) | tenant admin. `POST …/feeds` takes `via`, the relaying tenant's URL, at creation only; a change that names it is `400`. `export` on a feed, at creation or by a change, is `400` while another feed of the tenant with the same `url` has it: a tenant hands on at most one feed per issuer, and the detail names that feed |
 
 See [Attachments and the feed](attachments.md).
 

@@ -745,8 +745,8 @@ same document. With `export` set, the feed keeps:
 
 Setting `export` resets the feed's cursors, so its next run reads the whole history again and keeps
 what it refused before (a statement held already is a no-op). A feed's refusals go when `export` is
-cleared or the feed is deleted; the kept statements of an issuer go when no feed of that URL with
-`export` remains. Both go with the body's cursors when the collector removes them.
+cleared or the feed is deleted; the kept statements of an issuer go with them (spec 0045: a tenant
+hands on at most one feed per issuer, so no other feed of that URL has `export`). Both go with the body's cursors when the collector removes them.
 
 Kept refusals and statements have a cap of their own per tenant (100,000 together), apart from the
 quota of feed documents (spec 0011): a source flooding what an export feed keeps never costs another
@@ -781,12 +781,11 @@ optional: no release carries phase 1a alone, so no reader refuses the new field.
 
 **The export.** For each of the plan's feeds, the exporter takes what its tenant holds from the
 same issuer (the URL normalised as spec 0011 normalises it). It contacts no feed.
-- **Which feed.** The candidates are the tenant's online feeds of that URL with `export` set, whose
-  kinds include every kind the plan's feed accepts (an empty list on either side meaning every
-  kind), and with a keys file. With none, the feed fails as a whole: "not subscribed here", "not
-  kept for export", "accepts fewer kinds" or "never ran"; the bundle carries the others and the
-  command exits `1`. With several, each body takes the candidate whose cursor for it is highest,
-  and the keys file is the most recently fetched.
+- **Which feed.** The tenant's online feed of that URL with `export` set (spec 0045: at most one
+  per issuer), which must take every kind the plan's feed accepts (an empty list on either side
+  meaning every kind) and have a keys file. Otherwise the feed fails as a whole: "not subscribed
+  here", "not kept for export", "accepts fewer kinds" or "never ran"; the bundle carries the others
+  and the command exits `1`.
 - **Which bodies.** The plan's `bodies`, and, from `0`, each body of a file the bundle exports for
   one of the feed's `sources`.
 - **The range** for a body is `(after_seq, seq]`: `after_seq` is the plan's cursor, `seq` the chosen
