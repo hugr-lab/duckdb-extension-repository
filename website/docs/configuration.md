@@ -777,6 +777,7 @@ Documents about bodies. File-only. See [Attachments](attachments.md).
 | `attachments.max_size` | integer (bytes) | `4194304` (4 MiB) | The largest document; 64 KiB to 16 MiB. A plain number of bytes: suffixes are not accepted here. |
 | `attachments.max_reads` | integer | `8` | Documents held in memory at once; `0..256`. |
 | `attachments.feed_interval` | duration | `6h` | Between a feed's scheduled runs; at least `5m`. |
+| `attachments.feed_answer_max` | size | `1MiB` | The most bytes an answer of the feed route holds, a relayed issuer's keys file included, before it says `more`; 128 KiB to 1 MiB (a keys file may be 64 KiB, and a subscriber reads no more than 1 MiB). |
 
 ## licenses
 

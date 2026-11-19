@@ -24,7 +24,7 @@ itself, and what a later release may change, is in [Compatibility](../compatibil
   replicas starting together never apply one twice.
 - Applied migrations are recorded in the table `schema_migrations` (`version`, `name`,
   `min_reader`, `applied_at`).
-- A binary's **schema level** is the number of migrations it carries. The next release carries 54; v0.1.0 to v0.1.3 carry 28.
+- A binary's **schema level** is the number of migrations it carries. The next release carries 55; v0.1.0 to v0.1.3 carry 28.
 
 ### Who migrates: `store.migrate`
 
@@ -109,6 +109,7 @@ Readiness follows the same rule. `/readyz` is recomputed every 5 seconds and fai
 | `0051_decisions` | 51 | the decisions table references channels: an older replica's tenant reaper does not know it, and would fail deleting a tenant's channels |
 | `0052_channel_next` | 52 | the channels' order references channels: an older replica's tenant reaper does not know it, and would fail deleting a tenant's channels |
 | `0053_retention` | 53 | an older replica does not know the `retired` release state (it would refuse or misread it), and its tenant reaper does not know `retention_pins`, which references channels |
+| `0055_received_reports` | 55 | an older replica does not know a feed's `via`: it would run such a feed against its issuer's URL, which must never be contacted |
 
 Migrations 0002, 0004, 0007, 0009, 0011, 0015, 0016, 0017, 0023 (the bootstrap's record), 0024
 (licences), 0025 (usage reports) and 0026 (usage forwarding) are additive and keep the previous value. During a rolling
@@ -179,7 +180,40 @@ so the operator declares it:
   reaper runs only on a replica whose binary matches the database's schema level exactly. See
   [Deleting a tenant](tenants-and-channels.md#deleting-a-tenant).
 
-## Upgrading to the next release (schema 54)
+## Upgrading to the next release (schema 55)
+
+### Received reports (spec 0045)
+
+- **Migration `0055_received_reports`** adds `feeds.via` (the relaying tenant's URL of a feed taken
+  through a relay), `feeds.relay_stopped_at` (when a relayed answer last ended
+  early) and `feed_refusals.issuer_id` with an index (a kept refusal replaces the earlier
+  kept row of the same document; a row kept before has none and is replaced by none). It raises
+  `min_reader` to 55: stop every older replica first. An older replica would run a `via` feed
+  against its issuer's URL.
+- **What changes.**
+  - A sixth kind of document, `report`, with its media type `application/vnd.kista.report+json`;
+    a feed that names no kinds takes it. The reader level rises, so such a feed takes again, by
+    itself, the reports an older binary left waiting as an unknown kind.
+  - **A feed whose `kinds` are set refuses `report` for good** (`kind`) until `report` is added to
+    them (`feed set -kinds …,report`): its cursor moves past each report it refuses. Reports that
+    arrived before the kind was added do not come back by themselves: reset the feed's cursors
+    (remove the feed keeping its documents and add it again, or switch its `export` on; a
+    bundle-mode feed: `bundle reset -feed`), and it reads its source's history again.
+  - **The default offer changes** (`offer: upstreams`): a feed and a bundle's plan now name the
+    bodies of the catalogue builds that came from outside (an upstream's, a distributor's
+    publisher's), released or not, where they named the bodies released from upstreams. A source
+    learns the hashes of builds that still wait for a decision.
+  - **`export` hands documents on online too**: every holder of `feed` on a channel of the tenant
+    may now ask for the documents of a source whose feed has `export` set, by naming the issuer.
+    Review which feeds have it set and who holds `feed`.
+  - **The document quota holds, it does not refuse**: a feed's document that does not fit holds its
+    body's cursor and the run ends `failing` (`limits`), where it was refused for good.
+  - In a vulnerabilities summary computed from now on, `info` and `none` are `informational`,
+    outside `findings`, and a CycloneDX document counts its components and those marked checked.
+    Summaries are computed once, at intake: documents held already keep theirs.
+  - The console's policy gains `frame-src 'none'`. A host that embeds the console sets it in its own
+    policy and allows kista's origin in `style-src` ([Console](../console.md#a-reports-page)).
+  - A new setting, `attachments.feed_answer_max` (1 MiB by default).
 
 ### Forward compatibility (spec 0046)
 

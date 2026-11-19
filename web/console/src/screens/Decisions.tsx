@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Loading, Mono, PageTitle, Table, when } from '../components/ui'
 import { useAction } from '../lib/action'
@@ -8,7 +8,9 @@ import { ApiError, seg } from '../lib/http'
 import { previousOf } from '../lib/order'
 import { type Decision, type HomeReads, type Item, decisionBody, groups, itemKey, promoteFrom } from '../lib/queue'
 import { type CatalogueBuild, PlaceDialog, RuleDialog, SourceLicence, compareVersions, entryPath, modeWords, placeBody, purgeable } from './Catalogue'
+import { type Feed } from './Feeds'
 import { promoteBody } from './Promote'
+import { ReportLines } from './ReportPage'
 import { Reports } from './Reports'
 
 // Needs a decision (spec 0041): what kista leaves to a tenant administrator, computed from the home's
@@ -44,9 +46,54 @@ function itemWords(i: Item) {
 
 const itemChannel = (i: Item) => ('channel' in i ? i.channel ?? '' : '')
 
+/** The version an item is about, when it names one: what the row's report lines are read for. */
+const itemVersion = (i: Item) => (i.group === 'manual' ? i.waiting : i.group === 'holds' ? i.version ?? '' : '')
+
+/** How many builds the catalogue holds of a source's version (withdrawn ones aside): what a report
+ * on the row is held for N of. */
+export const buildsOf = (v: EntryVersions, version: string) =>
+  (v.versions.find((x) => x.version === version)?.builds ?? []).filter((b) => b.state !== 'withdrawn').length
+
+/** The row's report lines, with the number of the version's builds from the entry's read the row's
+ * actions make too (one read of it per row, shared). */
+export function RowReports({ item: i, version, feeds, versionsOf }: { item: Item; version: string; feeds?: Feed[]; versionsOf: VersionsOf }) {
+  const { api, perms } = useTenant()
+  const path = entryPath(api, i.source, i.name)
+  // as ReportLines: nothing is read for a caller who may not read the name's documents
+  const may = perms.extensionAdmin(i.name) || perms.canAudit
+  const versions = useLoad(() => (may ? versionsOf(path) : Promise.resolve(undefined)), [path, versionsOf, may])
+  if (!may) return null
+  return <ReportLines name={i.name} source={i.source} version={version} feeds={feeds} builds={versions.data ? buildsOf(versions.data, version) : undefined} />
+}
+
+/** An entry's versions with their builds, read once per page load and entry. */
+export type VersionsOf = (path: string) => Promise<EntryVersions>
+
+/** A page's reads of entries' versions, each path once. A read that failed is not kept: the next
+ * asker reads again. */
+export function versionsCache(get: (path: string) => Promise<EntryVersions>): VersionsOf {
+  const read = new Map<string, Promise<EntryVersions>>()
+  return (path) => {
+    let p = read.get(path)
+    if (!p) {
+      p = get(path)
+      read.set(path, p)
+      p.catch(() => {
+        if (read.get(path) === p) read.delete(path)
+      })
+    }
+    return p
+  }
+}
+
 export function Decisions() {
-  const { client, api } = useTenant()
+  const { client, api, perms } = useTenant()
   const home = useHome()
+  // an entry's builds are read once for its row's lines and its actions, and again after a reload
+  const versionsOf = useMemo<VersionsOf>(() => versionsCache((path) => client.get<EntryVersions>(path).then((r) => r.data)), [client, home?.reads])
+  // when the feeds last succeeded, for "No report held" (the tenant administrators' read)
+  const feeds = useLoad(() => (home && perms.tenantAdmin ? client.get<{ feeds: Feed[] }>(`${api}/feeds`).then((r) => r.data.feeds) : Promise.resolve(undefined)),
+    [api, perms.tenantAdmin, home != null])
   const [channel, setChannel] = useState('')
   const [written, setWritten] = useState<Written[]>([])
   const [telling, setTelling] = useState(false)
@@ -109,10 +156,15 @@ export function Decisions() {
               actions={g === 'manual' ? <Button tone="plain" onClick={() => setTelling(true)}>Tell me of these…</Button> : undefined}>
               <Table rows={rows} rowKey={itemKey} columns={[
                 ['Extension', (i) => <span className="flex flex-col"><Mono>{i.name}</Mono><span className="text-[12px] text-ink-muted"><Mono>{i.source}</Mono></span></span>],
-                ['What', (i) => <span className="text-[13px]">{itemWords(i)}</span>],
+                ['What', (i) => (
+                  <span className="text-[13px]">
+                    {itemWords(i)}
+                    {itemVersion(i) && <RowReports item={i} version={itemVersion(i)} feeds={feeds.data} versionsOf={versionsOf} />}
+                  </span>
+                )],
                 ['', (i) => (
                   <span role="group" aria-label={`${i.name} ${itemChannel(i)} actions`.replace(/ +/g, ' ')} className="flex flex-wrap gap-1.5">
-                    <ItemActions item={i} reads={reads} busy={busy} onDecide={() => decide(i)} onChanged={home.reload} />
+                    <ItemActions item={i} reads={reads} busy={busy} onDecide={() => decide(i)} onChanged={home.reload} versionsOf={versionsOf} />
                     <Button tone="plain" expanded={open === itemKey(i)} onClick={() => setOpen(open === itemKey(i) ? '' : itemKey(i))}>Report & licence</Button>
                   </span>
                 )],
@@ -133,7 +185,8 @@ export function Decisions() {
 }
 
 /** An item's actions, each offered only to who may take it (the API decides anyway). */
-function ItemActions({ item: i, reads, busy, onDecide, onChanged }: { item: Item; reads: HomeReads; busy: boolean; onDecide: () => void; onChanged: () => void }) {
+function ItemActions({ item: i, reads, busy, onDecide, onChanged, versionsOf }: { item: Item; reads: HomeReads; busy: boolean; onDecide: () => void; onChanged: () => void;
+  versionsOf: VersionsOf }) {
   const { client, api, base, perms } = useTenant()
   const [ruling, setRuling] = useState<{ mode?: string } | null>(null)
   const [placing, setPlacing] = useState(false)
@@ -149,7 +202,7 @@ function ItemActions({ item: i, reads, busy, onDecide, onChanged }: { item: Item
   const rule = reads.channels.find((c) => c.name === itemChannel(i))
   return (
     <>
-      {i.group === 'manual' && <Take item={i} />}
+      {i.group === 'manual' && <Take item={i} versionsOf={versionsOf} />}
       {(i.group === 'manual' || i.group === 'skipped' || i.group === 'nochannel') && <Button disabled={busy} onClick={onDecide}>{i.group === 'manual' ? 'Skip' : 'Dismiss'}</Button>}
       {i.group === 'manual' && i.source !== 'tenant' && perms.channelAdmin(i.channel) && <Button disabled={changing} onClick={() => setMode('auto')}>Make auto</Button>}
       {i.group === 'failed' && i.mode !== 'manual' && perms.channelAdmin(i.channel) && <Button disabled={changing} onClick={() => setMode('manual')}>Make manual</Button>}
@@ -179,12 +232,12 @@ function ItemActions({ item: i, reads, busy, onDecide, onChanged }: { item: Item
 /** Taking a waiting version: Promote from a channel that holds it (an active or deprecated release),
  * the previous stage first (spec 0043), else Place from the catalogue; neither without promote on the
  * name there. */
-function Take({ item: i }: { item: Extract<Item, { group: 'manual' }> }) {
+function Take({ item: i, versionsOf }: { item: Extract<Item, { group: 'manual' }>; versionsOf: VersionsOf }) {
   const { client, api, perms } = useTenant()
   const home = useHome()
   const path = entryPath(api, i.source, i.name)
   const may = perms.mayPromote(i.channel, i.name)
-  const versions = useLoad(() => (may ? client.get<EntryVersions>(path).then((r) => r.data) : Promise.resolve({ versions: [] })), [path, may])
+  const versions = useLoad(() => (may ? versionsOf(path) : Promise.resolve({ versions: [] })), [path, may, versionsOf])
   const [open, setOpen] = useState<'promote' | 'place' | ''>('')
   const { busy, failure, act } = useAction('The placement', home?.reload)
   if (!may || !versions.data) return null

@@ -156,7 +156,7 @@ var catalogue = map[Kind][]string{
 	"attestation_key.add":      {"key", "fingerprint", "scheme", "state"},
 	"attestation_key.activate": {"key", "fingerprint", "from", "forced"},
 	"attestation_key.retire":   {"key", "fingerprint", "from", "forced"},
-	"feed.add":                 {"name", "url", "credential", "kinds", "readers", "offer", "channels", "keys", "mode", "export"},
+	"feed.add":                 {"name", "url", "credential", "kinds", "readers", "offer", "channels", "keys", "mode", "export", "via"},
 	"feed.remove":              {"name", "documents", "export"},
 	"feed.change":              {"name", "change"},
 	"feed.run":                 {"feed", "counts", "refused", "error", "bundle", "dry_run"},

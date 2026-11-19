@@ -1,6 +1,6 @@
 # Spec 0045: Received reports: the `report` kind, the feed over catalogue builds, and documents handed downstream
 
-- **Status**: accepted (2026-11-16; the owner's answers of 2026-11-16; three reviews and a joint re-review applied)
+- **Status**: implemented
 - **Date**: 2026-11-16
 - **Author**: vgsml, Claude
 
@@ -69,7 +69,7 @@ as any document (spec 0011). It carries no verdict; kista computes none. `review
 | `issue` | integer, 0 to 2^31 | shown; sorts heads a producer did not chain |
 | `issued_at` | RFC 3339 | shown |
 | `depth` | 1 to 32 bytes of `[a-z0-9_.-]` | how far the analysis went, shown on every row |
-| `subject.bodies` | 1 to 1,000 of `{hash: 64 hex, read: boolean}` | the body attached to must be listed; whether it was read |
+| `subject.bodies` | 1 to 1,000 of `{hash: 64 lowercase hex, read: boolean}` | the body attached to must be listed; whether it was read |
 | `attention` | at most 32 of `{kind: 1 to 32 bytes of [a-z0-9_.-], count: 0 to 2^31}` | points of attention by kind |
 | `kinds_evaluated` | integer, 0 to 2^31, optional | "none" differs from "not evaluated" |
 | `sections` | at most 16 of `{name, status}`, each 1 to 32 bytes of `[a-z0-9_.-]`, optional | coverage |
@@ -132,6 +132,14 @@ becomes "Hand on: to bundles and to kistas that take this tenant's feed", and se
 confirmation naming the source and saying that every holder of `feed` on a channel will receive
 its documents.
 
+**A tenant hands on at most one feed per issuer.** `export` may be on for one feed of a given
+issuer (the feed's URL) in a tenant. Setting it on a second one is refused, at the feed's creation
+and at a change, with a message that names the feed that hands the issuer on already (`400`; the
+CLI and the console show it). The check runs in the transaction that sets the flag, under the
+tenant's feed lock, which every creation and change of a feed takes. The relay and the bundle
+export therefore answer from that one feed, with nothing to choose: a statement it refused for
+its `kinds` is "not held", whatever another feed of the issuer stored.
+
 **The relaying tenant**, two routes (`issuer`: a feed URL in spec 0011's normalised form, else
 `400`):
 
@@ -150,7 +158,7 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}?issuer=<url>   →  the cont
 - Per body, from `after_seq` to the feed's cursor, in `seq` order: the stored statement bytes and
   signature of each document held from the issuer, withdrawals, and what the export feed keeps
   (spec 0014; spec 0046, "Export feeds and relays": a waiting statement is kept as a refusal is).
-  Content is served only for documents of kinds an `export` feed of that issuer takes. Every other
+  Content is served only for documents of kinds the `export` feed of that issuer takes. Every other
   statement goes without content, with a `note`: for a statement the relay waits on, its kept
   reason, one of spec 0046's waiting reasons; for the rest (removed or refused here, or of a kind
   the export feed does not take) the fixed text "not held by the relay".
@@ -238,7 +246,8 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
   kista's. The `iframe` has an empty `sandbox` and a border labelled "<issuer host>'s page". The
   page so follows the console's light and dark theme. The console's own header
   (`web/console/console.go:183-194`) only gains `frame-src 'none'`.
-- **Download** is the print path (a sandboxed frame cannot print itself): the same prefix with
+- **Download** (not offered for a page whose `html` contains `http-equiv` or `srcdoc`: see the implementation
+  notes) is the print path (a sandboxed frame cannot print itself): the same prefix with
   kista's stylesheet inlined and `style-src 'unsafe-inline'` in the `meta`, then `html`, saved
   through the existing `save()` (an octet-stream blob with the `download` attribute). kista never
   serves `text/html`. Other kinds are downloaded only, as before.
@@ -265,7 +274,9 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 ## What a source must do
 
 1. `"envelope": "kista.report.v1"` and the floor's members within their bounds; `html` semantic,
-   with no style, no script and no external resource; every body of a statement in
+   with no style, no script and no external resource, and without the text `http-equiv` or `srcdoc` anywhere
+   in it (a page that contains it, in any letter case, is shown but cannot be downloaded, so not
+   printed); every body of a statement in
    `subject.bodies`; `kinds_evaluated` as an integer (a producer whose own member of that name is
    a list maps it).
 2. One statement per document and body; each issue `supersedes` the previous one of the same body;
@@ -299,9 +310,15 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 - **What a source learns** from the default offer: the hashes of every build the tenant received
   from outside, undecided ones and other upstreams' included; never its own builds.
 - **The issuer's page.** Closed by the empty `sandbox`: scripts, forms, `meta` refresh, a unique
-  origin. Closed by the frame's `meta` policy: every external load, and every style but kista's
-  one stylesheet (the console's own `style-src 'self'` already blocks inline styles in the frame,
-  which is why the page carries none). Closed by `frame-src 'none'`: a link navigating the frame,
+  origin. Closed by the frame's `meta` policy: every external load the browser test covers (image,
+  style sheet, CSS `url()`, font, media, frame, object), and every style sheet, style element and
+  style attribute but kista's one stylesheet (the console's own `style-src 'self'` already blocks
+  inline styles in the frame, which is why the page carries none). HTML's presentational
+  attributes (`bgcolor`, `text`, a `font` element's `color`, `width`, `align`) are not styles to a
+  policy and still apply; kista's stylesheet states the colours and backgrounds of the body, tables
+  (their rows, cells, columns, column groups and captions), `font`, `hr` and `marquee` so that
+  none of them hides or recolours text. Resource hints (`dns-prefetch`,
+  `preconnect`) are not verified closed. Closed by `frame-src 'none'`: a link navigating the frame,
   standalone. **Not closed by kista in the embedded mount**: there the host's policy governs, and
   link navigation inside the frame is the host's `frame-src` to block. The download is a file the
   reader opens outside kista, under its own `meta` policy. kista never parses the page. A browser
@@ -359,11 +376,102 @@ credential beside `install`. Nothing changes in `internal/authz`; `install` neve
 - **kista rendering a structured report**: it would freeze a producer's model into kista; the
   issuer's page changes without a kista release.
 - **Re-signing by the relay**: the tenant's key would vouch for the issuer's words.
+- **Several export feeds of one issuer** (as spec 0014 allowed, each body answered from the feed
+  that read furthest): rejected. The choice between them lost or stalled documents (a statement
+  one feed refused for its kinds answered "not held" while another had yet to store it), and one
+  feed per issuer is the ordinary case.
 - **A second switch beside `export`**, or **routes under the channel's prefix** (spec 0039): a
   setting to forget, or the feed's client built twice with `install` reading documents.
 - **A third offer, an issue rule, a keys route**: removed in review; spec 0011's parts do the work.
 - **A styled page from the issuer**: the console's policy blocks inline styles in any frame it
   builds, and loosening it for one frame loosens it for the console.
+
+## Implementation notes
+
+What the implementation found, where the text above says less or otherwise. None changes the design.
+
+- **The frame's prefix also names the console's theme**, on the root element
+  (`<html data-kista-theme="light|dark">`, one of two fixed words), before the `meta` policy and the
+  link. A sandboxed frame does not see the console's theme (it is a toggle, not the system's
+  preference), so "the page follows the console's light and dark theme" needs it. The stylesheet
+  and the policy are as written.
+- **No download for a page whose `html` contains `http-equiv` or `srcdoc`** (the owner's
+  decision). A policy in a `meta` element cannot carry `sandbox`, and no directive of it stops a
+  refresh: a downloaded file would follow a `meta` refresh in the issuer's html when opened. So
+  the console offers no download, and builds no file, for a page whose raw `html` contains the
+  bytes `http-equiv` or `srcdoc` in any letter case, anywhere (a substring check; the html is not
+  parsed, so a page that only mentions either word loses its download too). `srcdoc` is refused
+  with it because a nested frame's document is an attribute value, where entities are decoded:
+  it can carry the instruction without the bytes `http-equiv`; an attribute's name is not decoded,
+  so `srcdoc` itself cannot hide. It says why instead. The frame is unchanged: there the sandbox
+  stops the refresh. Any other page downloads as written: the file loads nothing, runs nothing
+  and submits nothing; a link in it is a link. `web/console/e2e/report-frame.spec.ts` holds both.
+- **A link that navigates the frame** is refused by `frame-src 'none'`: its target is never
+  requested, and the browser then shows its own blocked page in the frame until the report is opened
+  again.
+- **The value that marks a component not checked** is `not_checked`
+  (`kista:vulnerabilities:check`): the text names only `checked`.
+- **A relay's refusal for good is `no content`; a bundle's stays `bundle: no content`**, as merged.
+- **`attachments.feed_answer_max` bounds every answer of the feed route**, the tenant's own too.
+- **The offer's catalogue builds** are the builds the catalogue keeps (landed, or released), not
+  withdrawn.
+- **After the reviews of the implementation** (relay and feeds):
+  - One feed per issuer hands on (the design section above; the owner's decision after the
+    reviews): the rule is held in the store (`InsertFeed`, `SetFeed`) by a check under the feed
+    lock rather than a unique index, because a filtered index over `feeds.url` (1,000 characters)
+    is over SQL Server's index key size. The relay's and the bundle export's choice among several
+    feeds is gone.
+  - At the document quota a run fetches no new document. Only a document that would be stored
+    holds its body: a statement without content, one about a body not held and one over its
+    issuer's heads limit are judged first and refused as ever. A held body's later statements that
+    need no new record (a withdrawal, a newer statement about a document held) are applied without
+    moving the cursor. A run that ended `limits` alone is tried again at the feed's interval. A
+    bundle's dry run counts `would_hold` (the tenant's room once for all its feeds) and
+    `would_update`.
+  - A known limit: a relay answers a body only up to its feed's cursor, so a withdrawal it applied
+    behind a quota hold is not handed on until it has room; a downstream keeps showing the document
+    meanwhile, and the relay's feed shows `limits`.
+  - Of a relay's note only the fixed words are kept (the waiting reasons, "not held by the relay");
+    any other text is recorded as "a note this kista does not know". This narrows "bounded and
+    cleaned as a bundle's is" for the online path: the note is unsigned and reaches `last_run`.
+  - `attachments.feed_answer_max` counts the keys file as the API writes it; a keys file that
+    leaves no room for a statement is not handed on.
+  - The relay checks its reads as the bundle export does: a body whose feed's `export` or cursor
+    changed while the answer was read is answered nothing.
+  - A relayed answer that ends at a statement the feed cannot verify, and an issuer's keys file
+    that leaves no room for a statement in an answer, are logged and recorded on the feed
+    (`relay_stopped_at`, in migration 0055): one conditional update, at most once a minute
+    whatever the requests, cleared by a change of the feed's keys or `export`.
+  - A kept refusal replaces the earlier kept row of the same `issuer_id` and body.
+- **After the reviews** (the kind and its summaries):
+  - A summary member spelled only in another letter case (`Attention` without `attention`) is not
+    read and sets `incomplete`; a strict member spelled so is missing, and the report refused.
+  - A document with a second JSON value after the first is refused, for every JSON kind.
+  - A vulnerability is `informational` only when every rating it carries is `info` or `none`.
+  - A CycloneDX property of another shape leaves its component unmarked, never refuses the
+    document. `hash` is 64 lowercase hex.
+  - At the list bound a document is never read as fully checked: "N of at least M components
+    checked".
+- **After the reviews** (the console):
+  - A publisher's report is named as a publisher's, on the row and on the page's border; a feed's
+    document whose `source_origin` is not `tenant` says who stands behind it at the source.
+  - The row's coverage counts against the version's builds as the catalogue holds them: "report
+    held for N of M builds; K read". Report lines show `valid_until` or `expired`.
+  - "Show the page again" builds the frame anew after a link left the browser's blocked page in
+    it. The Reports block orders a body's unchained report heads by `issue`. A feed added with
+    `export` set asks for the same confirmation as "Hand on…".
+  - The browser suite has a third mode, a page with no policy at all, so that scripts, forms,
+    refresh, external requests and inline styles are proved closed by the frame's sandbox and
+    `meta` policy alone. The suite builds the frame with the console's prefix code and stylesheet
+    in a plain page: the real component, and its mount in a shadow root (the theme read from the
+    shadow host), are pinned by unit tests only.
+- **A via feed whose relay answers no `keys`** (it does not hand the issuer on) is `failing` too,
+  with a text of its own; no fingerprint is shown in either.
+- **Tests.** The end-to-end chain runs in `internal/api` (three servers over TLS: issuer, relaying
+  tenant, own kista) and in `internal/attachment` (rotation, altered bytes, a chain of two relays);
+  the own kista → bundle → site leg is covered by the shared read (`attachment.HeldStatements`) and
+  the existing export tests, not by a test of its own. The browser tests run without kista (three
+  local servers); the console's Keycloak suite has no report case.
 
 ## Follow-ups
 

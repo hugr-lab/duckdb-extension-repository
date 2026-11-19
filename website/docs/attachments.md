@@ -31,17 +31,18 @@ too, unless the body is blocked: the report that justified a block stays with th
 
 ### Kinds and media types
 
-The list is closed. A document must parse as its media type says; kista computes a summary from it
+The list is closed (the code's: six kinds). A document must parse as its media type says; kista computes a summary from it
 once, at intake, and the summary is what lists, the index and the console show. A document whose
 summary cannot be computed is refused with `400`.
 
 | Kind | Media types | Summary |
 | --- | --- | --- |
 | `sbom` | `application/vnd.cyclonedx+json` (CycloneDX JSON), `application/spdx+json` (SPDX 2.x JSON) | components, licences, crypto assets |
-| `vulnerabilities` | `application/vnd.cyclonedx+json` (VDR or VEX), `application/openvex+json`, `application/sarif+json`, `application/json; profile=osv-scanner` | findings by severity, not-affected count, `scanned_at` |
+| `vulnerabilities` | `application/vnd.cyclonedx+json` (VDR or VEX), `application/openvex+json`, `application/sarif+json`, `application/json; profile=osv-scanner` | findings by severity, `informational` and not-affected counts, `scanned_at`; for CycloneDX also `components`, `checked`, `not_checked` ([below](#vulnerabilities-summaries)) |
 | `review` | `application/vnd.kista.review.v1+json` | verdict, `analysed_at`, analyser |
 | `provenance` | `application/vnd.dev.sigstore.bundle.v0.3+json`, `application/vnd.dsse.envelope.v1+json` | predicate type, builder, source repository and ref, as claimed (not verified) |
 | `notes` | `text/markdown` (UTF-8) | first line |
+| `report` | `application/vnd.kista.report+json` ([below](#the-report-format)) | the report's id, issue, date, depth, points of attention, sections, the number of bodies and whether this one was read |
 
 JSON documents are limited to 32 levels of nesting. A summary is at most 4,000 bytes. A title is 1
 to 200 bytes of printable UTF-8.
@@ -78,6 +79,87 @@ fields a later analyser added, which are ignored ([Compatibility](compatibility.
   at most 400 bytes; a finding's title is at most 400 bytes and its detail 8,000; `text` is at most
   1 MiB.
 
+### The report format
+
+A `report` is what an analyser found in a build, in the analyser's own words: one JSON object with a
+few summary members kista reads and the issuer's page, `html`, which kista never parses. It carries
+no verdict and kista computes none ([spec 0045](https://github.com/hugr-lab/duckdb-extension-repository/blob/main/specs/0045-received-reports/spec.md)).
+
+```json title="report.json"
+{
+  "envelope": "kista.report.v1",
+  "report": "rep-2026-0042",
+  "issue": 2,
+  "issued_at": "2026-11-16T10:00:00Z",
+  "depth": "static",
+  "subject": {"bodies": [{"hash": "<64 hex>", "read": true}]},
+  "attention": [{"kind": "network", "count": 3}],
+  "kinds_evaluated": 12,
+  "sections": [{"name": "imports", "status": "analysed"}],
+  "html": "<h1>…</h1><p>…</p>"
+}
+```
+
+| Member | Type and bound | Read for |
+| --- | --- | --- |
+| `envelope` | `kista.report.v<N>`, N 1 to 2^31 | the version, shown |
+| `report` | 1 to 128 bytes of `[A-Za-z0-9._:-]` | the report's id at its issuer |
+| `issue` | integer, 0 to 2^31 | shown; sorts heads a producer did not chain |
+| `issued_at` | RFC 3339 | shown |
+| `depth` | 1 to 32 bytes of `[a-z0-9_.-]` | how far the analysis went |
+| `subject.bodies` | 1 to 1,000 of `{hash: 64 lowercase hex, read: boolean}` | the body attached to must be listed; whether it was read |
+| `attention` | at most 32 of `{kind: 1 to 32 bytes of [a-z0-9_.-], count: 0 to 2^31}` | points of attention by kind |
+| `kinds_evaluated` | integer, 0 to 2^31, optional | "none" differs from "not evaluated" |
+| `sections` | at most 16 of `{name, status}`, each 1 to 32 bytes of `[a-z0-9_.-]`, optional | coverage |
+| `html` | string | the issuer's page |
+
+- **These members are the kind's floor, frozen for every envelope version.** kista reads nothing else
+  and interprets no version: a report of a later envelope is stored and shown exactly as `v1` is, and
+  never waits for an upgrade ([Compatibility](compatibility.md)).
+- **Strict members**: `envelope`, `report`, `issue`, `issued_at`, `depth`, `subject.bodies` and
+  `html`. A document that breaks one is refused (`400` at an attach, the refusal `document` at a
+  feed or a bundle), and so is one whose `subject.bodies` does not list the body it is attached to.
+- **Everything else is carried unread.** Members are read by exact name; a document that repeats a
+  read member, in any letter case, is refused, and so is one that holds a second JSON value after
+  the object. Integers are written without a fraction or exponent.
+- **A summary list that breaks its rule does not lose the report.** An `attention` or `sections`
+  entry outside its grammar or bounds, or a `kinds_evaluated` that is not such an integer, drops
+  that member from the summary and sets `incomplete`; so does one of the three spelled only in
+  another letter case (`Attention` without `attention`), which is not read; the console's row then says "summary
+  incomplete: open the report".
+- **`html`** is semantic HTML only: headings, paragraphs, lists, tables, code, `details`; no style,
+  no script, no external resource, and not the text `http-equiv` or `srcdoc` anywhere in it: a page that
+  contains either (in any letter case, even in prose) is shown in the console but cannot be downloaded
+  from it, and so not printed. kista checks only that it is a string; its size is the
+  document's, within `attachments.max_size`. The console shows it in an isolated frame under kista's
+  own stylesheet ([Console](console.md#a-reports-page)); the API serves a report as any document,
+  as a file of its own type, never as `text/html`.
+- **The summary** is those members without `html`, with `bodies` (their number) and `read` (this
+  body's) in place of `subject`.
+
+**Issues.** A report's issues are a chain: each issue `supersedes` the previous issue's document of
+the same body, and the head is what is shown. A source retracts a report with a **higher issue** (a
+correction), never by withdrawing the highest alone: a kista that first receives a body's documents
+after the highest issue was withdrawn sees the lower one as current.
+
+### Vulnerabilities summaries
+
+- `info` and `none` are `informational`: counted apart, outside `findings`. A vulnerability is
+  informational only when every rating it carries is `info` or `none`; one that also has an
+  unrated or unknown rating stays a finding.
+- In a CycloneDX document a component is **checked** only when it carries the property
+  `kista:vulnerabilities:check` exactly once with the value `checked`; one that carries it exactly
+  once with `not_checked` is counted as marked not checked. The summary has `components` (all of
+  them), `checked` and `not_checked`. A property of another shape (a value that is not a string)
+  leaves its component unmarked; it does not refuse the document.
+- The console never says "no findings" while a component is unchecked or unmarked, but "N of M
+  components checked"; a count that reached the list bound (100,000) says "at least", and a
+  document at that bound is never read as fully checked ("N of at least M components checked").
+- Freshness is the statement's `valid_until`: the console's 30-day flag shows only on a document
+  without an unexpired one.
+
+A producer whose own marks differ maps them onto these; the mapping is the source's job.
+
 ### Visibility
 
 Every document starts as `administrators`. A tenant administrator may make it `readers`, one
@@ -104,12 +186,17 @@ supersedes a tenant's or the reverse.
 
 | Limit | Value |
 | --- | --- |
-| Document size | 4 MiB, `attachments.max_size` (64 KiB to 16 MiB) |
+| Document size | 4 MiB, `attachments.max_size` (64 KiB to 16 MiB); a kista that takes reports usually sets it higher |
 | Chain heads per (body, kind, origin) | 20 (feed documents count per issuer) |
 | Documents per tenant | 100,000 of its own, and 100,000 from feeds |
 | Documents held in memory while read and sent | `attachments.max_reads` (default 8) |
 
 Attaching over the API takes an upload slot, as publishing does.
+
+A feed run buffers each document whole, outside `attachments.max_reads`: memory is about `max_size`
+× (`max_reads` + the feeds running at once), and more while a document is summarised. The quota
+counts documents, not bytes. A feed's download has two minutes, so a 16 MiB document needs about
+140 KiB/s.
 
 ### Who attaches and removes
 
@@ -163,7 +250,7 @@ curl -X POST "https://repo.example.com/api/v1/tenants/acme/extensions/httpfs/att
 
 | Route | Who |
 | --- | --- |
-| `GET /api/v1/tenants/{t}/extensions/{ext}/attachments[?body_hash=&kind=&origin=&cursor=&limit=]` | the extension's administrators, the tenant's auditors |
+| `GET /api/v1/tenants/{t}/extensions/{ext}/attachments[?body_hash=&kind=&origin=&source=&version=&head=&cursor=&limit=]` | the extension's administrators, the tenant's auditors. `source` (`tenant`, `upstream:<name>`, `publisher:<name>`) and `version` narrow the list to the documents about that source's builds of that version; `head=true` to chain heads, withdrawn ones included (each says `withdrawn`): together, what is held about a version that waits for a decision |
 | `GET …/extensions/{ext}/attachments/{id}` | the same: the record, with its ETag |
 | `GET …/extensions/{ext}/attachments/{id}/content` | the same: the document, as a download |
 | `POST …/extensions/{ext}/attachments?body_hash=&kind=[&supersedes=]` | administrators; publishers' credentials too |
@@ -278,8 +365,10 @@ newer source is in [Compatibility](compatibility.md).
 ## Offering documents to the feed
 
 A tenant serves a feed when it has an active attestation key and the deployment has
-`serve.public_url` set. Only documents an administrator marks **feedable** are offered, and only the
-tenant's own and its publishers' documents: documents received from a feed are not relayed.
+`serve.public_url` set. Only documents an administrator marks **feedable** are offered with the
+tenant's own statements, and only the tenant's own and its publishers' documents. Documents received
+from a feed are handed on another way, with their issuer's statements unchanged
+([Handing received documents on](#handing-received-documents-on)).
 
 - Marking a document feedable issues a statement (numbered and signed when the change commits). It
   fails while the tenant cannot sign.
@@ -316,13 +405,77 @@ POST /api/v1/tenants/{t}/feed                    {"bodies": [{"body_hash": "…"
 GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}
 ```
 
-- A request names at most 500 bodies. The answer carries `statements` (never content), at most 1
-  MiB, each body's in `seq` order, with `more` when it stopped early, and `bodies`: per body read,
-  the last `seq` read.
+- A request names at most 500 bodies. The answer carries `statements` (never content), at most
+  `attachments.feed_answer_max` bytes (1 MiB by default), each body's in `seq` order, with `more`
+  when it stopped early, and `bodies`: per body read, the last `seq` read.
+- With `issuer` in the request, and `?issuer=` on the content route, the routes answer for another
+  issuer's documents the tenant hands on ([below](#handing-received-documents-on)); without it,
+  only the tenant's own.
 - The answer leaves out an offer the source no longer makes and always carries withdrawals.
 - Content is fetched by issuer id from the fixed path, with the same feedable and channel checks.
 - These are not management routes: a feed credential may be long-lived. A principal without `feed`
   gets `404`.
+
+## Handing received documents on
+
+A tenant hands a source's documents on when its feed of that source has **`export`** set: in a
+bundle for an air-gapped site ([Feeds for air-gapped sites](#feeds-for-air-gapped-sites)) **and
+online, to every holder of `feed`** on the tenant's channels, those who hold it already included.
+This is how an organisation's own kista, which mirrors a channel of the organisation's tenant on
+another kista, receives what an issuer said about the builds it mirrors without ever reaching the
+issuer. The relaying tenant signs nothing: the issuer's statements pass unchanged, and the
+downstream verifies them against the issuer's keys it pinned.
+
+```text
+POST /api/v1/tenants/{t}/feed  {"issuer": "<the issuer's feed URL>", "bodies": [{"body_hash": "…", "after_seq": 0}]}
+                               →  {"keys": {…}, "statements": [{"statement", "signature", "note"?}], "bodies": […], "more": false}
+GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}?issuer=<url>   →  the content
+```
+
+- `issuer` is a feed URL in its normalised form (`https://<host>/api/v1/tenants/<t>`), else `400`.
+- Authorised by `feed`, scoped to the grant's channels, as the tenant's own feed. A credential that
+  only installs never gets it: grant `feed` on the mirrored channel beside `install`.
+- Answered only for an issuer of which the tenant has an online feed with `export` set that kept a
+  keys file. Any other issuer, and any body out of scope, answers as a body without documents (the
+  content route: as a missing path).
+- `keys` is the issuer's keys file as the relaying feed last fetched it. There is no keys route.
+- Per body, from `after_seq` to the feed's cursor, in `seq` order: the stored statement bytes and
+  signature of each document held from the issuer, withdrawals, and what the export feed keeps
+  (refusals, statements that wait, statements about documents not held).
+- Content is served only for documents of kinds the `export` feed of that issuer takes. Every other
+  statement goes without content, with an unsigned `note`: for a statement the relay waits on, its
+  waiting reason (`newer`, `unknown kind`, `media type`, `document version`); for the rest (removed
+  or refused at the relay, or of a kind its export feed does not take) the fixed text
+  `not held by the relay`.
+- Each statement is verified against the relaying feed's own pinned keys before it is sent: a
+  body's answer ends just below one that does not verify. The relaying feed's record then says so
+  (`relay_stopped_at`, when an answer last ended early; a line in the console and in `feed show`),
+  and the server logs it, both at most once a minute whatever the requests: its downstreams
+  receive nothing past that statement until the key that signed it is pinned. A change of the
+  feed's keys or of `export` clears the record.
+- **One feed per issuer hands on.** In a tenant, `export` is on for at most one feed of an issuer:
+  setting it on a second feed of the same URL is refused (`400`), at the feed's creation and at a
+  change, with a message that names the feed that hands the issuer on already; clear `export`
+  there first, or remove that feed. The relay answers from that one feed: a statement it refused
+  for its `kinds` is sent as "not held", even when another feed of the issuer stored the document.
+  Hand an issuer on from the feed that takes the kinds its downstreams need.
+- An answer holds at most `attachments.feed_answer_max` bytes as written, the keys file included,
+  then `more`. A keys file that leaves no room for a statement under that bound is not handed on
+  (the answer carries no `keys`); the relaying feed's record and the log say so as above, and the
+  downstream's feed is `failing` ("…or its answer has no room for the issuer's keys").
+- The answer is checked against a change made while it was read: a body whose feed's `export` or
+  cursor changed meanwhile is answered nothing, and the subscriber asks again.
+- A suspended tenant serves nothing on the feed routes: a downstream's feed turns `unauthorized`,
+  keeps what it holds, and no withdrawal arrives meanwhile.
+
+**What a holder of `feed` learns**: the documents of bodies released in its channels, and which
+issuers the tenant hands on. A report lists the hashes of its subject's other bodies, and a
+statement of a kind the export feed does not take still arrives with its signed title and summary.
+Setting `export` widens what every existing holder receives; the console's confirmation says so.
+
+**A relay can withhold.** What it omits is omitted for good: the downstream's cursor passes it. It
+comes back only by resetting the feed's cursors (remove the feed keeping its documents, add it
+again).
 
 ## Subscribing to a feed
 
@@ -358,7 +511,9 @@ sequenceDiagram
    `egress-host`), tried again at `attachments.feed_interval`, not after 5 minutes (the list changes
    only with a restart). A bundle-mode feed contacts nothing and is not checked.
 3. **Pinned keys.** The fingerprints (`sha256:<64 hex>`) of the source's attestation keys, read from
-   `GET <feed URL>/attestation-keys` and checked with the source's operator.
+   `GET <feed URL>/attestation-keys` and checked with the source's operator. For a feed taken
+   through a relay, take them from the issuer itself, out of band: kista never shows a fingerprint
+   a relay sent.
 
 ### Adding a feed
 
@@ -380,17 +535,55 @@ kista admin -config kista.yaml feed add bigcorp enterest \
 | Readers | `-readers` / `readers` | allow documents whose signed `audience` is `readers` to arrive as `readers` |
 | Offer | `-channels` / `offer`, `channels` | which body hashes are sent to the source (below) |
 | Mode | `-mode` / `mode` | `online` (the default) or `bundle`: for statements in bundles ([Feeds for air-gapped sites](#feeds-for-air-gapped-sites)); set at creation |
-| Export | `-export` / `export` | an online feed keeps what a bundle needs ([Feeds for air-gapped sites](#feeds-for-air-gapped-sites)) |
+| Export | `-export` / `export` | hand the source's documents on: to bundles and to kistas that take this tenant's feed ([Handing received documents on](#handing-received-documents-on)); at most one feed per issuer in a tenant, a second is refused |
+| Via | `-via` / `via` | the relaying tenant's feed URL ([A feed through a relay](#a-feed-through-a-relay)); set at creation only |
 
-**Offer.** By default (`offer: upstreams`) the subscriber sends only the bodies it released from
-upstreams, never ones it published itself. With `-channels a,b` (`offer: channels`) it sends the
-bodies released in those channels. The source learns every body hash offered: the default keeps the
-tenant's own builds out of it.
+**Offer.** By default (`offer: upstreams`) the subscriber sends the bodies of its catalogue builds
+that **came from outside**: an upstream's, or a distributor's publisher's (a removed one's too), not
+withdrawn, released or not, so a version that still waits for a decision gets its documents. It never
+sends a body that a build of the tenant's own has (the tenant's, or a publisher's that is not a
+distributor's). With `-channels a,b` (`offer: channels`) it sends the bodies released in those
+channels. The source learns every body hash offered: the default tells it the hashes of every build
+the tenant received from outside, undecided ones and other upstreams' included, and never its own
+builds.
 
 **Readers.** Documents arrive as `administrators`. With `readers` on, a document whose signed
 `audience` is `readers` arrives as `readers`, shown to anyone who may see a release of the body. Turn
 it on only when the source allows republishing: a paid review shown to readers of a public release
 is published to anyone.
+
+### A feed through a relay
+
+A feed with **`via`** takes its issuer's statements from a tenant that hands them on, instead of
+from the issuer:
+
+```bash
+kista admin -config kista.yaml feed add acme reports \
+  -url https://issuer.example.com/api/v1/tenants/acme \
+  -via https://kista.example.com/api/v1/tenants/acme \
+  -credential org-kista \
+  -key sha256:<the issuer's fingerprint, taken from the issuer>
+```
+
+- `-url` stays the issuer's identity (the statements' `issuer`) and is **never contacted**. `-via`
+  passes the feed URL's checks, egress and `egress.hosts`; the credential is matched against it and
+  sent only there.
+- A run sends `issuer` and its bodies to `via`, keeps from the answer's `keys` only the keys it
+  pins, verifies every statement as a direct feed does, and fetches content from `via`.
+- A statement that arrives with a `note` is verified, then **waits** when the note is a waiting
+  reason (the relay is older than the issuer; it is asked for again at every run until the relay
+  carries the content) and is refused `no content` for good otherwise. A note is unsigned: only
+  kista's fixed words are kept with the refusal (`not held by the relay`); any other text a relay
+  writes there is recorded as `a note this kista does not know`.
+- A body's cursor moves no further than that body's own verified statements. The relay's unsigned
+  `bodies` moves nothing.
+- The feed is `failing` when the answer's keys hold none of the pinned ones: "none of the pinned
+  keys is in what the relay serves; take the issuer's current fingerprint from the issuer". A
+  rotation at the issuer stops documents until the new key is pinned.
+- `via` is set at creation and never changed or cleared: remove the feed and add it again.
+- With `export` set, such a feed hands on in turn; a chain has any length.
+- Do not set `-kinds` on a feed provisioned for reports: an explicit filter refuses a later kind for
+  good.
 
 ### Operating a feed
 
@@ -404,8 +597,8 @@ kista admin -config kista.yaml feed remove bigcorp enterest [-documents]
 ```
 
 `set` changes the credential, pinned keys, kinds (`-` clears them: every kind), readers and
-export (`-export=true|false`). The source URL, the offer and the mode cannot change; remove and add
-the feed instead.
+export (`-export=true|false`). The source URL, `via`, the offer and the mode cannot change; remove
+and add the feed instead.
 
 | Route | Who |
 | --- | --- |
@@ -429,19 +622,21 @@ pass to another feed of the same source if there is one, and otherwise are remov
 | `new` | never run; for a bundle-mode feed, no bundle imported yet |
 | `ok` | the last run completed |
 | `unauthorized` | the source answered the feed request with `404` (the credential's principal does not hold `feed`, or there is no such tenant), or refused the token twice; the next run is at the normal interval |
-| `failing` | the last run failed (network, egress, credential, none of the pinned keys published, an export feed at its cap, …); retried after 5 minutes (a host off `egress.hosts`: at the feed interval) |
+| `failing` | the last run failed (network, egress, credential, none of the pinned keys published or served by the relay, the tenant's document quota or an export feed's cap reached, …); retried after 5 minutes (a host off `egress.hosts`, and a quota or a cap reached: at the feed interval) |
 
 A feed's state is `active` or `paused`. `feed show` and the API give the last error, the last
 success, the next run, whether a run is requested, and the last run's result: counts (`offered`,
 `received`, `superseded`, `withdrawn`, `updated`, `duplicate`, `failed`, `refused`, `waiting`
 (statements this kista is too old to read, left for an upgrade); for an export
-feed also `kept`, statements about documents not held, `held`, statements waiting at the cap, and
-`overtaken`, a run stopped by a change of `export`; for a bundle import `gap`, `not offered`,
-`would_store`, `would_withdraw`, `would_wait` (a dry run's statements that an import would leave
-waiting), and `held`, statements that did not verify or came out of order; `narrowed`, documents a
+feed also `kept`, statements about documents not held, and
+`overtaken`, a run stopped by a change of `export`; `held`, statements waiting for room in the
+tenant's document quota or at an export feed's cap; for a bundle import `gap`, `not offered`,
+`would_store`, `would_withdraw`, `would_hold` (at the document quota), `would_wait` (a dry run's
+statements that an import would leave waiting), and `held`, statements that did not verify or came out of order; `narrowed`, documents a
 statement in a newer format narrowed to administrators)
 and up to 20 refusals with their reasons (from a bundle also `bundle: no content`, with the
-exporting side's note, and `bundle: outside its range`).
+exporting side's note, and `bundle: outside its range`; from a relay `no content`, with the relay's
+note).
 
 ### How a subscriber verifies
 
@@ -466,7 +661,8 @@ Cursors are per (feed, body):
   kind takes: a statement names the canonical form), `title`, `size`, `content` (does
   not match the statement), `document` (does not parse as its media type), `changed` (a held
   document's content or body differs), `body` (a withdrawal for another body), `not held`,
-  `limits`, `unrequested` (a body the subscriber did not send), `statement` (authentic, with a field
+  `limits` (the heads limit of its issuer), `no content` (a relay sent it without content, and not
+  because it waits), `unrequested` (a body the subscriber did not send), `statement` (authentic, with a field
   of the wrong type or out of its bounds; when its `issuer`, `body_hash` or `seq` cannot be read
   no cursor can move, and it is refused again whenever the source sends it). A document another
   feed stored first counts as `duplicate`, not as a refusal.
@@ -482,6 +678,23 @@ Cursors are per (feed, body):
   body with both kinds of wait is counted there whole, until the exporter carries the content.
 - **A transient failure** (a fetch, egress, a document the source no longer serves): the cursor
   stays, and the body's later statements wait for the next run.
+- **The document quota**: a document that does not fit the tenant's quota of feed documents holds
+  its body's cursor (`held` in the run), the other bodies go on, and the run ends `failing`
+  (`limits`). Nothing is lost: the document is taken once there is room. At the quota a run fetches
+  no new document at all. Only a document that would be stored holds its body: a statement that
+  arrives without content, one about a body no longer held and one over its issuer's heads limit
+  are refused as ever, and the cursor moves. Of a held body's later statements, those that need no
+  new record (a withdrawal, a newer statement about a document held) are still applied, and the
+  cursor stays. A run that ended on a limit alone is tried again at the feed's interval, not after
+  5 minutes (one that also met a transient failure: after 5 minutes). A bundle import holds the
+  same way; a dry run counts `would_hold` for what an import would hold, against the tenant's room
+  once for all the bundle's feeds, and `would_update` for a newer statement about a document held.
+  The quota is one pool per tenant, which a single source can fill; only the heads limit is per
+  issuer.
+  - **A limit while a relay is at its quota.** A tenant that hands the source on answers a body
+    only up to its feed's cursor. A withdrawal it applied behind a hold is therefore not handed on
+    until it has room and its cursor passes it: a downstream keeps showing the document meanwhile.
+    The relaying feed shows `limits`; make room there.
 - **Not verified** (`encoding`, `signature`: an unpinned key, bad bytes or a field name that breaks
   the member-name rule, `issuer`: another issuer): the body's cursor is held, so the statement is tried again at the next run and taken once
   its key is pinned.
@@ -512,14 +725,16 @@ site's import takes them into its bundle-mode feeds
 - its pinned keys, kinds, readers and offer work as an online feed's: they decide what the site
   asks for in a plan and what it takes in.
 
-**An export feed** (`-export`, `"export": true`), on a gateway: an online feed that also keeps what a
-bundle needs to answer a site's plan.
+**An export feed** (`-export`, `"export": true`), on a gateway: an online feed that also keeps what
+handing its documents on needs, in a bundle that answers a site's plan and online
+([Handing received documents on](#handing-received-documents-on)).
 
 - **The keys file**: the source's `GET …/attestation-keys` answer, kept by each run that verified
   it (`keys_file_at` in the record). A file over 64 KiB, or not UTF-8, fails the run (`failing`).
 - **Its refusals for good**, each with the statement's signed bytes: the reasons above, except
   `unrequested`. They still count under `refused` in a run. The site judges each statement again
-  itself.
+  itself. A kept refusal replaces the earlier kept row of the same document, so a document its
+  source re-states daily keeps one row.
 - **The statements that wait for its upgrade**, kept the same way, each under its waiting reason. A
   bundle carries them without content, the reason as their note: a site that can read one leaves it
   waiting too and asks again with every plan, until the gateway is upgraded and carries the content
@@ -532,8 +747,8 @@ bundle needs to answer a site's plan.
 
 **Changing it.** Setting `export` (`-export=true`) resets the feed's cursors and, on an active feed,
 requests a run: it reads the whole history again and keeps what it refused before. Clearing it
-(`-export=false`), or removing the feed, deletes its refusals and keys file; the kept statements of a
-source go when no feed of its URL has `export` left. A run that the change overtakes stops and
+(`-export=false`), or removing the feed, deletes its refusals and keys file, and the statements kept about its
+source's documents (no other feed of the URL hands it on: one feed per issuer). A run that the change overtakes stops and
 writes nothing (`overtaken`). The collector deletes a body's refusals and kept statements with its
 cursors.
 
@@ -550,6 +765,7 @@ attachments:            # file-only
   max_size: 4194304     # bytes (4 MiB); 65536..16777216
   max_reads: 8          # documents held in memory at once while read and sent; 0..256
   feed_interval: 6h     # between a feed's scheduled runs; at least 5m
+  feed_answer_max: 1MiB # the most a feed route's answer holds; 128KiB..1MiB
 ```
 
 | Setting | Default | Range |
@@ -557,6 +773,7 @@ attachments:            # file-only
 | `attachments.max_size` | 4 MiB | bytes, 64 KiB to 16 MiB (0: the default) |
 | `attachments.max_reads` | 8 | 1 to 256 (0: the default) |
 | `attachments.feed_interval` | 6h | at least 5m |
+| `attachments.feed_answer_max` | 1 MiB | 128 KiB to 1 MiB (leave it out for the default; `0` is refused): room for a relayed issuer's keys file and a statement |
 
 The block is file-only: there are no `KISTA_ATTACHMENTS_*` variables. Statements also need
 `serve.public_url`. See [Configuration](configuration.md).
@@ -567,7 +784,7 @@ The block is file-only: there are no `KISTA_ATTACHMENTS_*` variables. Statements
 | --- | --- | --- |
 | `attachment.add`, `attachment.change`, `attachment.remove` | `ext:<name>/attachment:<id>`; `block:<body hash>/attachment:<id>` for a removal through a block | a document attached, its visibility or feedable flag changed, removed; on a change or removal, `statement` is the seq issued with it |
 | `attestation_key.add`, `.activate`, `.retire` | `attestation-key:<id>` | the key lifecycle |
-| `feed.add`, `feed.change`, `feed.remove` | `feed:<name>` | a subscription changed; `feed.add` gives its `mode` and `export`; a change of `export` records `cursors: reset` or `kept: dropped` |
+| `feed.add`, `feed.change`, `feed.remove` | `feed:<name>` | a subscription changed; `feed.add` gives its `mode`, `export` and, when it has one, `via`; a change of `export` records `cursors: reset` or `kept: dropped` |
 | `feed.run` | `feed:<name>` | a run's counts, refusals by reason, and an error class |
 
 A source does not record one event per feed request; refusals are `authz.refused`.

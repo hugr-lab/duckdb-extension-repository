@@ -83,7 +83,7 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   grant list <tenant> [-extension-group g] [-extension x [-type t]]
   grant remove <tenant> <grant-id>
   attachment add <tenant> <extension> <file|-> -body-hash <h> -kind <k> -media-type <t> -title <t> [-supersedes <id>]
-                  a document about a body (spec 0011): sbom, vulnerabilities, review, provenance, notes
+                  a document about a body (spec 0011): sbom, vulnerabilities, review, provenance, notes, report
   attachment list <tenant> <extension> [-body-hash <h>]
   attachment show <tenant> <extension> <id> [-content]
   attachment readers|administrators|remove <tenant> <extension> <id>
@@ -93,13 +93,17 @@ const adminUsage = `usage: kista admin -config <file|env:NAME> <command> ...
   attestation-key list <tenant>
   attestation-key activate|retire <tenant> <id|fingerprint> [-force]
   feed add <tenant> <name> -url https://<host>/api/v1/tenants/<t> -credential <c> -key <fingerprint,...>
-           [-kinds <k,...>] [-readers] [-channels <c,...>] [-export]   a subscription to another repository's feed
+           [-kinds <k,...>] [-readers] [-channels <c,...>] [-export] [-via https://<relay>/api/v1/tenants/<t>]
+                                                 a subscription to another repository's feed; -via: taken through a
+                                                 relaying tenant (spec 0045): -url is then the issuer's identity, never
+                                                 contacted, and the credential is the relay's; set at creation only
   feed add <tenant> <name> -mode bundle -url … -key <fingerprint,...> [-kinds …] [-readers] [-channels …]
            for statements in bundles (spec 0014; not carried yet): no credential, never run
   feed list <tenant>
   feed show|sync|pause|resume <tenant> <name>    a running kista serve takes a requested run
   feed set <tenant> <name> [-credential <c>] [-key <fp,...>] [-kinds <k,...|->] [-readers=true|false]
-           [-export=true|false]                  keep what a bundle needs: =true reads the history again, =false drops it
+           [-export=true|false]                  hand its documents on, to bundles and to kistas that take this tenant's
+                                                 feed: =true reads the history again, =false drops what it kept
   feed remove <tenant> <name> [-documents]       its documents stay unless -documents
   extension-group add <tenant> <group> [-description …]   a named set of extension names (spec 0017)
   extension-group list <tenant>
@@ -2498,15 +2502,16 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 	channels := fs.String("channels", "", "")
 	documents := fs.Bool("documents", false, "")
 	mode := fs.String("mode", "", "")
+	via := fs.String("via", "", "")
 	pos, err := flags(fs, args)
-	if err != nil || len(pos) < 1 {
+	if err != nil || len(pos) < 1 || *via != "" && sub != "add" {
 		return errUsage
 	}
 	f := a.svc.Feeds
 	switch {
 	case sub == "add" && len(pos) == 2 && *feedURL != "":
 		sp := attachment.FeedSpec{Name: pos[1], URL: *feedURL, Credential: *cred, Keys: csv(*keys), Kinds: csv(*kinds),
-			Readers: readers.v, Channels: csv(*channels), Mode: *mode, Export: export.v}
+			Readers: readers.v, Channels: csv(*channels), Mode: *mode, Export: export.v, Via: *via}
 		if len(sp.Channels) > 0 {
 			sp.Offer = store.OfferChannels
 		}
@@ -2514,7 +2519,11 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		if err != nil {
 			return err
 		}
-		a.logf("feed add %s %s (%s, %s)", pos[0], fd.Name, fd.URL, fd.Mode)
+		if fd.Via != "" {
+			a.logf("feed add %s %s (%s via %s, %s)", pos[0], fd.Name, fd.URL, fd.Via, fd.Mode)
+		} else {
+			a.logf("feed add %s %s (%s, %s)", pos[0], fd.Name, fd.URL, fd.Mode)
+		}
 	case sub == "list" && len(pos) == 1:
 		fds, err := f.List(ctx, a.actor, pos[0])
 		if err != nil {
@@ -2542,7 +2551,11 @@ func (a *adminCmd) feed(ctx context.Context, sub string, args []string) error {
 		fmt.Fprintf(a.out, "%s %s\nmode %s, export %v\nstate %s, status %s %s\nlast success %s\ncredential %s\nkeys %s\nkinds %s, readers %v, offer %s\nlast run %s\n",
 			fd.Name, fd.URL, fd.Mode, fd.Export, fd.State, fd.Status, fd.LastError, last, fd.Credential, strings.Join(fd.Keys, ","),
 			strings.Join(fd.Kinds, ","), fd.Readers, fd.Offer, fd.LastRun)
-		for _, line := range []string{attachment.OlderThanSource(fd.Waiting), attachment.ExporterOlderThanSource(fd.WaitingSource)} { // spec 0046
+		if fd.Via != "" { // spec 0045: the relaying tenant its runs contact; the URL above is the issuer's identity
+			fmt.Fprintf(a.out, "via %s (the issuer's URL is never contacted)\n", fd.Via)
+		}
+		for _, line := range []string{attachment.OlderThanSource(fd.Waiting), attachment.ExporterOlderThanSource(fd.WaitingSource), // spec 0046
+			attachment.RelayStopped(fd)} { // spec 0045
 			if line != "" {
 				fmt.Fprintln(a.out, line)
 			}

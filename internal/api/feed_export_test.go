@@ -127,8 +127,13 @@ func TestFeedExport(t *testing.T) {
 		t.Fatalf("kept: %+v %v", kept, err)
 	}
 
-	// a second export feed accepting every kind stores "late", and the kept withdrawal applies to it
-	add("all", attachment.FeedSpec{Export: true})
+	// a second feed of the issuer cannot hand it on too (spec 0045: one feed per issuer)
+	if _, err := sub.feeds.Add(ctx, admin, "acme", attachment.FeedSpec{Name: "too", URL: feedURL, Credential: "src", Keys: []string{fp},
+		Offer: store.OfferChannels, Channels: []string{"prod"}, Export: true}); !errors.Is(err, store.ErrHandedOn) || !strings.Contains(err.Error(), `"reviews"`) {
+		t.Fatalf("a second export feed of the issuer: %v", err)
+	}
+	// a second feed accepting every kind stores "late", and the kept withdrawal applies to it
+	add("all", attachment.FeedSpec{})
 	if res := sub.run(t, "all"); res.Error != "" || res.Counts["received"] != 2 {
 		t.Fatalf("all: %+v", res)
 	}
@@ -163,20 +168,18 @@ func TestFeedExport(t *testing.T) {
 		t.Fatalf("not kept: %+v", k)
 	}
 
-	// clearing export drops the feed's refusals and keys file; the kept statements stay while
-	// another export feed of the URL remains, and go with the last one
+	// export cannot be set on the other feed of the issuer while this one hands it on
 	off, on := false, true
+	if _, err := sub.feeds.Change(ctx, admin, "acme", "all", attachment.FeedChange{Export: &on}, 0); !errors.Is(err, store.ErrHandedOn) {
+		t.Fatalf("export set on a second feed of the issuer: %v", err)
+	}
+	// clearing export drops the feed's refusals and keys file, and the statements kept about the
+	// issuer's documents: no other feed hands it on
 	if _, err := sub.feeds.Change(ctx, admin, "acme", "reviews", attachment.FeedChange{Export: &off}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if r, _ := sub.st.FeedRefusals(ctx, reviews.ID, body, 0, 100); len(r) != 0 {
 		t.Fatalf("refusals stay: %+v", r)
-	}
-	if _, ok, _ := keptOne(t, sub, tn.ID, feedURL, "never-stored"); !ok {
-		t.Fatal("kept statements went while another export feed remains")
-	}
-	if _, err := sub.feeds.Change(ctx, admin, "acme", "all", attachment.FeedChange{Export: &off}, 0); err != nil {
-		t.Fatal(err)
 	}
 	if _, ok, _ := keptOne(t, sub, tn.ID, feedURL, "never-stored"); ok {
 		t.Fatal("kept statements stay with no export feed")
@@ -196,7 +199,11 @@ func TestFeedExport(t *testing.T) {
 	}
 
 	// a run overtaken by a change of export writes no cursor and keeps nothing: the change reset
-	// what it would write and asked for another run
+	// what it would write and asked for another run. (The issuer is handed on by one feed at a time:
+	// reviews gives it up for this.)
+	if _, err := sub.feeds.Change(ctx, admin, "acme", "reviews", attachment.FeedChange{Export: &off}, 0); err != nil {
+		t.Fatal(err)
+	}
 	add("late-export", attachment.FeedSpec{})
 	onFeed = func() {
 		onFeed = nil
@@ -218,6 +225,16 @@ func TestFeedExport(t *testing.T) {
 		t.Fatalf("refusals after: %+v", r)
 	}
 
+	// reviews hands the issuer on again, and reads its history again
+	if _, err := sub.feeds.Change(ctx, admin, "acme", "late-export", attachment.FeedChange{Export: &off}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sub.feeds.Change(ctx, admin, "acme", "reviews", attachment.FeedChange{Export: &on}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if res := sub.run(t, "reviews"); res.Error != "" {
+		t.Fatalf("reviews, handing on again: %+v", res)
+	}
 	// past the cap on what export feeds keep, an export feed's body waits and the run fails with limits
 	if err := store.ExecRaw(ctx, sub.st, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
 INSERT INTO feed_kept (tenant_id, issuer, issuer_id, body_hash, seq, statement, signature, kept_at)
@@ -345,8 +362,9 @@ func TestFeedKeptPins(t *testing.T) {
 		return attachment.WireStatement{Statement: base64.StdEncoding.EncodeToString(b), Signature: base64.StdEncoding.EncodeToString(sig)}
 	}
 	add := func(name string, kinds, keys []string) {
+		// one feed hands the issuer on (spec 0045): reviews; the other stores what it left out
 		if _, err := sub.feeds.Add(ctx, admin, "acme", attachment.FeedSpec{Name: name, URL: feedURL, Credential: "src", Keys: keys,
-			Kinds: kinds, Export: true, Offer: store.OfferChannels, Channels: []string{"prod"}}); err != nil {
+			Kinds: kinds, Export: name == "reviews", Offer: store.OfferChannels, Channels: []string{"prod"}}); err != nil {
 			t.Fatal(err)
 		}
 	}

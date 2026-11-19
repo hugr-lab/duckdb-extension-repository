@@ -20,6 +20,7 @@ const (
 	KindReview          = "review"
 	KindProvenance      = "provenance"
 	KindNotes           = "notes"
+	KindReport          = "report" // spec 0045
 
 	AttachedByTenant    = "tenant"
 	AttachedByPublisher = "publisher"
@@ -34,6 +35,11 @@ var (
 	MaxAttachmentHeads   = 20 // per (body, kind, origin): chain heads only
 	MaxTenantAttachments = 100000
 )
+
+// ErrAttachmentQuota is the tenant's document quota reached (limits.ceilings.attachments): it wraps
+// into ErrInvalid. A feed's run holds the body's cursor on it instead of refusing the document for
+// good (spec 0045): the document is taken once there is room.
+var ErrAttachmentQuota = errors.New("store: the tenant's document quota is reached")
 
 // Attachment is a document's record. Its content is the object attachments/<ID> in the tenant's
 // storage domain, checked against ContentHash on every read.
@@ -95,9 +101,24 @@ AND b.name = ? AND b.body_hash = ? AND r.origin = ? AND r.created_by = ?`, tenan
 	return n > 0, err
 }
 
+// FeedDocumentRoom is how many more documents from feeds the tenant's quota takes (0: it is
+// reached). A feed's run asks before it fetches a new document (spec 0045): at the quota it holds
+// the body instead of downloading what it could not store.
+func (s *Store) FeedDocumentRoom(ctx context.Context, tenantID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, s.d.rebind("SELECT COUNT(*) FROM attachments WHERE tenant_id = ? AND removed_at IS NULL AND origin = ?"),
+		tenantID, AttachedByFeed).Scan(&n)
+	return max(MaxTenantAttachments-n, 0), err
+}
+
 // InsertAttachment adds a document's record (its object is already stored). The caller holds the
 // tenant's attachment lock: the limits are counted here.
 func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
+	// what refuses it whatever the room (its chain, its issuer's heads limit) is judged first: at the
+	// quota such a document is refused, not held for room that would not admit it
+	if err := t.JudgeAttachment(ctx, a); err != nil {
+		return err
+	}
 	// the tenant's own documents and those its feeds bring are counted apart: a source never fills
 	// the tenant's own quota
 	var total int
@@ -110,8 +131,30 @@ func (t *Tx) InsertAttachment(ctx context.Context, a *Attachment) error {
 		return err
 	}
 	if total >= MaxTenantAttachments {
-		return fmt.Errorf("%w: a tenant holds at most %d attachments (and as many from feeds)", ErrInvalid, MaxTenantAttachments)
+		return fmt.Errorf("%w: %w: a tenant holds at most %d attachments (and as many from feeds)", ErrInvalid, ErrAttachmentQuota, MaxTenantAttachments)
 	}
+	if a.ID == "" {
+		a.ID = NewID()
+	}
+	if a.IssuerID == "" {
+		a.IssuerID = a.ID
+	}
+	a.CreatedAt, a.Version = t.Now(), 1
+	if a.IssuedAt.IsZero() {
+		a.IssuedAt = a.CreatedAt
+	}
+	_, err := t.exec(ctx, "INSERT INTO attachments ("+attachmentCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		a.ID, a.TenantID, a.BodyHash, a.Kind, a.MediaType, a.Title, a.Size, a.ContentHash, a.Summary, a.Origin, a.AttachedBy,
+		a.Visibility, a.Feedable, a.Version, t.s.d.nullTimeArg(a.RemovedAt), t.s.d.timeArg(a.CreatedAt), a.Issuer, a.IssuerID,
+		nullable(a.KeyFP), nullable(a.SourceOrigin), t.s.d.timeArg(a.IssuedAt), t.s.d.nullTimeArg(a.ValidUntil), nullable(a.Supersedes),
+		t.s.d.nullTimeArg(a.WithdrawnAt), nullable(a.Statement), nullable(a.Signature), nullableInt(a.Seq), a.Narrowed)
+	return t.s.mapErr(err, "attachment")
+}
+
+// JudgeAttachment checks a document against what refuses it whatever room the tenant's quota has:
+// the document it supersedes, and the heads limit of its (body, kind, origin, issuer). The quota
+// itself is InsertAttachment's.
+func (t *Tx) JudgeAttachment(ctx context.Context, a *Attachment) error {
 	unresolved := false
 	if a.Supersedes != "" {
 		prev, err := t.attachmentByIssuer(ctx, a.TenantID, a.Issuer, a.Supersedes)
@@ -149,22 +192,7 @@ AND n.supersedes = a.issuer_id AND n.removed_at IS NULL)`, a.TenantID, a.BodyHas
 			return fmt.Errorf("%w: at most %d documents of a kind per body and origin: supersede one", ErrInvalid, MaxAttachmentHeads)
 		}
 	}
-	if a.ID == "" {
-		a.ID = NewID()
-	}
-	if a.IssuerID == "" {
-		a.IssuerID = a.ID
-	}
-	a.CreatedAt, a.Version = t.Now(), 1
-	if a.IssuedAt.IsZero() {
-		a.IssuedAt = a.CreatedAt
-	}
-	_, err := t.exec(ctx, "INSERT INTO attachments ("+attachmentCols+") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		a.ID, a.TenantID, a.BodyHash, a.Kind, a.MediaType, a.Title, a.Size, a.ContentHash, a.Summary, a.Origin, a.AttachedBy,
-		a.Visibility, a.Feedable, a.Version, t.s.d.nullTimeArg(a.RemovedAt), t.s.d.timeArg(a.CreatedAt), a.Issuer, a.IssuerID,
-		nullable(a.KeyFP), nullable(a.SourceOrigin), t.s.d.timeArg(a.IssuedAt), t.s.d.nullTimeArg(a.ValidUntil), nullable(a.Supersedes),
-		t.s.d.nullTimeArg(a.WithdrawnAt), nullable(a.Statement), nullable(a.Signature), nullableInt(a.Seq), a.Narrowed)
-	return t.s.mapErr(err, "attachment")
+	return nil
 }
 
 func (t *Tx) attachmentByIssuer(ctx context.Context, tenantID, issuer, issuerID string) (Attachment, error) {
@@ -192,6 +220,22 @@ func (s *Store) ExtensionAttachments(ctx context.Context, tenantID, packageType,
 	return s.listAttachments(ctx, `SELECT `+prefixed("a.", attachmentCols)+` FROM attachments a WHERE a.tenant_id = ? AND a.removed_at IS NULL
 AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = a.tenant_id AND b.package_type = ? AND b.name = ? AND b.body_hash = a.body_hash)
 ORDER BY a.body_hash, a.kind, a.created_at, a.id`, tenantID, packageType, name)
+}
+
+// ExtensionAttachmentsOf is ExtensionAttachments narrowed to the bodies of the package's builds of
+// one source (its id; "": any) and one package version ("": any): the documents about a version
+// that waits for a decision (spec 0045).
+func (s *Store) ExtensionAttachmentsOf(ctx context.Context, tenantID, packageType, name, source, version string) ([]Attachment, error) {
+	cond, args := "", []any{tenantID, packageType, name}
+	if source != "" {
+		cond, args = cond+" AND b.source = ?", append(args, source)
+	}
+	if version != "" {
+		cond, args = cond+" AND b.package_version = ?", append(args, version)
+	}
+	return s.listAttachments(ctx, `SELECT `+prefixed("a.", attachmentCols)+` FROM attachments a WHERE a.tenant_id = ? AND a.removed_at IS NULL
+AND EXISTS (SELECT 1 FROM builds b WHERE b.tenant_id = a.tenant_id AND b.package_type = ? AND b.name = ? AND b.body_hash = a.body_hash`+cond+`)
+ORDER BY a.body_hash, a.kind, a.created_at, a.id`, args...)
 }
 
 // BodyAttachments lists the documents (not removed) of one body in the tenant.

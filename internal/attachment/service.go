@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -27,6 +28,21 @@ type Service struct {
 	// them (issuer); without either, no document can be marked feedable.
 	Keys      *keys.Service
 	PublicURL string
+	// FeedAnswerMax is the most bytes a feed's answer holds, a relayed issuer's keys file included
+	// (attachments.feed_answer_max, spec 0045); 0: MaxFeedAnswer
+	FeedAnswerMax int
+	// Log takes what a relayed answer could not say to its caller; nil: none
+	Log *slog.Logger
+	// afterRelayRead runs, in tests, between a relayed answer's reads and its check that nothing
+	// changed under them
+	afterRelayRead func()
+}
+
+func (s *Service) feedAnswerMax() int {
+	if s.FeedAnswerMax > 0 {
+		return s.FeedAnswerMax
+	}
+	return MaxFeedAnswer
 }
 
 // DefaultMaxSize is a document's largest size unless configured (spec 0011: up to 16 MiB).
@@ -119,7 +135,7 @@ func (s *Service) Attach(ctx context.Context, a authz.Actor, tenant string, pkg 
 	if int64(len(in.Content)) > s.maxSize() || len(in.Content) == 0 {
 		return store.Attachment{}, fmt.Errorf("%w: a document is 1 byte to %d bytes", store.ErrInvalid, s.maxSize())
 	}
-	summary, err := Summarize(in.Kind, mt, in.Content)
+	summary, err := Summarize(in.Kind, mt, in.BodyHash, in.Content)
 	if err != nil {
 		return store.Attachment{}, fmt.Errorf("%w: %w", store.ErrInvalid, err)
 	}
@@ -203,6 +219,23 @@ func (s *Service) List(ctx context.Context, a authz.Actor, tenant string, pkg pk
 		return nil, err
 	}
 	return s.Store.ExtensionAttachments(ctx, t.ID, pkg.Type, pkg.Name)
+}
+
+// ListOf is List narrowed to the bodies of the extension's builds of one source, as a caller names
+// it (tenant, upstream:<name>, publisher:<name>; "": any), and of one package version ("": any):
+// the documents about a version that waits for a decision (spec 0045).
+func (s *Service) ListOf(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key, source, version string) ([]store.Attachment, error) {
+	t, err := s.reader(ctx, a, tenant, pkg)
+	if err != nil {
+		return nil, err
+	}
+	src := ""
+	if source != "" {
+		if src, err = s.Store.ResolveSource(ctx, t.ID, source); err != nil {
+			return nil, err
+		}
+	}
+	return s.Store.ExtensionAttachmentsOf(ctx, t.ID, pkg.Type, pkg.Name, src, version)
 }
 
 func (s *Service) reader(ctx context.Context, a authz.Actor, tenant string, pkg pkgtype.Key) (store.Tenant, error) {

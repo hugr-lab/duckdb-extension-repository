@@ -688,6 +688,55 @@ mirrors **everything the source channel serves to it**. A customer's own kista m
 Enterest channel this way gets every extension its organisation chooses with no change of its own.
 `*` on a mirror of anything else is refused (`400`, naming why).
 
+### Reports for an own kista {#reports-for-an-own-kista}
+
+An organisation's own kista usually cannot reach the analyser that reports on the builds it
+mirrors: it reaches only its organisation's tenant on another kista. That tenant hands the
+analyser's documents on, and the own kista takes them from it
+([Handing received documents on](attachments.md#handing-received-documents-on), spec 0045):
+
+1. **On the tenant it mirrors**: the tenant's feed of the analyser has `export` set ("Hand on" in
+   the console), and the own kista's credential holds `feed` on the mirrored channel **beside**
+   `install`. `install` never implies `feed`. A tenant hands an analyser on from one feed: `export`
+   on a second feed of the same analyser is refused, so set it on the feed that takes the kinds the
+   own kista needs (name no `-kinds` on it).
+
+   ```bash
+   kista admin -config kista.yaml feed set acme reports -export=true
+   kista admin -config kista.yaml grant add acme -principal 'client:corp-idp|own-kista' -verb feed -channel stable
+   ```
+
+2. **On the own kista**: a feed whose URL is the analyser's (the issuer's identity, never
+   contacted) and whose `via` is the tenant it mirrors, with the mirror's credential and the
+   analyser's key fingerprint taken from the analyser itself:
+
+   ```bash
+   kista admin -config kista.yaml feed add main reports \
+     -url https://analyser.example.com/api/v1/tenants/acme \
+     -via https://kista.example.com/api/v1/tenants/acme \
+     -credential org-kista -key sha256:<the analyser's fingerprint>
+   ```
+
+   The credential's `prefixes` cover the `via` URL, and `egress.hosts`, when enforced, lists its
+   host; the analyser's host need not be reachable. Name no `-kinds`: a filter refuses a later kind
+   for good.
+
+3. **Sizes**: a report holds its issuer's page, so both kistas usually raise
+   `attachments.max_size` above its 4 MiB default (at most 16 MiB). A run buffers each document
+   whole: memory is about `max_size` × (`max_reads` + the feeds running at once).
+
+The default offer names every build the own kista received from outside, released or not, so a
+version that waits under a manual rule has its report on its row in **Needs a decision** before
+anyone places it. The tenant it mirrors answers only for bodies released in the channels the `feed`
+grant covers, which is what a mirror holds. With `export` set on its own feed, the own kista hands
+the documents on in turn, online and to a [bundle](#bundle-mode) for an air-gapped site.
+
+One limit to know: while the tenant it mirrors is at its document quota, its feed of the analyser
+holds (`limits`) and it hands a body on only up to where that feed stopped. A withdrawal the tenant
+applied behind the hold does not reach the own kista until the tenant has room again, so the own
+kista keeps showing the withdrawn document meanwhile
+([the document quota](attachments.md#how-a-subscriber-verifies)).
+
 **Discovery.** Each run, after the [revocation pass](#revocations-from-a-kista), reads `-/names`,
 every page, with the upstream's credential, and keeps a name when:
 
@@ -938,8 +987,11 @@ administrator's act, recorded as `bundle.export`. A plan discloses the site's co
 gateway: its sources, allowlists, platforms, DuckDB versions and the bodies it holds.
 
 **Statements** (spec 0014 phase 1b). For each of the plan's feeds, the export carries what the
-tenant's export feeds of the same URL hold ([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites)).
-It contacts no feed.
+tenant's export feed of the same URL holds ([Feeds for air-gapped sites](attachments.md#feeds-for-air-gapped-sites)).
+It contacts no feed. The same setting hands a feed's documents on online, to the kistas that take
+the tenant's feed ([Handing received documents on](attachments.md#handing-received-documents-on)):
+`export` is not only for air-gapped sites. A plan's feeds take their bodies from the feed's offer:
+by default the catalogue builds that came from outside, released or not.
 
 On the gateway, subscribe to the source with `export` set
 (`kista admin feed add <tenant> <name> -url … -credential … -key … -export`, or
@@ -949,10 +1001,10 @@ bodies it holds itself, under its own grant at the source: a body it does not mi
 grant, gives the site nothing for it. The server administrator who runs the export decides what
 leaves: a statement's signed `audience` travels with it, and the site applies its own `readers`.
 
-- **Which feed**: an online feed of the URL with `export` set, whose kinds include every kind the
-  site's feed accepts, and which kept a keys file. Without one the feed fails as a whole ("not
-  subscribed here", "not kept for export", "accepts fewer kinds", "never ran"), the bundle carries
-  the others, and the command exits `1`. With several, each body takes the one that read furthest.
+- **Which feed**: the tenant's online feed of the URL with `export` set (a tenant hands on at most
+  one feed per issuer), which must take every kind the site's feed accepts and have kept a keys
+  file. Otherwise the feed fails as a whole ("not subscribed here", "not kept for export", "accepts
+  fewer kinds", "never ran"), the bundle carries the others, and the command exits `1`.
 - **Which bodies**: those the plan offers, and from the start those of the files the bundle brings
   for the feed's sources. Each body's range runs from the plan's cursor to what the gateway read.
 - **What**: each statement as its issuer signed it. A stored document's content goes with it,

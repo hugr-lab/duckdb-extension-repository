@@ -33,7 +33,8 @@ fetch from any public https host:
   pull-through fetch, by the licence relay and the usage forwarder;
 - an issuer's URL, its discovery document's `jwks_uri` (often another host: Google's discovery is on
   `accounts.google.com`, its JWKS on `www.googleapis.com`), read at add and refreshed while serving;
-- a feed's URL (spec 0011), read at add and at every feed run.
+- a feed's URL (spec 0011), read at add and at every feed run (a feed with `via`, spec 0045, checks
+  `via` instead: its own URL is its issuer's identity and is never contacted).
 
 The address rules (spec 0006) stop SSRF into private networks and cloud metadata, but not the
 other uses of an open egress: kista as a fetcher of arbitrary public content on the operator's
@@ -61,7 +62,7 @@ by the configuration file alone.
 | Upstream runs, lazy and pull-through fetches, revocations, names (specs 0009, 0032, 0039) | `app.Egress` | as above | tenant |
 | A bundle export's `.well-known` read of its plan's sources (spec 0014) | `app.Egress` | the sources' prefixes | tenant |
 | Licence relay (`-/licenses`, spec 0012) and usage forwarding (spec 0012 phase 1c) | `app.Egress` | the upstream's prefix | tenant |
-| Feed runs: `attestation-keys`, `/feed`, documents (spec 0011) | `app.Egress` | the tenant's feed URL | tenant |
+| Feed runs: `attestation-keys`, `/feed`, documents (spec 0011) | `app.Egress` | the tenant's feed URL (its `via`, when it has one: spec 0045) | tenant |
 | The bootstrap's issuer and upstreams (specs 0020 phase 4a, 0024) | `app.Egress` (through the services above) | the configuration, written as tenant records | tenant |
 | The community sync (spec 0030 part 3) | `app.Egress` today; its own client after this spec | `reserved.community_sync.url` | operator |
 | Server issuers' discovery and JWKS, the server console's origins (spec 0007) | `app.ServerEgress` | `auth.server_issuers` and their discovery documents | operator |
@@ -71,7 +72,7 @@ by the configuration file alone.
 | `kista duckdb …`, `kista bundle …` (CLI tools on an operator's machine) | their own clients | the command line | not the server |
 
 Bundle-mode upstreams and bundle-mode feeds (spec 0014) contact nothing: they are exempt from the
-add check and from the start-time warning.
+add check and from the start-time warning. A feed with `via` (spec 0045) contacts only `via`.
 
 ### The rule
 
@@ -188,7 +189,8 @@ alone, before DNS, so naming it tells the tenant nothing about internal names.
   - **issuer add** (`POST …/issuers`): the issuer URL's host and an explicit `jwks_uri`'s host,
     checked first; a discovered `jwks_uri` on a host that is not on the list answers the same, naming
     that host (the Google case);
-  - **feed add** (`POST …/feeds`): the feed URL's host (not for a bundle-mode feed).
+  - **feed add** (`POST …/feeds`): the feed URL's host (not for a bundle-mode feed; for a feed with
+    `via`, spec 0045, the host of `via`).
 
   The mapping is checked before `ErrIssuerFetch`, `ErrSourceFetch` and `ErrInvalid`, which would
   otherwise turn it into the generic answers. Each such answer is recorded as an **audited refusal**

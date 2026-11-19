@@ -227,7 +227,7 @@ func TestWaitingThroughExport(t *testing.T) {
 			b2, sig2, st2 := src.statement(2, "d2", body, doc("two"), nil)
 			b3, sig3, _ := src.statement(3, "d3", body, doc("three"), nil)
 			b4, sig4, _ := src.statement(4, "d4", body, []byte(`{}`), func(st *attachment.Statement) {
-				st.Kind, st.MediaType = "report", "application/vnd.kista.report.v1+json"
+				st.Kind, st.MediaType = "audit", "application/vnd.kista.audit.v1+json"
 			})
 			held := func(id string, seq int64, b []byte, sig string, st attachment.Statement, content []byte) {
 				t.Helper()
@@ -607,7 +607,7 @@ func TestExportNewerPlan(t *testing.T) {
 				t.Fatal(err)
 			}
 			m["accepts_reports"] = map[string]any{"envelope": 2}
-			m["feeds"] = []any{map[string]any{"url": feedURL, "keys": []any{"sha256:" + strings.Repeat("9", 64)}, "kinds": []any{"report", "review"},
+			m["feeds"] = []any{map[string]any{"url": feedURL, "keys": []any{"sha256:" + strings.Repeat("9", 64)}, "kinds": []any{"audit", "review"},
 				"sources": []any{}, "bodies": []any{}, "via": "relay"}}
 			// before the repository source, in canonical order; its members in a shape of its own
 			m["sources"] = append([]any{map[string]any{"kind": "adbc-registry", "package_type": "adbc_driver",

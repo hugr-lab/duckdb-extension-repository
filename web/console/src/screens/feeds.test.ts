@@ -7,7 +7,7 @@ import { originText } from './Reports'
 
 describe('feeds', () => {
   const form = { name: 'enterest', url: 'https://enterest.example/api/v1/tenants/acme', credential: 'src', keys: 'sha256:a, sha256:b sha256:a',
-    kinds: [...feedKinds], readers: false, offer: 'upstreams' as const, channels: ['prod'], mode: 'online' as const, export: false }
+    kinds: [...feedKinds], readers: false, offer: 'upstreams' as const, channels: ['prod'], mode: 'online' as const, export: false, via: '' }
   it('sends every kind as none named, channels only when offered by channel', () => {
     expect(feedBody(form)).toEqual({ name: 'enterest', url: form.url, credential: 'src', keys: ['sha256:a', 'sha256:b'], readers: false, offer: 'upstreams' })
     expect(feedBody({ ...form, kinds: ['review'], offer: 'channels', readers: true })).toEqual({ name: 'enterest', url: form.url, credential: 'src',
@@ -21,9 +21,9 @@ describe('feeds', () => {
   it('says what a feed keeps or brought from bundles', () => {
     expect(feedBundleLine({ mode: 'bundle' } as Feed)).toBe('no bundle imported yet')
     expect(feedBundleLine({ mode: 'bundle', bundle_id: 'b-1' } as Feed)).toBe('last bundle b-1')
-    expect(feedBundleLine({ mode: 'online', export: true } as Feed)).toBe('kept for export from its next run')
+    expect(feedBundleLine({ mode: 'online', export: true } as Feed)).toBe('handed on from its next run')
     expect(feedBundleLine({ mode: 'online', export: false } as Feed)).toBe('')
-    expect(feedBundleLine({ mode: 'online', export: true, keys_file_at: '2026-10-17T10:00:00Z' } as Feed)).toMatch(/^kept for export, keys file of /)
+    expect(feedBundleLine({ mode: 'online', export: true, keys_file_at: '2026-10-17T10:00:00Z' } as Feed)).toMatch(/^handed on, keys file of /)
     expect(feedStatus({ mode: 'bundle', status: 'new' } as Feed)).toBe('no bundle yet')
     expect(feedStatus({ mode: 'online', status: 'new' } as Feed)).toBe('not run yet')
   })

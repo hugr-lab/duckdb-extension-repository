@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/hugr-lab/duckdb-extension-repository/internal/attachment"
 	"github.com/hugr-lab/duckdb-extension-repository/internal/license"
@@ -322,19 +320,7 @@ func newerFormat(data []byte, highest, writer string) error {
 
 // Text strips control and format characters and bounds s to n bytes: export reasons and the
 // exporter are shown and stored as data.
-func Text(s string, n int) string {
-	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == utf8.RuneError {
-			return -1
-		}
-		return r
-	}, s)
-	for len(s) > n {
-		_, size := utf8.DecodeLastRuneInString(s)
-		s = s[:len(s)-size]
-	}
-	return s
-}
+func Text(s string, n int) string { return attachment.Text(s, n) }
 
 // ValidPrefix checks a repository source's prefix is in kista's normalised form: https, lower-case
 // scheme and host, no default port, no user info, query, fragment, dot segments or trailing slash.

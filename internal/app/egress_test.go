@@ -178,14 +178,17 @@ func TestWarnEgressHosts(t *testing.T) {
 	upstream("listed", store.UpstreamRepo, "https://listed.example/x", store.ModeMirror)
 	upstream("air", store.UpstreamRepo, "https://air.unlisted/x", store.ModeBundle)
 	upstream("again", store.UpstreamRepo, "https://REPO.Unlisted./y", store.ModeMirror) // repo.unlisted, spelled otherwise
-	feed := func(name, url, mode, cred string) {
+	feed := func(name, url, mode, cred, via string) {
 		in("acme", func(tx *store.Tx) error {
 			return tx.InsertFeed(ctx, &store.Feed{TenantID: ids["acme"], Name: name, URL: url, Credential: cred, Keys: []string{fp},
-				Offer: store.OfferUpstreams, Mode: mode, CreatedBy: "t"})
+				Offer: store.OfferUpstreams, Mode: mode, CreatedBy: "t", Via: via})
 		})
 	}
-	feed("src", "https://feed.unlisted/api/v1/tenants/x", store.FeedOnline, "c")
-	feed("air", "https://airfeed.unlisted/api/v1/tenants/x", store.FeedBundle, "")
+	feed("src", "https://feed.unlisted/api/v1/tenants/x", store.FeedOnline, "c", "")
+	feed("air", "https://airfeed.unlisted/api/v1/tenants/x", store.FeedBundle, "", "")
+	// a feed taken through a relay (spec 0045) contacts its via, never its issuer's URL
+	feed("own", "https://issuer.unlisted/api/v1/tenants/x", store.FeedOnline, "c", "https://relay.unlisted/api/v1/tenants/y")
+	feed("ok", "https://issuer2.unlisted/api/v1/tenants/x", store.FeedOnline, "c", "https://listed.example/api/v1/tenants/y")
 	// the reads the warning makes
 	if rs, err := st.IssuerURLs(ctx); err != nil || len(rs) != 3 || !slices.ContainsFunc(rs, func(r [4]string) bool {
 		return r[0] == ids["acme"] && r[1] == "a" && r[2] == "https://idp.unlisted" && r[3] == "https://keys.unlisted/jwks"
@@ -196,8 +199,9 @@ func TestWarnEgressHosts(t *testing.T) {
 		!slices.Contains(rs, [5]string{ids["acme"], "air", store.UpstreamRepo, store.ModeBundle, "https://air.unlisted/x"}) {
 		t.Fatalf("UpstreamPrefixes: %v %v", rs, err)
 	}
-	if rs, err := st.FeedURLs(ctx); err != nil || len(rs) != 2 ||
-		!slices.Contains(rs, [4]string{ids["acme"], "src", store.FeedOnline, "https://feed.unlisted/api/v1/tenants/x"}) {
+	if rs, err := st.FeedURLs(ctx); err != nil || len(rs) != 4 ||
+		!slices.Contains(rs, [4]string{ids["acme"], "src", store.FeedOnline, "https://feed.unlisted/api/v1/tenants/x"}) ||
+		!slices.Contains(rs, [4]string{ids["acme"], "own", store.FeedOnline, "https://relay.unlisted/api/v1/tenants/y"}) {
 		t.Fatalf("FeedURLs: %v %v", rs, err)
 	}
 
@@ -220,7 +224,7 @@ func TestWarnEgressHosts(t *testing.T) {
 		got = append(got, w)
 	}
 	want := []warning{{"WARN", "extensions.duckdb.org", 1, 1}, {"WARN", "feed.unlisted", 1, 1}, {"WARN", "idp.unlisted", 2, 2},
-		{"WARN", "keys.unlisted", 2, 1}, {"WARN", "repo.unlisted", 2, 1}}
+		{"WARN", "keys.unlisted", 2, 1}, {"WARN", "relay.unlisted", 1, 1}, {"WARN", "repo.unlisted", 2, 1}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("the warnings: %+v\n%s", got, buf.String())
 	}

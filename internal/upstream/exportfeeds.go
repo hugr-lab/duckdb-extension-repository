@@ -29,8 +29,8 @@ import (
 // ExportFeed is a feed's part of an export.
 type ExportFeed struct {
 	URL         string         `json:"url"`
-	From        string         `json:"from,omitempty"`   // the export feeds it came from
-	Status      string         `json:"status,omitempty"` // the most recently successful candidate's, so a stale gateway shows
+	From        string         `json:"from,omitempty"`   // the export feed it came from
+	Status      string         `json:"status,omitempty"` // the export feed's, so a stale gateway shows
 	LastSuccess time.Time      `json:"last_success,omitzero"`
 	Counts      map[string]int `json:"counts"` // bodies, statements, withdrawals, without_content, documents
 	Bytes       int64          `json:"bytes"`  // batches and documents
@@ -153,54 +153,39 @@ func feedFails(why string) error { return fmt.Errorf("%w: %s", errFeedFails, why
 // feed exports one plan feed as the n-th feed of the bundle.
 func (x *exporter) feed(ctx context.Context, plan *bundle.Plan, pf *bundle.PlanFeed, m *bundle.Manifest, all []store.Feed,
 	spool *os.File, out *ExportFeed, n int) (*xfeed, error) {
-	// the candidates: online feeds of the URL that keep for export, take every kind the site's
-	// feed takes, and kept a keys file
-	var cands []store.Feed
-	why := whyNotSubscribed // the furthest any feed of the URL got
-	rank := map[string]int{whyNotSubscribed: 0, whyNotKept: 1, whyFewerKinds: 2, whyNeverRan: 3}
-	got := func(w string) {
-		if rank[w] > rank[why] {
-			why = w
-		}
-	}
+	// the tenant's online feed of the URL that hands it on (export): a tenant has at most one per
+	// issuer (spec 0045). It must take every kind the site's feed takes, and have kept a keys file
+	var gw store.Feed
+	why := whyNotSubscribed
 	for _, f := range all {
 		if f.URL != pf.URL || f.Mode != store.FeedOnline {
 			continue
 		}
+		if !f.Export {
+			if gw.ID == "" {
+				why = whyNotKept
+			}
+			continue
+		}
+		gw = f
 		switch {
-		case !f.Export:
-			got(whyNotKept)
 		case !covers(f.Kinds, pf.Kinds):
-			got(whyFewerKinds)
+			why = whyFewerKinds
 		case f.KeysFileAt.IsZero():
-			got(whyNeverRan)
+			why = whyNeverRan
 		default:
-			cands = append(cands, f)
+			why = ""
 		}
 	}
-	if len(cands) == 0 {
+	if why != "" {
 		return nil, feedFails(why)
 	}
-	slices.SortFunc(cands, func(a, b store.Feed) int { return strings.Compare(a.Name, b.Name) })
-	var names []string
-	newest := cands[0]
-	for _, f := range cands {
-		names = append(names, f.Name)
-		if f.KeysFileAt.After(newest.KeysFileAt) {
-			newest = f
-		}
-		if f.LastSuccessAt.After(out.LastSuccess) {
-			out.LastSuccess, out.Status = f.LastSuccessAt, f.Status
-		}
-	}
-	if out.Status == "" {
-		out.Status = newest.Status
-	}
-	out.From = "feeds " + strings.Join(names, ",")
+	out.LastSuccess, out.Status = gw.LastSuccessAt, gw.Status
+	out.From = "feeds " + gw.Name
 	xf := &xfeed{m: bundle.Feed{URL: pf.URL, Bodies: []bundle.FeedBody{}}}
 	if err := x.s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
-		xf.keys, _, err = tx.FeedKeysFile(ctx, newest.ID)
+		xf.keys, _, err = tx.FeedKeysFile(ctx, gw.ID)
 		return err
 	}); err != nil {
 		return nil, err
@@ -218,11 +203,9 @@ func (x *exporter) feed(ctx context.Context, plan *bundle.Plan, pf *bundle.PlanF
 			pinned[fp] = k
 		}
 	}
-	cursors := map[string]map[string]int64{}
-	for _, f := range cands {
-		if cursors[f.ID], err = x.s.Store.FeedCursors(ctx, f.ID); err != nil {
-			return nil, err
-		}
+	cursors, err := x.s.Store.FeedCursors(ctx, gw.ID)
+	if err != nil {
+		return nil, err
 	}
 
 	// the bodies: the plan's, and from 0 those of the files the bundle brings for the feed's sources
@@ -250,19 +233,13 @@ func (x *exporter) feed(ctx context.Context, plan *bundle.Plan, pf *bundle.PlanF
 	sort.Strings(bodies)
 
 	var stmts []xstatement
-	used := map[string]string{} // body: the candidate whose cursor ends its range
+	var used []string // the bodies whose range the feed's cursor ends
 	for _, body := range bodies {
-		from := after[body]
-		best, upTo := store.Feed{}, from
-		for _, f := range cands {
-			if c := cursors[f.ID][body]; c > upTo {
-				best, upTo = f, c
-			}
+		from, upTo := after[body], cursors[body]
+		if upTo <= from {
+			continue // the feed did not read past the site's cursor: nothing to carry
 		}
-		if best.ID == "" {
-			continue // no export feed read past the site's cursor: nothing to carry
-		}
-		got, end, err := x.bodyStatements(ctx, pf, pinned, best, body, from, upTo)
+		got, end, err := x.bodyStatements(ctx, pf, pinned, gw, body, from, upTo)
 		if err != nil {
 			return nil, err
 		}
@@ -274,13 +251,13 @@ func (x *exporter) feed(ctx context.Context, plan *bundle.Plan, pf *bundle.PlanF
 			return nil, feedFails(whyFeedLimits)
 		}
 		xf.m.Bodies = append(xf.m.Bodies, bundle.FeedBody{BodyHash: body, AfterSeq: from, Seq: end})
-		used[body] = best.ID
+		used = append(used, body)
 		out.Counts["bodies"]++
 	}
 	// the reads above are not one snapshot: a change of export (its refusals and kept statements
 	// dropped) or the collector (a body's rows gone with its cursor) meanwhile would leave a range
 	// that hides statements; such a feed fails, to be exported again
-	if changed, err := x.changed(ctx, cands, cursors, used); err != nil {
+	if changed, err := x.changed(ctx, gw, cursors, used); err != nil {
 		return nil, err
 	} else if changed {
 		return nil, feedFails(whyFeedChanged)
@@ -297,122 +274,94 @@ func (x *exporter) feed(ctx context.Context, plan *bundle.Plan, pf *bundle.PlanF
 	return xf, nil
 }
 
-// changed reports whether a candidate's export setting or a used cursor moved since they were read.
-func (x *exporter) changed(ctx context.Context, cands []store.Feed, cursors map[string]map[string]int64, used map[string]string) (bool, error) {
-	var now []store.Feed
-	if err := x.s.Store.InTx(ctx, "", func(tx *store.Tx) error {
+// changed reports whether the feed's export setting or a used cursor moved since they were read.
+func (x *exporter) changed(ctx context.Context, gw store.Feed, cursors map[string]int64, used []string) (bool, error) {
+	var now store.Feed
+	err := x.s.Store.InTx(ctx, "", func(tx *store.Tx) error {
 		var err error
-		now, err = tx.ListFeeds(ctx, x.t.ID)
+		now, err = tx.GetFeedByID(ctx, gw.ID)
 		return err
-	}); err != nil {
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
 		return false, err
 	}
-	for _, c := range cands {
-		i := slices.IndexFunc(now, func(f store.Feed) bool { return f.ID == c.ID })
-		if i < 0 || !now[i].Export || now[i].ExportEpoch != c.ExportEpoch {
-			return true, nil
-		}
+	if !now.Export || now.ExportEpoch != gw.ExportEpoch {
+		return true, nil
 	}
-	again := map[string]map[string]int64{}
-	for body, id := range used {
-		if again[id] == nil {
-			cur, err := x.s.Store.FeedCursors(ctx, id)
-			if err != nil {
-				return false, err
-			}
-			again[id] = cur
-		}
-		if again[id][body] < cursors[id][body] {
+	again, err := x.s.Store.FeedCursors(ctx, gw.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, body := range used {
+		if again[body] < cursors[body] {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// bodyStatements collects a body's statements in (from, upTo] as the tenant holds them: its
-// documents of the issuer (whichever feed stored them), the statements an export feed kept, the
-// chosen feed's refusals, among them the statements that wait for this kista's upgrade (spec 0046:
-// carried without content, their note the waiting reason); at one seq the first of these wins. The
+// bodyStatements collects a body's statements in (from, upTo] as the tenant holds them
+// (attachment.HeldStatements, shared with the online relay of spec 0045): its documents of the
+// issuer (whichever feed stored them), the statements the export feed kept, its
+// refusals, among them the statements that wait for this kista's upgrade (spec 0046: carried
+// without content, their note the waiting reason); at one seq the first of these wins. The
 // range ends just below a statement that does not verify with the plan's keys, or whose live
 // document cannot be read.
 func (x *exporter) bodyStatements(ctx context.Context, pf *bundle.PlanFeed, pinned map[string]*rsa.PublicKey, best store.Feed,
 	body string, from, upTo int64) ([]xstatement, int64, error) {
-	type cand struct {
-		stmt, sig string
-		note      string
-		doc       *store.Attachment
-	}
-	bySeq := map[int64]cand{}
-	refusals, err := x.s.Store.FeedRefusals(ctx, best.ID, body, from, upTo)
+	held, err := attachment.HeldStatements(ctx, x.s.Store, x.t.ID, pf.URL, best.ID, body, from, upTo)
 	if err != nil {
 		return nil, 0, err
 	}
-	for _, r := range refusals {
-		note := bundle.Text(r.Reason, bundle.MaxDetail)
-		if note == "" {
-			note = noteRefused
-		}
-		bySeq[r.Seq] = cand{stmt: r.Statement, sig: r.Signature, note: note}
-	}
-	kept, err := x.s.Store.FeedKeptOf(ctx, x.t.ID, pf.URL, body, from, upTo)
-	if err != nil {
-		return nil, 0, err
-	}
-	for _, k := range kept {
-		bySeq[k.Seq] = cand{stmt: k.Statement, sig: k.Signature, note: noteNotHeld}
-	}
-	docs, err := x.s.Store.FeedDocumentsOf(ctx, x.t.ID, pf.URL, body, from, upTo)
-	if err != nil {
-		return nil, 0, err
-	}
-	for i := range docs {
-		d := &docs[i]
-		c := cand{stmt: d.Statement, sig: d.Signature}
-		if d.RemovedAt.IsZero() {
-			c.doc = d
-		} else {
-			c.note = noteRemoved
-		}
-		bySeq[d.Seq] = c
-	}
-	seqs := make([]int64, 0, len(bySeq))
-	for q := range bySeq {
-		seqs = append(seqs, q)
-	}
-	slices.Sort(seqs)
 	var out []xstatement
-	for _, q := range seqs {
-		c := bySeq[q]
-		stmt := []byte(c.stmt)
-		sig, err := base64.StdEncoding.DecodeString(c.sig)
+	for _, c := range held {
+		q := c.Seq
+		// why the exporting side holds no content for it: its refusal's reason, a removal, a document
+		// it never held
+		note := ""
+		switch {
+		case c.Removed:
+			note = noteRemoved
+		case c.NotHeld:
+			note = noteNotHeld
+		case c.Doc == nil:
+			if note = bundle.Text(c.Refused, bundle.MaxDetail); note == "" {
+				note = noteRefused
+			}
+		}
+		stmt := []byte(c.Statement)
+		sig, err := base64.StdEncoding.DecodeString(c.Signature)
 		if err != nil {
 			return out, q - 1, nil
 		}
 		st, err := attachment.Verify(stmt, sig, pinned)
 		// authentic, with a member out of its bounds: refused for good here, and carried so the site
 		// refuses it too (spec 0046); it has no document
-		malformed := errors.Is(err, attachment.ErrMalformed) && c.doc == nil
+		malformed := errors.Is(err, attachment.ErrMalformed) && c.Doc == nil
 		if err != nil && !malformed || st.Issuer != pf.URL || st.BodyHash != body || st.Seq != q {
 			return out, q - 1, nil // as an unverified statement holds a cursor online
 		}
-		xs := xstatement{stmt: stmt, sig: sig, st: st, note: c.note}
+		xs := xstatement{stmt: stmt, sig: sig, st: st, note: note}
 		switch {
 		case malformed:
 		case st.Withdrawn:
 			xs.note = ""
-		case c.doc != nil && len(pf.Kinds) > 0 && !slices.Contains(pf.Kinds, st.Kind):
+		case c.Doc != nil && len(pf.Kinds) > 0 && !slices.Contains(pf.Kinds, st.Kind):
 			// online, the site's feed refuses it before fetching: its content does not leave
 			xs.note = noteKind
-		case c.doc != nil && c.doc.ContentHash == st.ContentHash && c.doc.Size == st.Size:
-			err := x.s.Blob.ReadAttachment(ctx, x.t.StorageDomain, c.doc.ID, st.ContentHash, st.Size, func([]byte) error { return nil })
+		case c.Doc != nil && c.Doc.ContentHash == st.ContentHash && c.Doc.Size == st.Size:
+			err := x.s.Blob.ReadAttachment(ctx, x.t.StorageDomain, c.Doc.ID, st.ContentHash, st.Size, func([]byte) error { return nil })
 			if errors.Is(err, blob.ErrCorrupt) {
 				return out, q - 1, nil // its object missing or corrupt: the site moves no further
 			}
 			if err != nil {
 				return nil, 0, err
 			}
-			xs.doc = c.doc
-		case c.doc != nil:
+			xs.doc = c.Doc
+		case c.Doc != nil:
 			return out, q - 1, nil // a record that does not match its own statement
 		}
 		out = append(out, xs)

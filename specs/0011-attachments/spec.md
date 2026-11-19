@@ -85,6 +85,11 @@ feed_keys, feed_channels, feed_cursors (feed, body_hash, seq)
 | `review` | `application/vnd.kista.review.v1+json` (below) | verdict, `analysed_at`, analyser |
 | `provenance` | a Sigstore bundle (`application/vnd.dev.sigstore.bundle.v0.3+json`), a DSSE envelope (`application/vnd.dsse.envelope.v1+json`) | predicate type, builder, source repository and ref, shown as claimed (unverified) |
 | `notes` | `text/markdown` (UTF-8) | first line |
+| `report` | `application/vnd.kista.report+json` (spec 0045: an issuer's page and a few summary members, no verdict) | issue, date, depth, points of attention, sections, whether the body was read |
+
+  The list is the code's (spec 0046 dropped the schema's); spec 0045 adds `report`. In a
+  `vulnerabilities` summary `info` and `none` are `informational`, counted outside the findings, and
+  a CycloneDX document says how many components it has and how many are marked checked (spec 0045).
 
   A document must parse as its media type says (JSON within 32 levels and the size limit; Markdown
   valid UTF-8), and its summary is extracted then, once; the summary is what lists, the index and the
@@ -212,7 +217,9 @@ them under the extension:
   under the lock, so one marked feedable meanwhile is withdrawn. Documents marked feedable before 1b
   (never offered) start unmarked. The issuer is `serve.public_url` with a lowercase host and no
   default port, as a subscriber normalises its feed URL. Only the tenant's own and
-  its publishers' documents are offered: a feed's documents are not relayed (Follow-ups).
+  its publishers' documents are offered by the tenant's own statements. A feed's documents are handed
+  on with their issuer's statements unchanged, by a feed with `export` set: in a bundle (spec 0014)
+  and online, to a request that names the issuer (spec 0045).
 - **The feed route**, on the source:
 
 ```text
@@ -244,8 +251,9 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
   of what arrives (`administrators`; `readers` only for statements whose signed `audience` is
   `readers`, and only if the feed's configuration allows it, since a paid review shown to readers of
   a public release is published to anyone), the bodies offered (by
-  default those released from upstreams and never by the tenant itself, by a publication or an
-  administrator's release; or those released in named channels), and a schedule
+  default those of the tenant's catalogue builds that came from outside, an upstream's or a
+  distributor's publisher's, released or not, and never one a build of the tenant's own has, spec
+  0045; or those released in named channels), and a schedule
   (`attachments.feed_interval`, 6 h by default; a run is also requested from the API, the CLI or
   the console). Routes: `GET, POST …/feeds`, `GET, POST (a change, If-Match), DELETE
   (?documents=true, If-Match) …/feeds/{name}`, `POST …/feeds/{name}/sync`; tenant administrators.
@@ -255,7 +263,9 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
     only there), checks size and content hash against the statement and the signature against a
     pinned key, and inserts it only if its body is one it sent and still holds, under the same rule
     as an intake (spec 0016). The source's published keys are read at each run, and only the pinned
-    ones kept; a statement's `issuer` must be the feed's URL. A `supersedes` must name an earlier
+    ones kept; a statement's `issuer` must be the feed's URL. A feed with `via` (spec 0045) asks a
+    relaying tenant instead: the request names the issuer, the keys come in the answer, the content
+    from under the relay's URL, and the feed's own URL is never contacted. A `supersedes` must name an earlier
     statement of the same issuer, body and kind; one the subscriber never received (not offered,
     refused) or removed here is accepted and kept as an unresolved link. A withdrawal marks its
     target. A source answering `/feed` with `404` (a kista source's answer to a principal without
@@ -263,12 +273,14 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
   - Quotas: a feed's documents count against a tenant quota of their own (100,000), apart from the
     tenant's own documents, and the heads limit counts per issuer, so one source never uses up the
     tenant's or another source's room.
-  - The cursor advances past a statement that was stored, permanently refused (a limit, content
-    that does not match, a kind not accepted), each refusal recorded, or left waiting (spec 0046: a
+  - The cursor advances past a statement that was stored, permanently refused (the heads limit,
+    content that does not match, a kind not accepted), each refusal recorded, or left waiting (spec 0046: a
     newer format, a kind, media type or document version this kista does not read; counted, and
     taken again by itself once the kista is upgraded); a transient failure (a fetch,
     egress, a document the source no longer serves) leaves it, and that body's later statements
-    wait, so the next run tries again in order. A statement that does not verify, or names another
+    wait, so the next run tries again in order. A document that does not fit the tenant's document
+    quota holds its body's cursor too, and the run ends `failing` (`limits`): the quota holds, it
+    does not refuse (spec 0045). A statement that does not verify, or names another
     issuer, holds its body's cursor the same way (every body's in that request when its body cannot
     be told): it is refused again at the next run, and taken once its key is pinned. The source's
     high-water (unsigned) moves a cursor only up to the highest `seq` verified in the run. A body's feed state goes with its attachments when the collector removes them, so a
@@ -286,7 +298,7 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
     feed of the same source if there is one (its cursors are past them), else they go.
 - **What a subscriber discloses**: the body hashes it offers, to each source it subscribes to, and
   only those; a multi-tenant source learns which of those hashes each subscriber holds. The default
-  (mirrored bodies only) keeps the tenant's own builds out of it.
+  (builds from outside only, spec 0045) keeps the tenant's own builds out of it.
 - Enterest implements the source side for its subscribers; kista's open server implements both, so
   any organisation can run a source. Spec 0001's open-core table is amended: kista has attachments,
   the feed and its client; Enterest has its analysis, its subscriptions and the review content.
@@ -298,7 +310,9 @@ GET  /api/v1/tenants/{t}/feed/documents/{issuer_id}                →   the con
   days is flagged), expiry, and its summary (a review's verdict and findings, a scan's counts by
   severity, an SBOM's components), rendered as text; Markdown with raw HTML off, links limited to
   `https` with `rel="noopener noreferrer"`, no images. A download is fetched with the token and saved
-  as `application/octet-stream` with the `download` attribute, never opened.
+  as `application/octet-stream` with the `download` attribute, never opened. One document is shown
+  as its issuer wrote it: a report's page (spec 0045), in a frame with an empty sandbox under
+  kista's own stylesheet, never parsed by the console.
 - Administrators attach a document, mark it `readers` or feedable, and remove it. Feeds are added,
   paused, resumed, synced and removed on the Upstreams page, with their status, last run and last
   success; changing a feed's credential, keys, kinds or readers is the API's and the CLI's. The
@@ -385,12 +399,14 @@ web/console           the Reports block; feeds on Upstreams
 - **URLs for content in feed answers**: a source could point the client, and its credential,
   anywhere.
 - **Rendering documents as HTML**: a document is untrusted; the console shows summaries and text.
+  (Spec 0045 shows a report's page, isolated in a sandboxed frame; the console itself still renders
+  no document.)
 - **A push feed**: subscribers are often behind firewalls; a pull goes through their egress.
 
 ## Follow-ups
 
 - Relaying a received feed onward (an organisation's central kista feeding its regional mirrors),
-  with the origin's statements intact and the origin's keys pinned downstream.
+  with the origin's statements intact and the origin's keys pinned downstream: spec 0045.
 - "Available" entries: a source telling a non-subscriber that a review exists (kind, date, where).
 - Policies acting on attachments (refuse a release whose scan has a critical finding, or whose
   review is rejected): the node agent's and the cluster profile's specs, reading the index's

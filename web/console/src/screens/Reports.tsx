@@ -2,11 +2,14 @@ import { useRef, useState } from 'react'
 import { Badge, Button, Card, Confirm, Empty, ErrorBox, Field, Loading, Mono, Note, Table, when } from '../components/ui'
 import { useLoad, useTenant } from '../lib/context'
 import { ApiError, type Client, seg } from '../lib/http'
+import { orderReports, reportText, staleScanOf, vulnerabilitiesText } from '../lib/report'
+import { ReportPage } from './ReportPage'
 import type { Attachment, Release } from './types'
 
 // The Reports block (spec 0011): the documents about an extension's bodies, as their summaries
-// computed at intake, rendered as text. A document is untrusted: it is never rendered, only
-// downloaded as bytes.
+// computed at intake, rendered as text. A document is untrusted: it is downloaded as bytes, and
+// never rendered by the console itself. The one exception is a report's page (spec 0045), the
+// issuer's own html, shown as it is in an isolated frame under kista's stylesheet (ReportPage).
 
 /** The media types each kind takes (the API's closed list). */
 export const mediaTypes: Record<string, [string, string][]> = {
@@ -20,12 +23,10 @@ export const mediaTypes: Record<string, [string, string][]> = {
   review: [['application/vnd.kista.review.v1+json', 'kista review v1']],
   provenance: [['application/vnd.dev.sigstore.bundle.v0.3+json', 'Sigstore bundle'], ['application/vnd.dsse.envelope.v1+json', 'DSSE envelope']],
   notes: [['text/markdown', 'Markdown']],
+  report: [['application/vnd.kista.report+json', 'kista report']],
 }
 
 const severities = ['critical', 'high', 'medium', 'low', 'unknown']
-
-/** A scan older than this is flagged. */
-const staleScan = 30 * 24 * 3600 * 1000
 
 const num = (v: unknown) => (typeof v === 'number' ? v : 0)
 const str = (v: unknown) => (typeof v === 'string' ? v : '')
@@ -37,11 +38,10 @@ export function summaryText(kind: string, s: Record<string, unknown>): string {
     case 'sbom':
       return [str(s.format), `${num(s.components)} components`, s.licences != null ? `${num(s.licences)} licences` : '',
         num(s.crypto_assets) > 0 ? `${num(s.crypto_assets)} crypto assets` : ''].filter(Boolean).join(', ')
-    case 'vulnerabilities': {
-      const parts = num(s.findings) === 0 ? ['no findings'] : [`${num(s.findings)} findings: ${counts().join(', ')}`]
-      if (num(s.not_affected) > 0) parts.push(`${num(s.not_affected)} not affected`)
-      return parts.join('; ')
-    }
+    case 'vulnerabilities':
+      return vulnerabilitiesText(s)
+    case 'report':
+      return reportText(s)
     case 'review':
       return [`${str(s.verdict)} by ${str(s.analyser)}`, num(s.findings) > 0 ? `${num(s.findings)} findings: ${counts().join(', ')}` : 'no findings']
         .join('; ')
@@ -59,8 +59,9 @@ function dated(a: Attachment) {
   return str(a.summary.scanned_at) || str(a.summary.analysed_at) || a.issued_at
 }
 
+/** A scan older than 30 days is flagged, unless its statement's valid_until has not passed (spec 0045). */
 export function stale(a: Attachment, now = Date.now()) {
-  return a.kind === 'vulnerabilities' && now - new Date(dated(a)).getTime() > staleScan
+  return staleScanOf(a, now)
 }
 
 const origins: Record<string, string> = { tenant: 'the tenant', publisher: 'a publisher', feed: 'a feed' }
@@ -77,7 +78,7 @@ export function originText(a: Pick<Attachment, 'origin' | 'attached_by' | 'issue
 const fileExt = (mt: string) => (mt === 'text/markdown' ? 'md' : 'json')
 
 /** Saves bytes as a file: never opened, never rendered. */
-function save(b: Blob, name: string) {
+export function save(b: Blob, name: string) {
   const url = URL.createObjectURL(new Blob([b], { type: 'application/octet-stream' }))
   const a = document.createElement('a')
   a.href = url
@@ -100,7 +101,7 @@ const titles: Record<Pending['change'], [string, string]> = {
 }
 
 /** Every page of a list, following the API's cursors. */
-async function every<T>(client: Client, path: string, key: string): Promise<T[]> {
+export async function every<T>(client: Client, path: string, key: string): Promise<T[]> {
   const out: T[] = []
   let cursor = ''
   do {
@@ -140,6 +141,7 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
   const [showing, setShowing] = useState<Showing | null | undefined>(undefined)
   const asked = useRef<Pending | null>(null)
   const [attaching, setAttaching] = useState(false)
+  const [viewing, setViewing] = useState('')
   const [failure, setFailure] = useState<unknown>(null)
   const manage = perms.extensionAdmin(ext)
   const ask = async (p: Pending) => {
@@ -183,7 +185,8 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
       setFailure(e)
     }
   }
-  const rows = data ?? []
+  // a body's report heads as the waiting version's row has them: the highest issue first
+  const rows = orderReports(data ?? [])
   return (
     <Card title="Reports" actions={manage && body ? <Button tone="outline" onClick={() => setAttaching(true)}>Attach</Button> : undefined}>
       {failure != null && <ErrorBox error={failure} />}
@@ -224,6 +227,9 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
             )],
             ['', (a) => (
               <span className="flex flex-wrap gap-1.5">
+                {a.kind === 'report' && (
+                  <Button tone="outline" expanded={viewing === a.id} onClick={() => setViewing(viewing === a.id ? '' : a.id)}>View page</Button>
+                )}
                 <Button onClick={() => download(a)}>Download</Button>
                 {perms.tenantAdmin && (a.visibility === 'readers' || a.origin !== 'feed' || a.audience === 'readers') && (
                   <Button tone="outline" onClick={() => ask({ a, change: a.visibility === 'readers' ? 'administrators' : 'readers' })}>
@@ -241,6 +247,7 @@ function ReportsBlock({ ext, body }: { ext: string; body?: string }) {
           ]}
         />
       )}
+      {rows.filter((a) => a.id === viewing).map((a) => <ReportPage key={a.id} a={a} base={base} onClose={() => setViewing('')} />)}
       <Confirm
         open={pending !== null}
         title={pending ? `${titles[pending.change][0]}: ${pending.a.title}` : ''}

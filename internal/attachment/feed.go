@@ -20,7 +20,10 @@ import (
 // Feed limits.
 const (
 	MaxFeedBodies = 500     // bodies per feed request
-	MaxFeedAnswer = 1 << 20 // an answer's statements, encoded
+	MaxFeedAnswer = 1 << 20 // the most a feed's answer holds, and the default (attachments.feed_answer_max)
+	// MinFeedAnswer is the least attachments.feed_answer_max: an issuer's keys file (64 KiB at most)
+	// and one statement always fit, so every answer moves a subscriber on
+	MinFeedAnswer = 128 << 10
 )
 
 // Issuer is a tenant's stable identity in its statements: its URL under the deployment's public URL,
@@ -113,10 +116,13 @@ type FeedBody struct {
 	AfterSeq int64  `json:"after_seq"`
 }
 
-// WireStatement is a statement as the feed sends it: its exact bytes and signature, base64.
+// WireStatement is a statement as the feed sends it: its exact bytes and signature, base64. A relay
+// (spec 0045) adds an unsigned note to one it sends without content, a withdrawal aside: the
+// waiting reason for a statement the relay waits on (spec 0046), else NoteNotHeld.
 type WireStatement struct {
 	Statement string `json:"statement"`
 	Signature string `json:"signature"`
+	Note      string `json:"note,omitempty"`
 }
 
 // HighWater is how far a body's statements were read: a subscriber that stored what came before it
@@ -127,8 +133,11 @@ type HighWater struct {
 }
 
 // FeedAnswer is the feed route's answer: statements in seq order per body, the bodies read through,
-// and more when it stopped early (the subscriber asks again from its cursors).
+// and more when it stopped early (the subscriber asks again from its cursors). A relay's answer
+// (a request that names an issuer the tenant hands on, spec 0045) carries keys: that issuer's keys
+// file as the relaying feed last fetched it; there is no keys route for it.
 type FeedAnswer struct {
+	Keys       json.RawMessage `json:"keys,omitempty"`
 	Statements []WireStatement `json:"statements"`
 	Bodies     []HighWater     `json:"bodies"`
 	More       bool            `json:"more"`
@@ -159,8 +168,9 @@ func (s *Service) feedChannels(ctx context.Context, a authz.Actor, tenant string
 // Feed answers a subscriber's bodies with the statements issued about them after its cursors: only
 // for bodies released in the channels its feed grant covers (any other body answers like one
 // without documents), only documents still offered, and withdrawals. A request that names an issuer
-// asks for that issuer's statements relayed here (spec 0045's selector, part of the route from the
-// start, spec 0046): this kista relays none, so it answers no statements, never its own.
+// asks for that issuer's statements relayed here (spec 0045; the selector is part of the route from
+// the start, spec 0046): it is answered what the tenant holds from that issuer and hands on (relay),
+// never the tenant's own statements.
 func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies []FeedBody, issuer string) (FeedAnswer, error) {
 	out := FeedAnswer{Statements: []WireStatement{}, Bodies: []HighWater{}}
 	channels, err := s.feedChannels(ctx, a, tenant)
@@ -171,7 +181,9 @@ func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies
 		return out, fmt.Errorf("%w: at most %d bodies a request", store.ErrInvalid, MaxFeedBodies)
 	}
 	if issuer != "" {
-		return out, nil
+		if err := issuerParam(issuer); err != nil {
+			return out, err
+		}
 	}
 	seen := map[string]bool{}
 	var hashes []string
@@ -189,6 +201,9 @@ func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies
 	inScope, err := s.Store.ReleasedIn(ctx, t.ID, channels, hashes)
 	if err != nil {
 		return out, err
+	}
+	if issuer != "" {
+		return s.relay(ctx, t, issuer, bodies, inScope)
 	}
 	size := 64
 	for _, b := range bodies {
@@ -215,7 +230,7 @@ func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies
 				}
 				w := WireStatement{Statement: base64.StdEncoding.EncodeToString(st.Statement), Signature: base64.StdEncoding.EncodeToString(st.Signature)}
 				n := len(w.Statement) + len(w.Signature) + 40
-				if size+n > MaxFeedAnswer {
+				if size+n > s.feedAnswerMax() {
 					out.More = true
 					if high > b.AfterSeq {
 						out.Bodies = append(out.Bodies, HighWater{BodyHash: b.BodyHash, Seq: high})
@@ -240,15 +255,24 @@ func (s *Service) Feed(ctx context.Context, a authz.Actor, tenant string, bodies
 
 // FeedDocument hands a document a subscriber's statement names, and its content, to use: a tenant's
 // own document, still offered, of a body released in the channels the caller's feed grant covers;
-// any other answers like a missing one.
-func (s *Service) FeedDocument(ctx context.Context, a authz.Actor, tenant, issuerID string, use func(store.Attachment, []byte) error) error {
+// any other answers like a missing one. With an issuer it is a document the tenant holds from that
+// issuer and hands on (spec 0045), named by its id at the issuer.
+func (s *Service) FeedDocument(ctx context.Context, a authz.Actor, tenant, issuerID, issuer string, use func(store.Attachment, []byte) error) error {
 	channels, err := s.feedChannels(ctx, a, tenant)
 	if err != nil {
 		return err
 	}
+	if issuer != "" {
+		if err := issuerParam(issuer); err != nil {
+			return err
+		}
+	}
 	t, err := s.Store.GetTenant(ctx, tenant)
 	if err != nil {
 		return err
+	}
+	if issuer != "" {
+		return s.relayDocument(ctx, t, channels, issuer, issuerID, use)
 	}
 	missing := fmt.Errorf("%w: document %s", store.ErrNotFound, issuerID)
 	rec, err := s.Store.GetAttachment(ctx, t.ID, issuerID)

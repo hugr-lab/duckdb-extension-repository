@@ -30,3 +30,28 @@ func TestGCConfig(t *testing.T) {
 		t.Error("gc from the environment")
 	}
 }
+
+// Spec 0045: attachments.feed_answer_max, a managed bound of the feed route's answer.
+func TestAttachmentsFeedAnswerMax(t *testing.T) {
+	cfg, err := Load(write(t, base), nil)
+	if err != nil || cfg.Attachments.FeedAnswerMax != 0 || cfg.Attachments.MaxSize != 0 {
+		t.Fatalf("defaults (0: 1 MiB, and 4 MiB for a document): %+v %v", cfg.Attachments, err)
+	}
+	for _, v := range []string{"128KiB", "512KiB", "1MiB", "131072"} {
+		if _, err := Load(write(t, base+"attachments: { feed_answer_max: "+v+" }\n"), nil); err != nil {
+			t.Errorf("%s: %v", v, err)
+		}
+	}
+	// a size is never written 0: leave the key out for the default
+	if _, err := Load(write(t, base+"attachments: { feed_answer_max: 0 }\n"), nil); err == nil {
+		t.Error("feed_answer_max: 0 loads")
+	}
+	for _, v := range []string{"64KiB", "131071", "2MiB", "1048577"} {
+		if _, err := Load(write(t, base+"attachments: { feed_answer_max: "+v+" }\n"), nil); err == nil || !strings.Contains(err.Error(), "attachments.feed_answer_max") {
+			t.Errorf("%s: %v", v, err)
+		}
+	}
+	if cfg, err := Load(write(t, base+"attachments: { feed_answer_max: 256KiB }\n"), nil); err != nil || cfg.Attachments.FeedAnswerMax != 256<<10 {
+		t.Fatalf("set: %+v %v", cfg.Attachments, err)
+	}
+}

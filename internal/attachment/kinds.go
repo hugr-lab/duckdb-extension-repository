@@ -30,6 +30,7 @@ const (
 	Sigstore    = "application/vnd.dev.sigstore.bundle.v0.3+json"
 	DSSE        = "application/vnd.dsse.envelope.v1+json"
 	Markdown    = "text/markdown"
+	Report      = "application/vnd.kista.report+json"
 	maxDepth    = 32
 	maxSummary  = 4000
 	maxTitle    = 200
@@ -43,10 +44,11 @@ var mediaTypes = map[string][]string{
 	store.KindReview:          {Review},
 	store.KindProvenance:      {Sigstore, DSSE},
 	store.KindNotes:           {Markdown},
+	store.KindReport:          {Report},
 }
 
 // Kinds lists the kinds.
-var Kinds = []string{store.KindSBOM, store.KindVulnerabilities, store.KindReview, store.KindProvenance, store.KindNotes}
+var Kinds = []string{store.KindSBOM, store.KindVulnerabilities, store.KindReview, store.KindProvenance, store.KindNotes, store.KindReport}
 
 // ErrDocument is a document that is not what its kind and media type say.
 var ErrDocument = errors.New("attachment: the document")
@@ -118,26 +120,30 @@ var ErrDocumentVersion = fmt.Errorf("%w: a version this kista does not read", Er
 // Floor is what a kind reads of a document whatever its version (spec 0046): its summary. A kind
 // that declares one stores and shows a received document of a version this binary does not read
 // instead of leaving it waiting; the rest of the document is never interpreted.
-type Floor func(mediaType string, content []byte) (map[string]any, error)
+type Floor func(mediaType, bodyHash string, content []byte) (map[string]any, error)
 
-// floors are the kinds' declared floors. No kind of this release declares one: every one waits on
-// a version it does not read (spec 0045's report declares its own).
-var floors = map[string]Floor{}
+// floors are the kinds' declared floors. A report's (spec 0045) is its whole reading: its identity
+// and summary members, frozen for every envelope version, so a report never answers
+// ErrDocumentVersion and one of any envelope is stored and shown alike. Every other kind waits on a
+// version it does not read.
+var floors = map[string]Floor{
+	store.KindReport: func(_, bodyHash string, content []byte) (map[string]any, error) { return report(content, bodyHash) },
+}
 
-// Summarize checks a document attached here against its kind and media type and computes its
-// summary (spec 0011: once, at intake). A document it cannot summarise is refused.
-func Summarize(kind, mediaType string, content []byte) (string, error) {
-	return summarize(kind, mediaType, content, false)
+// Summarize checks a document attached here to the body bodyHash against its kind and media type
+// and computes its summary (spec 0011: once, at intake). A document it cannot summarise is refused.
+func Summarize(kind, mediaType, bodyHash string, content []byte) (string, error) {
+	return summarize(kind, mediaType, bodyHash, content, false)
 }
 
 // SummarizeReceived is Summarize for a document received from a feed or a bundle (spec 0046): a
 // review's unknown members are ignored, and a document in a version this binary does not read is
 // ErrDocumentVersion unless its kind declares a floor, which then summarises it.
-func SummarizeReceived(kind, mediaType string, content []byte) (string, error) {
-	return summarize(kind, mediaType, content, true)
+func SummarizeReceived(kind, mediaType, bodyHash string, content []byte) (string, error) {
+	return summarize(kind, mediaType, bodyHash, content, true)
 }
 
-func summarize(kind, mediaType string, content []byte, received bool) (string, error) {
+func summarize(kind, mediaType, bodyHash string, content []byte, received bool) (string, error) {
 	var sum map[string]any
 	var err error
 	if kind == store.KindNotes {
@@ -165,12 +171,14 @@ func summarize(kind, mediaType string, content []byte, received bool) (string, e
 			sum, err = review(content, received)
 		case Sigstore, DSSE:
 			sum, err = provenance(mediaType, content)
+		case Report:
+			sum, err = report(content, bodyHash)
 		default:
 			err = fmt.Errorf("%w: media type %s", ErrDocument, mediaType)
 		}
 	}
 	if floor := floors[kind]; received && floor != nil && errors.Is(err, ErrDocumentVersion) {
-		sum, err = floor(mediaType, content)
+		sum, err = floor(mediaType, bodyHash, content)
 	}
 	if err != nil {
 		return "", err
@@ -190,10 +198,11 @@ func summarize(kind, mediaType string, content []byte, received bool) (string, e
 	return string(b), nil
 }
 
-// checkJSON refuses what is not one JSON value within maxDepth levels.
+// checkJSON refuses what is not one JSON value within maxDepth levels: a second value after the
+// first is refused too (a reader that stops at the first would not see it).
 func checkJSON(b []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(b))
-	depth := 0
+	depth, values := 0, 0
 	for {
 		tok, err := dec.Token()
 		if err == io.EOF {
@@ -201,6 +210,11 @@ func checkJSON(b []byte) error {
 		}
 		if err != nil {
 			return fmt.Errorf("%w: not JSON: %v", ErrDocument, err)
+		}
+		if d, ok := tok.(json.Delim); depth == 0 && (!ok || d == '{' || d == '[') {
+			if values++; values > 1 {
+				return fmt.Errorf("%w: more than one JSON value", ErrDocument)
+			}
 		}
 		if d, ok := tok.(json.Delim); ok {
 			if d == '{' || d == '[' {
@@ -321,6 +335,10 @@ func spdx(b []byte) (map[string]any, error) {
 
 var severities = []string{"critical", "high", "medium", "low", "unknown"}
 
+// informational is an advisory that is no finding (spec 0045): a severity of info or none. It is
+// counted apart, outside findings.
+const informational = "informational"
+
 func severity(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	switch s {
@@ -332,8 +350,10 @@ func severity(s string) string {
 		return "high"
 	case "warning":
 		return "medium"
-	case "note", "info", "none":
+	case "note":
 		return "low"
+	case "info", "none":
+		return informational
 	}
 	return "unknown"
 }
@@ -348,6 +368,9 @@ func vulnSummary(counts map[string]int, notAffected int, scannedAt string) map[s
 		}
 	}
 	sum["findings"] = total
+	if counts[informational] > 0 {
+		sum[informational] = counts[informational]
+	}
 	if notAffected > 0 {
 		sum["not_affected"] = notAffected
 	}
@@ -364,6 +387,7 @@ func cyclonedxVulns(b []byte) (map[string]any, error) {
 		Metadata    struct {
 			Timestamp string `json:"timestamp"`
 		} `json:"metadata"`
+		Components      []cdxChecked `json:"components"`
 		Vulnerabilities []struct {
 			Ratings []struct {
 				Severity string `json:"severity"`
@@ -389,15 +413,92 @@ func cyclonedxVulns(b []byte) (map[string]any, error) {
 			notAffected++
 			continue
 		}
-		worst := "unknown"
+		// its worst rating; informational only when every rating it has is info or none: one that
+		// also carries an unrated or unknown rating stays a finding
+		worst, advisory := "unknown", len(v.Ratings) > 0
 		for _, r := range v.Ratings {
-			if s := severity(r.Severity); rank(s) < rank(worst) {
+			s := severity(r.Severity)
+			if s == informational {
+				continue
+			}
+			advisory = false
+			if rank(s) < rank(worst) {
 				worst = s
 			}
 		}
+		if advisory {
+			worst = informational
+		}
 		counts[worst]++
 	}
-	return vulnSummary(counts, notAffected, d.Metadata.Timestamp), nil
+	sum := vulnSummary(counts, notAffected, d.Metadata.Timestamp)
+	// spec 0045: what was checked. A document that checked no component must not read as "no
+	// findings": every component is counted, and those marked checked or not checked
+	components, checked, notChecked := 0, 0, 0
+	var walk func([]cdxChecked)
+	walk = func(cs []cdxChecked) {
+		for _, c := range cs {
+			if components >= maxListSize {
+				return
+			}
+			components++
+			switch c.mark() {
+			case CheckChecked:
+				checked++
+			case CheckNotChecked:
+				notChecked++
+			}
+			walk(c.Components)
+		}
+	}
+	walk(d.Components)
+	sum["components"], sum["checked"], sum["not_checked"] = components, checked, notChecked
+	return sum, nil
+}
+
+// The property a vulnerabilities document's producer marks each component with (spec 0045), and
+// its values: a component is checked only when it carries the property exactly once with the value
+// checked; one that carries it exactly once with not_checked is counted as marked not checked; any
+// other (no property, twice, another value) is unmarked, which reads as not checked.
+const (
+	CheckProperty   = "kista:vulnerabilities:check"
+	CheckChecked    = "checked"
+	CheckNotChecked = "not_checked"
+)
+
+// cdxChecked reads a component's properties loosely: a document whose properties are of another
+// shape (a value that is no string, properties that are no list) is not refused for it; such a
+// component is unmarked.
+type cdxChecked struct {
+	Properties json.RawMessage `json:"properties"`
+	Components []cdxChecked    `json:"components"`
+}
+
+// mark is the component's mark: the property's value when it is carried exactly once, as a string,
+// else "".
+func (c cdxChecked) mark() string {
+	var props []struct {
+		Name  json.RawMessage `json:"name"`
+		Value json.RawMessage `json:"value"`
+	}
+	if json.Unmarshal(c.Properties, &props) != nil {
+		return ""
+	}
+	mark, n := "", 0
+	for _, p := range props {
+		var name, value string
+		if json.Unmarshal(p.Name, &name) != nil || name != CheckProperty {
+			continue
+		}
+		n++
+		if json.Unmarshal(p.Value, &value) == nil {
+			mark = value
+		}
+	}
+	if n != 1 {
+		return ""
+	}
+	return mark
 }
 
 func rank(s string) int {
@@ -586,7 +687,11 @@ func review(b []byte, received bool) (map[string]any, error) {
 		if len(f.Title) > 400 || len(f.Detail) > 8000 {
 			return nil, fmt.Errorf("%w: a review finding's title is at most 400 bytes, its detail 8000", ErrDocument)
 		}
-		counts[severity(f.Severity)]++
+		sev := severity(f.Severity)
+		if sev == informational {
+			sev = "low" // a review is unchanged by spec 0045: its info and none findings stay low
+		}
+		counts[sev]++
 	}
 	analyser := r.Analyser
 	sum := map[string]any{"verdict": r.Verdict, "analysed_at": at.UTC().Format(time.RFC3339), "analyser": analyser}
